@@ -193,7 +193,15 @@
     if (self.countdownTimer && [self.countdownTimer isValid]) {
         return;
     }
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(updateCountdown) userInfo:nil repeats:YES];
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            [t invalidate];
+            return;
+        }
+        [strongSelf updateCountdown];
+    }];
     self.countdownTimer = timer;
 }
 

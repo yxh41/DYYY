@@ -593,7 +593,15 @@ void updateSpeedButtonVisibility() {
     if (self.statusCheckTimer && [self.statusCheckTimer isValid]) {
         return;
     }
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:60.0 target:self selector:@selector(checkAndRecoverButtonStatus) userInfo:nil repeats:YES];
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:60.0 repeats:YES block:^(NSTimer *t) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            [t invalidate];
+            return;
+        }
+        [strongSelf checkAndRecoverButtonStatus];
+    }];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     self.statusCheckTimer = timer;
 }
