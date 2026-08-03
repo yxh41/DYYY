@@ -1,4 +1,5 @@
 #import "DYYYFilterSettingsView.h"
+#import "DYYYPreferences.h"
 #import "DYYYUtils.h"
 
 static inline UIColor *DYYYAccentColor(void) {
@@ -482,7 +483,7 @@ static const int kDYYYButtonsPerRow = 10;
     }
 
     NSString *newString = [array componentsJoinedByString:@","];
-    [[NSUserDefaults standardUserDefaults] setObject:newString forKey:@"DYYYFilterProp"];
+    [DYYYPreferences setObject:newString forKey:@"DYYYFilterProp"];
 
     [self updateFilterPropButton];
 }

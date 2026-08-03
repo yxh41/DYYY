@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import "DYYYImagePickerDelegate.h"
 #import "DYYYUtils.h"
+#import "DYYYPreferences.h"
 
 #import "DYYYAboutDialogView.h"
 #import "DYYYCustomInputView.h"
@@ -12,12 +13,12 @@
 
 // 获取用户默认设置
 + (BOOL)getUserDefaults:(NSString *)key {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:key];
+    return [DYYYPreferences boolForKey:key];
 }
 
 // 设置用户默认设置
 + (void)setUserDefaults:(id)object forKey:(NSString *)key {
-    [[NSUserDefaults standardUserDefaults] setObject:object forKey:key];
+    [DYYYPreferences setObject:object forKey:key];
 }
 
 // 显示自定义关于弹窗
@@ -225,7 +226,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *DYYYConditionalSourceTar
 }
 
 static BOOL settingActive(NSString *identifier) {
-    id val = [[NSUserDefaults standardUserDefaults] objectForKey:identifier];
+    id val = [DYYYPreferences objectForKey:identifier];
     if ([val isKindOfClass:[NSNumber class]]) {
         return [val boolValue];
     } else if ([val isKindOfClass:[NSString class]]) {
@@ -313,7 +314,7 @@ static NSArray *allSettingsViewControllers(void) {
         NSString *sourceKey = valueRule[@"sourceKey"];
 
         if ([valueType isEqualToString:@"string"] && [condition isEqualToString:@"isNotEmpty"]) {
-            NSString *sourceValue = [[NSUserDefaults standardUserDefaults] objectForKey:sourceKey];
+            NSString *sourceValue = [DYYYPreferences objectForKey:sourceKey];
             enableState = (sourceValue != nil && sourceValue.length > 0);
         }
     }
@@ -464,7 +465,7 @@ static NSArray *allSettingsViewControllers(void) {
     item.title = dict[@"title"];
     item.subTitle = dict[@"subTitle"];
 
-    NSString *savedDetail = [[NSUserDefaults standardUserDefaults] objectForKey:item.identifier];
+    NSString *savedDetail = [DYYYPreferences objectForKey:item.identifier];
     NSString *placeholder = dict[@"detail"];
     item.detail = savedDetail ?: @"";
 
@@ -688,7 +689,7 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
 }
 
 + (void)openSettingsWithViewController:(UIViewController *)vc {
-    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
+    BOOL hasAgreed = [DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"];
     showDYYYSettingsVC(vc, hasAgreed);
 }
 

@@ -3053,11 +3053,11 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                                  BOOL wasRemote = [[NSUserDefaults standardUserDefaults] boolForKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
 
                                                  if ([selectedValue isEqualToString:DYYY_REMOTE_MODE_STRING]) {
-                                                     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                                     [DYYYPreferences setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                                                      refreshConfigConflictState();
                                                  } else {
                                                      if (wasRemote) {
-                                                         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                                         [DYYYPreferences setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                                                          refreshConfigConflictState();
                                                      }
                                                  }
@@ -3300,7 +3300,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                   [DYYYABTestHook cleanLocalABTestData];
                                   [DYYYABTestHook loadLocalABTestConfig];
                                   [DYYYABTestHook applyFixedABTestData];
-                                  [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                  [DYYYPreferences setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                                   [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_REMOTE_CONFIG_CHANGED_NOTIFICATION object:nil];
                                   success = YES;
                                   message = @"配置已导入，部分设置需重启应用后生效";
@@ -3357,7 +3357,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
                     if (success) {
                         [DYYYABTestHook cleanLocalABTestData];
-                        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                        [DYYYPreferences setBool:NO forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                         [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_REMOTE_CONFIG_CHANGED_NOTIFICATION object:nil];
                         // 删除成功后修改 SaveABTestConfigFile item 的状态
                         saveABTestConfigFileItemRef.detail = @"(文件已删除)";
@@ -3701,7 +3701,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                      onConfirm:^(NSString *text) {
                                        // 保存用户输入的倍速值
                                        NSString *trimmedText = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                                       [[NSUserDefaults standardUserDefaults] setObject:trimmedText forKey:@"DYYYSpeedSettings"];
+                                       [DYYYPreferences setObject:trimmedText forKey:@"DYYYSpeedSettings"];
                                        DYYYNormalizeSpeedSettingsForRequiredSpeeds();
                                        speedSettingsItem.detail = DYYYCurrentSpeedSettingsDisplayString();
                                        [speedSettingsItem refreshCell];
@@ -3724,7 +3724,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       autoRestoreSpeedItem.switchChangedBlock = ^{
         BOOL newValue = !autoRestoreSpeedItem.isSwitchOn;
         autoRestoreSpeedItem.isSwitchOn = newValue;
-        [[NSUserDefaults standardUserDefaults] setBool:newValue forKey:@"DYYYAutoRestoreSpeed"];
+        [DYYYPreferences setBool:newValue forKey:@"DYYYAutoRestoreSpeed"];
 };
       [speedButtonItems addObject:autoRestoreSpeedItem];
 
@@ -3741,7 +3741,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       showXItem.switchChangedBlock = ^{
         BOOL newValue = !showXItem.isSwitchOn;
         showXItem.isSwitchOn = newValue;
-        [[NSUserDefaults standardUserDefaults] setBool:newValue forKey:@"DYYYSpeedButtonShowX"];
+        [DYYYPreferences setBool:newValue forKey:@"DYYYSpeedButtonShowX"];
         [FloatingSpeedButton reloadConfiguration];
       };
       [speedButtonItems addObject:showXItem];
@@ -3765,7 +3765,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                      onConfirm:^(NSString *text) {
                                        NSInteger size = [text integerValue];
                                        if (size >= 20 && size <= 60) {
-                                           [[NSUserDefaults standardUserDefaults] setFloat:size forKey:@"DYYYSpeedButtonSize"];
+                                           [DYYYPreferences setFloat:size forKey:@"DYYYSpeedButtonSize"];
                                            buttonSizeItem.detail = [NSString stringWithFormat:@"%.0f", (CGFloat)size];
                                            [buttonSizeItem refreshCell];
                                            [FloatingSpeedButton reloadConfiguration];
@@ -3841,7 +3841,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                        NSInteger size = [text integerValue];
                                        // 确保输入值在有效范围内
                                        if (size >= 20 && size <= 60) {
-                                           [[NSUserDefaults standardUserDefaults] setFloat:size forKey:@"DYYYEnableFloatClearButtonSize"];
+                                           [DYYYPreferences setFloat:size forKey:@"DYYYEnableFloatClearButtonSize"];
                                            clearButtonSizeItem.detail = [NSString stringWithFormat:@"%.0f", (CGFloat)size];
                                            [clearButtonSizeItem refreshCell];
                                            reloadClearButtonConfiguration();

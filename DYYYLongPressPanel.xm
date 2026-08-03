@@ -549,7 +549,7 @@
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"过滤用户列表" keywords:userArray];
                 keywordListView.onConfirm = ^(NSArray *users) {
                   NSString *userString = [users componentsJoinedByString:@","];
-                  [[NSUserDefaults standardUserDefaults] setObject:userString forKey:@"DYYYFilterUsers"];
+                  [DYYYPreferences setObject:userString forKey:@"DYYYFilterUsers"];
                   [DYYYUtils showToast:@"过滤用户列表已更新"];
                 };
                 [keywordListView show];
@@ -579,7 +579,7 @@
                 }
                 // 保存更新后的列表
                 NSString *updatedUserString = [updatedUsers componentsJoinedByString:@","];
-                [[NSUserDefaults standardUserDefaults] setObject:updatedUserString forKey:@"DYYYFilterUsers"];
+                [DYYYPreferences setObject:updatedUserString forKey:@"DYYYFilterUsers"];
               }];
         };
         [viewModels addObject:filterKeywords];
@@ -608,7 +608,7 @@
                 } else {
                     newKeywords = selectedText;
                 }
-                [[NSUserDefaults standardUserDefaults] setObject:newKeywords forKey:@"DYYYFilterKeywords"];
+                [DYYYPreferences setObject:newKeywords forKey:@"DYYYFilterKeywords"];
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已添加过滤词: %@", selectedText]];
             }
           };
@@ -624,7 +624,7 @@
               // 将关键词数组转换为逗号分隔的字符串
               NSString *keywordString = [keywords componentsJoinedByString:@","];
               // 保存到用户默认设置
-              [[NSUserDefaults standardUserDefaults] setObject:keywordString forKey:@"DYYYFilterKeywords"];
+              [DYYYPreferences setObject:keywordString forKey:@"DYYYFilterKeywords"];
               // 显示提示
               [DYYYUtils showToast:@"过滤关键词已更新"];
             };
@@ -670,10 +670,10 @@
                 minutes = 5;
             }
             // 保存用户设置的时间以供下次使用
-            [[NSUserDefaults standardUserDefaults] setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
+            [DYYYPreferences setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
             NSInteger seconds = minutes * 60;
             NSTimeInterval shutdownTimeValue = [[NSDate date] timeIntervalSince1970] + seconds;
-            [[NSUserDefaults standardUserDefaults] setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
+            [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
               NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
@@ -1319,7 +1319,7 @@
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"过滤用户列表" keywords:userArray];
                 keywordListView.onConfirm = ^(NSArray *users) {
                   NSString *userString = [users componentsJoinedByString:@","];
-                  [[NSUserDefaults standardUserDefaults] setObject:userString forKey:@"DYYYFilterUsers"];
+                  [DYYYPreferences setObject:userString forKey:@"DYYYFilterUsers"];
                   [DYYYUtils showToast:@"过滤用户列表已更新"];
                 };
                 [keywordListView show];
@@ -1349,7 +1349,7 @@
                 }
                 // 保存更新后的列表
                 NSString *updatedUserString = [updatedUsers componentsJoinedByString:@","];
-                [[NSUserDefaults standardUserDefaults] setObject:updatedUserString forKey:@"DYYYFilterUsers"];
+                [DYYYPreferences setObject:updatedUserString forKey:@"DYYYFilterUsers"];
               }];
         };
         [viewModels addObject:filterKeywords];
@@ -1378,7 +1378,7 @@
                 } else {
                     newKeywords = selectedText;
                 }
-                [[NSUserDefaults standardUserDefaults] setObject:newKeywords forKey:@"DYYYFilterKeywords"];
+                [DYYYPreferences setObject:newKeywords forKey:@"DYYYFilterKeywords"];
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已添加过滤词: %@", selectedText]];
             }
           };
@@ -1394,7 +1394,7 @@
               // 将关键词数组转换为逗号分隔的字符串
               NSString *keywordString = [keywords componentsJoinedByString:@","];
               // 保存到用户默认设置
-              [[NSUserDefaults standardUserDefaults] setObject:keywordString forKey:@"DYYYFilterKeywords"];
+              [DYYYPreferences setObject:keywordString forKey:@"DYYYFilterKeywords"];
               // 显示提示
               [DYYYUtils showToast:@"过滤关键词已更新"];
             };
@@ -1440,10 +1440,10 @@
                 minutes = 5;
             }
             // 保存用户设置的时间以供下次使用
-            [[NSUserDefaults standardUserDefaults] setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
+            [DYYYPreferences setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
             NSInteger seconds = minutes * 60;
             NSTimeInterval shutdownTimeValue = [[NSDate date] timeIntervalSince1970] + seconds;
-            [[NSUserDefaults standardUserDefaults] setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
+            [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
               NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];

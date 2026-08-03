@@ -179,7 +179,7 @@ static void DYYYApplySelectionSheetThemeToView(UIView *view, BOOL darkMode) {
           }
 
           NSString *selectedValue = [currentModel title];
-          [[NSUserDefaults standardUserDefaults] setObject:selectedValue forKey:preferenceKey];
+          [DYYYPreferences setObject:selectedValue forKey:preferenceKey];
 
           if (callback) {
               callback(selectedValue);

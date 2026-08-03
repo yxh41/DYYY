@@ -179,7 +179,7 @@ NSInteger getCurrentSpeedIndex() {
 
     if (index >= speeds.count || index < 0) {
         index = 0;
-        [[NSUserDefaults standardUserDefaults] setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
+        [DYYYPreferences setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
     }
 
     return index;
@@ -205,7 +205,7 @@ void setCurrentSpeedIndex(NSInteger index) {
         index += speeds.count;
     }
 
-    [[NSUserDefaults standardUserDefaults] setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
+    [DYYYPreferences setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
 }
 
 BOOL setCurrentSpeedValue(float speed) {

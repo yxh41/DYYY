@@ -4,6 +4,8 @@
 
 FOUNDATION_EXPORT void DYYYNSLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
+#import "DYYYPreferences.h"
+
 #ifndef DYYY_KEEP_SYSTEM_NSLOG
 #ifdef NSLog
 #undef NSLog
@@ -11,11 +13,11 @@ FOUNDATION_EXPORT void DYYYNSLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2)
 #define NSLog(...) DYYYNSLog(__VA_ARGS__)
 #endif
 
-// 获取指定类型设置
-#define DYYYGetBool(key) [[NSUserDefaults standardUserDefaults] boolForKey:key]
-#define DYYYGetFloat(key) [[NSUserDefaults standardUserDefaults] floatForKey:key]
-#define DYYYGetInteger(key) [[NSUserDefaults standardUserDefaults] integerForKey:key]
-#define DYYYGetString(key) [[NSUserDefaults standardUserDefaults] stringForKey:key]
+// 获取指定类型设置（统一走 DYYYPreferences 内存缓存，避免每次读取都打 cfprefsd 同步 IPC）
+#define DYYYGetBool(key) [DYYYPreferences boolForKey:key]
+#define DYYYGetFloat(key) [DYYYPreferences floatForKey:key]
+#define DYYYGetInteger(key) [DYYYPreferences integerForKey:key]
+#define DYYYGetString(key) [DYYYPreferences stringForKey:key]
 #define DYYY_IGNORE_GLOBAL_ALPHA_TAG 114514
 
 typedef NS_ENUM(NSInteger, MediaType) { MediaTypeVideo, MediaTypeImage, MediaTypeAudio, MediaTypeHeic };

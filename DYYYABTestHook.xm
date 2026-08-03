@@ -1,4 +1,5 @@
 #import "DYYYABTestHook.h"
+#import "DYYYPreferences.h"
 #import "DYYYConstants.h"
 #import "DYYYUtils.h"
 #import <objc/runtime.h>
@@ -370,7 +371,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
                                                                              updated = YES;
                                                                          }
                                                                          if ([DYYYABTestHook isRemoteMode]) {
-                                                                             [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                                                             [DYYYPreferences setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                                                                              [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_REMOTE_CONFIG_CHANGED_NOTIFICATION object:nil];
                                                                          }
                                                                      }

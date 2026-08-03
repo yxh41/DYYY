@@ -5,6 +5,7 @@
  * iOS Version: 16.5
  */
 #import "DYYYFloatSpeedButton.h"
+#import "DYYYPreferences.h"
 #import "DYYYFloatClearButton.h"
 #import "DYYYUtils.h"
 #import <Foundation/Foundation.h>
@@ -595,7 +596,7 @@ void reloadClearButtonConfiguration(void) {
 }
 
 - (void)saveLockState {
-    [[NSUserDefaults standardUserDefaults] setBool:self.isLocked forKey:@"DYYYHideUIButtonLockState"];
+    [DYYYPreferences setBool:self.isLocked forKey:@"DYYYHideUIButtonLockState"];
 }
 
 - (void)loadLockState {
