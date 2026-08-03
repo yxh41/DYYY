@@ -1,4 +1,5 @@
 #import "AwemeHeaders.h"
+#import "DYYYPreferences.h"
 #import "DYYYManager.h"
 #import <MobileCoreServices/MobileCoreServices.h>
 #import <math.h>
@@ -40,7 +41,7 @@ static char kDYYYWeatherViewGestureInstalledKey;
 static char kDYYYWeatherSubviewGestureInstalledKey;
 
 static NSString *DYYYCurrentSpeedSettingsDisplayString(void) {
-    id value = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYSpeedSettings"];
+    id value = [DYYYPreferences objectForKey:@"DYYYSpeedSettings"];
     if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) {
         return (NSString *)value;
     }
@@ -244,7 +245,7 @@ static void DYYYRefreshSearchItemValue(AWESettingItemModel *item) {
         return;
     }
 
-    id savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.identifier];
+    id savedValue = [DYYYPreferences objectForKey:item.identifier];
     if (item.cellType == 6 || item.cellType == 37) {
         item.isSwitchOn = [savedValue respondsToSelector:@selector(boolValue)] ? [savedValue boolValue] : NO;
     } else if (savedValue) {
@@ -862,7 +863,7 @@ static void DYYYBuildSettingsSearchIndexIfNeeded(NSArray<AWESettingItemModel *> 
 
 %hook AWELeftSideBarEntranceView
 - (void)leftSideBarEntranceViewTapped:(UITapGestureRecognizer *)gesture {
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEntrance"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYEntrance"]) {
         %orig;
         return;
     }
@@ -1096,7 +1097,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict cellTapHandlers:cellTapHandlers];
 
           if ([item.identifier isEqualToString:@"DYYYDefaultSpeed"]) {
-              NSString *savedSpeed = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDefaultSpeed"];
+              NSString *savedSpeed = [DYYYPreferences objectForKey:@"DYYYDefaultSpeed"];
               item.detail = savedSpeed ?: @"1.0x";
 
               item.cellTappedBlock = ^{
@@ -1115,7 +1116,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           }
 
           else if ([item.identifier isEqualToString:@"DYYYLongPressSpeed"]) {
-              NSString *savedSpeed = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLongPressSpeed"];
+              NSString *savedSpeed = [DYYYPreferences objectForKey:@"DYYYLongPressSpeed"];
               item.detail = savedSpeed ?: @"2.0x";
 
               item.cellTappedBlock = ^{
@@ -1134,7 +1135,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           }
 
           else if ([item.identifier isEqualToString:@"DYYYScheduleStyle"]) {
-              NSString *savedStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYScheduleStyle"];
+              NSString *savedStyle = [DYYYPreferences objectForKey:@"DYYYScheduleStyle"];
               item.detail = savedStyle ?: @"默认";
               item.cellTappedBlock = ^{
                 NSArray *styleOptions = @[ @"进度条两侧上下", @"进度条左侧剩余", @"进度条左侧完整", @"进度条右侧剩余", @"进度条右侧完整" ];
@@ -1151,7 +1152,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           }
 
           else if ([item.identifier isEqualToString:@"DYYYLabelStyle"]) {
-              NSString *savedStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLabelStyle"];
+              NSString *savedStyle = [DYYYPreferences objectForKey:@"DYYYLabelStyle"];
               item.detail = savedStyle ?: @"默认";
               item.cellTappedBlock = ^{
                 NSArray *styleOptions = @[ @"文案标签显示", @"文案标签隐藏", @"文案标签禁止跳转搜索" ];
@@ -1235,7 +1236,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict cellTapHandlers:cellTapHandlers];
 
           if ([item.identifier isEqualToString:@"DYYYLiveQuality"]) {
-              NSString *savedQuality = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLiveQuality"] ?: @"自动";
+              NSString *savedQuality = [DYYYPreferences objectForKey:@"DYYYLiveQuality"] ?: @"自动";
               item.detail = savedQuality;
               item.cellTappedBlock = ^{
                 NSArray *qualities = @[ @"蓝光帧彩", @"蓝光", @"超清", @"高清", @"标清", @"自动" ];
@@ -1360,7 +1361,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict cellTapHandlers:cellTapHandlers];
 
           if ([item.identifier isEqualToString:@"DYYYFilterLowLikes"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterLowLikes"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYFilterLowLikes"];
               item.detail = savedValue ?: @"0";
               item.cellTappedBlock = ^{
                 [DYYYSettingsHelper showTextInputAlert:@"设置过滤赞数阈值"
@@ -1387,11 +1388,11 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                               onCancel:nil];
               };
           } else if ([item.identifier isEqualToString:@"DYYYFilterUsers"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYFilterUsers"];
               item.detail = savedValue ?: @"";
               item.cellTappedBlock = ^{
                 // 将保存的逗号分隔字符串转换为数组
-                NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"] ?: @"";
+                NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterUsers"] ?: @"";
                 NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"过滤用户列表" keywords:keywordArray];
                 keywordListView.onConfirm = ^(NSArray *keywords) {
@@ -1404,10 +1405,10 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                 [keywordListView show];
               };
           } else if ([item.identifier isEqualToString:@"DYYYFilterKeywords"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"];
               item.detail = savedValue ?: @"";
               item.cellTappedBlock = ^{
-                NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
+                NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
                 NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤关键词" keywords:keywordArray];
                 keywordListView.onConfirm = ^(NSArray *keywords) {
@@ -1420,7 +1421,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                 [keywordListView show];
               };
           } else if ([item.identifier isEqualToString:@"DYYYFilterTimeLimit"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterTimeLimit"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYFilterTimeLimit"];
               item.detail = savedValue ?: @"";
               item.cellTappedBlock = ^{
                 [DYYYSettingsHelper showTextInputAlert:@"过滤视频的发布时间"
@@ -1435,10 +1436,10 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                               onCancel:nil];
               };
           } else if ([item.identifier isEqualToString:@"DYYYFilterProp"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterProp"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYFilterProp"];
               item.detail = savedValue ?: @"";
               item.cellTappedBlock = ^{
-                NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterProp"] ?: @"";
+                NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterProp"] ?: @"";
                 NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤词（支持部分匹配）" keywords:keywordArray];
                 keywordListView.onConfirm = ^(NSArray *keywords) {
@@ -1451,7 +1452,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                 [keywordListView show];
               };
           } else if ([item.identifier isEqualToString:@"DYYYHDRMode"]) {
-              NSString *savedMode = [[NSUserDefaults standardUserDefaults] stringForKey:@"DYYYHDRMode"] ?: @"关闭";
+              NSString *savedMode = [DYYYPreferences stringForKey:@"DYYYHDRMode"] ?: @"关闭";
               item.detail = savedMode;
               item.cellTappedBlock = ^{
                 NSArray *options = @[ @"关闭", @"全局屏蔽HDR效果", @"全局过滤HDR作品" ];
@@ -1643,10 +1644,10 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       for (NSDictionary *dict in titleSettings) {
           AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict cellTapHandlers:cellTapHandlers];
           if ([item.identifier isEqualToString:@"DYYYModifyTopTabText"]) {
-              NSString *savedValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYModifyTopTabText"];
+              NSString *savedValue = [DYYYPreferences objectForKey:@"DYYYModifyTopTabText"];
               item.detail = savedValue ?: @"";
               item.cellTappedBlock = ^{
-                NSString *savedPairs = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYModifyTopTabText"] ?: @"";
+                NSString *savedPairs = [DYYYPreferences objectForKey:@"DYYYModifyTopTabText"] ?: @"";
                 NSArray *pairArray = savedPairs.length > 0 ? [savedPairs componentsSeparatedByString:@"#"] : @[];
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置顶栏标题" keywords:pairArray];
                 keywordListView.addItemTitle = @"添加标题修改";
@@ -2417,7 +2418,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
           // 特殊处理隐藏面板项目选项（文本输入）
           if ([item.identifier isEqualToString:@"DYYYHidePanelItems"]) {
-              NSString *savedItems = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYHidePanelItems"];
+              NSString *savedItems = [DYYYPreferences objectForKey:@"DYYYHidePanelItems"];
               item.detail = savedItems.length > 0 ? savedItems : @"逗号分隔按钮名";
 
               item.cellTappedBlock = ^{
@@ -2602,7 +2603,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           AWESettingItemModel *item = [[%c(AWESettingItemModel) alloc] init];
           item.identifier = dict[@"identifier"];
           item.title = dict[@"title"];
-          NSString *savedDetail = [[NSUserDefaults standardUserDefaults] objectForKey:item.identifier];
+          NSString *savedDetail = [DYYYPreferences objectForKey:item.identifier];
           item.detail = savedDetail ?: dict[@"detail"];
           item.type = 1000;
           item.svgIconImageName = dict[@"imageName"];
@@ -2801,7 +2802,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           // 特殊处理接口解析保存媒体选项
           if ([item.identifier isEqualToString:@"DYYYInterfaceDownload"]) {
               // 获取已保存的接口URL
-              NSString *savedURL = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
+              NSString *savedURL = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
               item.detail = savedURL.length > 0 ? savedURL : @"不填关闭";
 
               item.cellTappedBlock = ^{
@@ -3034,7 +3035,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               item.cellTappedBlock = ^{
                 if (!item.isEnable)
                     return;
-                NSString *currentMode = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYABTestModeString"] ?: @"替换模式：忽略原配置，使用新数据";
+                NSString *currentMode = [DYYYPreferences objectForKey:@"DYYYABTestModeString"] ?: @"替换模式：忽略原配置，使用新数据";
 
                 NSArray *modeOptions = @[ @"覆写模式：保留原设置，覆盖同名项", @"替换模式：忽略原配置，使用新数据", DYYY_REMOTE_MODE_STRING ];
 
@@ -3050,7 +3051,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                                      item.detail = isPatchMode ? @"覆写模式" : @"替换模式";
                                                  }
 
-                                                 BOOL wasRemote = [[NSUserDefaults standardUserDefaults] boolForKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                                 BOOL wasRemote = [DYYYPreferences boolForKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
 
                                                  if ([selectedValue isEqualToString:DYYY_REMOTE_MODE_STRING]) {
                                                      [DYYYPreferences setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
@@ -3070,7 +3071,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               };
           } else if ([item.identifier isEqualToString:@"DYYYRemoteConfigURL"]) {
               remoteURLItemRef = item;
-              NSString *savedURL = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYRemoteConfigURL"];
+              NSString *savedURL = [DYYYPreferences objectForKey:@"DYYYRemoteConfigURL"];
               item.detail = savedURL.length > 0 ? savedURL : DYYY_DEFAULT_ABTEST_URL;
               item.cellTappedBlock = ^{
                 if (!item.isEnable)
@@ -3720,7 +3721,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       autoRestoreSpeedItem.cellType = 6;
       autoRestoreSpeedItem.colorStyle = 0;
       autoRestoreSpeedItem.isEnable = YES;
-      autoRestoreSpeedItem.isSwitchOn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYAutoRestoreSpeed"];
+      autoRestoreSpeedItem.isSwitchOn = [DYYYPreferences boolForKey:@"DYYYAutoRestoreSpeed"];
       autoRestoreSpeedItem.switchChangedBlock = ^{
         BOOL newValue = !autoRestoreSpeedItem.isSwitchOn;
         autoRestoreSpeedItem.isSwitchOn = newValue;
@@ -3737,7 +3738,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       showXItem.cellType = 6;
       showXItem.colorStyle = 0;
       showXItem.isEnable = YES;
-      showXItem.isSwitchOn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYSpeedButtonShowX"];
+      showXItem.isSwitchOn = [DYYYPreferences boolForKey:@"DYYYSpeedButtonShowX"];
       showXItem.switchChangedBlock = ^{
         BOOL newValue = !showXItem.isSwitchOn;
         showXItem.isSwitchOn = newValue;
@@ -3750,7 +3751,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       buttonSizeItem.identifier = @"DYYYSpeedButtonSize";
       buttonSizeItem.title = @"快捷倍速按钮大小";
       // 获取当前的按钮大小，如果没有设置则默认为32
-      CGFloat currentButtonSize = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYSpeedButtonSize"] ?: 32;
+      CGFloat currentButtonSize = [DYYYPreferences floatForKey:@"DYYYSpeedButtonSize"] ?: 32;
       buttonSizeItem.detail = [NSString stringWithFormat:@"%.0f", currentButtonSize];
       buttonSizeItem.type = 0;
       buttonSizeItem.svgIconImageName = @"ic_zoomin_outlined_20";
@@ -3825,7 +3826,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
       clearButtonSizeItem.identifier = @"DYYYEnableFloatClearButtonSize";
       clearButtonSizeItem.title = @"清屏按钮大小";
       // 获取当前的按钮大小，如果没有设置则默认为40
-      CGFloat currentClearButtonSize = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYEnableFloatClearButtonSize"] ?: 40;
+      CGFloat currentClearButtonSize = [DYYYPreferences floatForKey:@"DYYYEnableFloatClearButtonSize"] ?: 40;
       clearButtonSizeItem.detail = [NSString stringWithFormat:@"%.0f", currentClearButtonSize];
       clearButtonSizeItem.type = 0;
       clearButtonSizeItem.svgIconImageName = @"ic_zoomin_outlined_20";
@@ -4021,7 +4022,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
       for (NSString *key in allDefaults.allKeys) {
           if ([key hasPrefix:@"DYYY"]) {
-              dyyySettings[key] = [defaults objectForKey:key];
+              dyyySettings[key] = [DYYYPreferences objectForKey:key];
           }
       }
 
@@ -4166,7 +4167,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
           NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
           for (NSString *key in dyyySettings) {
-              [defaults setObject:dyyySettings[key] forKey:key];
+              [DYYYPreferences setObject:dyyySettings[key] forKey:key];
           }
 
           dispatch_async(dispatch_get_main_queue(), ^{
@@ -4256,7 +4257,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
                                         for (NSString *key in allDefaults.allKeys) {
                                             if ([key hasPrefix:@"DYYY"]) {
-                                                [defaults removeObjectForKey:key];
+                                                [DYYYPreferences removeObjectForKey:key];
                                             }
                                         }
                                         [DYYYUtils showToast:@"插件设置已清除，请重启应用"];

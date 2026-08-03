@@ -72,13 +72,13 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
 
     // 如果快捷倍速数值未设置，设置默认值
-    if (![defaults objectForKey:@"DYYYSpeedSettings"]) {
-        [defaults setObject:@"1.0,1.25,1.5,2.0" forKey:@"DYYYSpeedSettings"];
+    if (![DYYYPreferences objectForKey:@"DYYYSpeedSettings"]) {
+        [DYYYPreferences setObject:@"1.0,1.25,1.5,2.0" forKey:@"DYYYSpeedSettings"];
     }
 
     // 如果按钮大小未设置，设置默认值
-    if (![defaults objectForKey:@"DYYYSpeedButtonSize"]) {
-        [defaults setFloat:32.0 forKey:@"DYYYSpeedButtonSize"];
+    if (![DYYYPreferences objectForKey:@"DYYYSpeedButtonSize"]) {
+        [DYYYPreferences setFloat:32.0 forKey:@"DYYYSpeedButtonSize"];
     }
 
 }
@@ -438,7 +438,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 #pragma mark - First Launch Agreement
 
 - (void)checkFirstLaunch {
-    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
+    BOOL hasAgreed = [DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"];
 
     if (!hasAgreed) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -609,7 +609,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 
     if (item.type == DYYYSettingItemTypeSwitch) {
         UISwitch *switchView = [[UISwitch alloc] init];
-        [switchView setOn:[[NSUserDefaults standardUserDefaults] boolForKey:item.key]];
+        [switchView setOn:[DYYYPreferences boolForKey:item.key]];
         [switchView addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
         switchView.tag = indexPath.section * 1000 + indexPath.row;
         cell.accessoryView = switchView;
@@ -618,7 +618,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         textField.borderStyle = UITextBorderStyleRoundedRect;
         textField.placeholder = item.placeholder;
         textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor placeholderTextColor]}];
-        textField.text = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
+        textField.text = [DYYYPreferences objectForKey:item.key];
         textField.textAlignment = NSTextAlignmentRight;
         textField.backgroundColor = [UIColor tertiarySystemFillColor];
         textField.textColor = [UIColor labelColor];
@@ -631,7 +631,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 
         UILabel *pickerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 44)];
         // 获取当前值
-        id currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
+        id currentValue = [DYYYPreferences objectForKey:item.key];
         if (!currentValue) {
             currentValue = [self defaultValueForKey:item.key];
         }
@@ -716,7 +716,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:sender.tag % 1000 inSection:sender.tag / 1000];
     DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:sender.isOn forKey:item.key];
+    [DYYYPreferences setBool:sender.isOn forKey:item.key];
     if ([item.key isEqualToString:@"DYYYEnableFloatSpeedButton"] || [item.key isEqualToString:@"DYYYSpeedButtonShowX"]) {
         [FloatingSpeedButton reloadConfiguration];
     }
@@ -740,7 +740,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         }
 
         if (conflictingKey) {
-            [defaults setBool:NO forKey:conflictingKey];
+            [DYYYPreferences setBool:NO forKey:conflictingKey];
             [self.tableView reloadData];
         }
     }

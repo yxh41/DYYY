@@ -6,6 +6,7 @@
 //  Created on: 2024/10/04
 //
 #import <QuartzCore/QuartzCore.h>
+#import "DYYYPreferences.h"
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
@@ -61,7 +62,7 @@ static NSDictionary<NSString *, NSString *> *DYYYTopTabTitleMapping(void) {
     static NSString *cachedRawValue = nil;
     static NSDictionary<NSString *, NSString *> *cachedMapping = nil;
 
-    NSString *currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYModifyTopTabText"];
+    NSString *currentValue = [DYYYPreferences objectForKey:@"DYYYModifyTopTabText"];
     BOOL rawValueChanged = (cachedRawValue != currentValue) && ![cachedRawValue isEqualToString:currentValue];
 
     if (!rawValueChanged) {
@@ -209,11 +210,11 @@ static UIImage *DYYYLoadCustomImage(NSString *fileName, CGSize targetSize) {
 }
 
 static BOOL DYYYShouldHandleSpeedFeatures(void) {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFloatSpeedButton"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"]) {
         return YES;
     }
 
-    float defaultSpeed = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYDefaultSpeed"];
+    float defaultSpeed = [DYYYPreferences floatForKey:@"DYYYDefaultSpeed"];
     if (defaultSpeed <= 0.0f) {
         return NO;
     }
@@ -302,7 +303,7 @@ static AWEAwemeModel *DYYYSpeedAwemeFromObject(id object) {
 }
 
 static double DYYYDefaultPlaybackSpeed(void) {
-    double defaultSpeed = [[NSUserDefaults standardUserDefaults] doubleForKey:@"DYYYDefaultSpeed"];
+    double defaultSpeed = [DYYYPreferences doubleForKey:@"DYYYDefaultSpeed"];
     if (isfinite(defaultSpeed) && defaultSpeed > 0.0) {
         return defaultSpeed;
     }
@@ -311,7 +312,7 @@ static double DYYYDefaultPlaybackSpeed(void) {
 
 static void DYYYRestoreFloatSpeedButtonForAwemeIfNeeded(AWEAwemeModel *aweme) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL shouldAutoRestore = [defaults boolForKey:@"DYYYEnableFloatSpeedButton"] && [defaults boolForKey:@"DYYYAutoRestoreSpeed"];
+    BOOL shouldAutoRestore = [DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"] && [DYYYPreferences boolForKey:@"DYYYAutoRestoreSpeed"];
     if (!shouldAutoRestore) {
         dyyyLastAutoRestoredSpeedAwemeIdentifier = nil;
         return;
@@ -512,11 +513,11 @@ static BOOL DYYYApplyPlaybackSpeed(AWEPlayInteractionViewController *interaction
 
 static double DYYYConfiguredPlaybackSpeed(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults boolForKey:@"DYYYEnableFloatSpeedButton"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"]) {
         return getCurrentSpeed();
     }
 
-    if ([defaults boolForKey:@"DYYYUserAgreementAccepted"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"]) {
         return DYYYDefaultPlaybackSpeed();
     }
     return 1.0;
@@ -524,7 +525,7 @@ static double DYYYConfiguredPlaybackSpeed(void) {
 
 static BOOL DYYYShouldPrepareDefaultPlaybackSpeedForPlayer(id playerViewController) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if (![defaults boolForKey:@"DYYYEnableFloatSpeedButton"] || ![defaults boolForKey:@"DYYYAutoRestoreSpeed"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"] || ![DYYYPreferences boolForKey:@"DYYYAutoRestoreSpeed"]) {
         return NO;
     }
 
@@ -660,7 +661,7 @@ static void DYYYHandleCurrentSpeedAwemeChanged(id aweme) {
 
 - (CGFloat)dyyy_legacyScheduleVerticalOffset {
     CGFloat verticalOffset = -12.5;
-    NSString *offsetValueString = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimelineVerticalPosition"];
+    NSString *offsetValueString = [DYYYPreferences objectForKey:@"DYYYTimelineVerticalPosition"];
     if (offsetValueString.length > 0) {
         CGFloat configuredOffset = [offsetValueString floatValue];
         if (configuredOffset != 0) {
@@ -707,7 +708,7 @@ static void DYYYHandleCurrentSpeedAwemeChanged(id aweme) {
     [parentView layoutIfNeeded];
     [self layoutIfNeeded];
 
-    NSString *scheduleStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYScheduleStyle"];
+    NSString *scheduleStyle = [DYYYPreferences objectForKey:@"DYYYScheduleStyle"];
     BOOL showRightRemainingTime = [scheduleStyle isEqualToString:@"进度条右侧剩余"];
     BOOL showRightCompleteTime = [scheduleStyle isEqualToString:@"进度条右侧完整"];
     BOOL showLeftRemainingTime = [scheduleStyle isEqualToString:@"进度条左侧剩余"];
@@ -737,7 +738,7 @@ static void DYYYHandleCurrentSpeedAwemeChanged(id aweme) {
     CGFloat labelYPosition = CGRectGetMinY(sliderFrameInParent) + [self dyyy_legacyScheduleVerticalOffset];
     CGFloat labelHeight = 15.0;
     UIFont *labelFont = [UIFont systemFontOfSize:8];
-    NSString *labelColorHex = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYProgressLabelColor"];
+    NSString *labelColorHex = [DYYYPreferences objectForKey:@"DYYYProgressLabelColor"];
 
     UILabel *leftLabel = (UILabel *)[parentView viewWithTag:10001];
     if (leftLabel && ![leftLabel isKindOfClass:[UILabel class]]) {
@@ -898,37 +899,37 @@ static void DYYYMigrateCombinedHDRModeIfNeeded(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        if ([defaults boolForKey:@"DYYYHDRModeMigratedV1"]) {
+        if ([DYYYPreferences boolForKey:@"DYYYHDRModeMigratedV1"]) {
             return;
         }
 
-        NSString *mode = [defaults stringForKey:kDYYYHDRModeKey];
+        NSString *mode = [DYYYPreferences stringForKey:kDYYYHDRModeKey];
         BOOL hasValidMode = [mode isEqualToString:kDYYYHDRModeOff] ||
                             [mode isEqualToString:kDYYYHDRModeDisable] ||
                             [mode isEqualToString:kDYYYHDRModeFilter];
         if (!hasValidMode) {
-            if ([defaults boolForKey:@"DYYYDisableAllHDR"]) {
+            if ([DYYYPreferences boolForKey:@"DYYYDisableAllHDR"]) {
                 mode = kDYYYHDRModeDisable;
-            } else if ([defaults boolForKey:@"DYYYFilterFeedHDR"]) {
+            } else if ([DYYYPreferences boolForKey:@"DYYYFilterFeedHDR"]) {
                 mode = kDYYYHDRModeFilter;
             } else {
                 mode = kDYYYHDRModeOff;
             }
         }
 
-        [defaults setObject:mode forKey:kDYYYHDRModeKey];
-        [defaults removeObjectForKey:@"DYYYDisableAllHDR"];
-        [defaults removeObjectForKey:@"DYYYFilterFeedHDR"];
-        [defaults setBool:YES forKey:@"DYYYHDRModeMigratedV1"];
+        [DYYYPreferences setObject:mode forKey:kDYYYHDRModeKey];
+        [DYYYPreferences removeObjectForKey:@"DYYYDisableAllHDR"];
+        [DYYYPreferences removeObjectForKey:@"DYYYFilterFeedHDR"];
+        [DYYYPreferences setBool:YES forKey:@"DYYYHDRModeMigratedV1"];
     });
 }
 
 static BOOL DYYYShouldDisableAllHDR(void) {
-    return [[[NSUserDefaults standardUserDefaults] stringForKey:kDYYYHDRModeKey] isEqualToString:kDYYYHDRModeDisable];
+    return [[DYYYPreferences stringForKey:kDYYYHDRModeKey] isEqualToString:kDYYYHDRModeDisable];
 }
 
 static BOOL DYYYShouldFilterGlobalHDR(void) {
-    return [[[NSUserDefaults standardUserDefaults] stringForKey:kDYYYHDRModeKey] isEqualToString:kDYYYHDRModeFilter];
+    return [[DYYYPreferences stringForKey:kDYYYHDRModeKey] isEqualToString:kDYYYHDRModeFilter];
 }
 
 static id DYYYKVCValueIfPossible(id object, NSString *key) {
@@ -2270,7 +2271,7 @@ static CGPoint DYYYLiveDurationClampedCenter(CGPoint center, CGSize viewSize, UI
         _durationLabel.shadowOffset = CGSizeMake(0.0, 1.0);
         [self addSubview:_durationLabel];
 
-        _movementLocked = [[NSUserDefaults standardUserDefaults] boolForKey:kDYYYLiveDurationPositionLockedKey];
+        _movementLocked = [DYYYPreferences boolForKey:kDYYYLiveDurationPositionLockedKey];
 
         UILongPressGestureRecognizer *longPressGesture = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
         longPressGesture.minimumPressDuration = 0.5;
@@ -2345,13 +2346,13 @@ static CGPoint DYYYLiveDurationClampedCenter(CGPoint center, CGSize viewSize, UI
     }
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setDouble:self.center.x / rootWidth forKey:kDYYYLiveDurationCenterXPercentKey];
-    [defaults setDouble:self.center.y / rootHeight forKey:kDYYYLiveDurationCenterYPercentKey];
+    [DYYYPreferences setDouble:self.center.x / rootWidth forKey:kDYYYLiveDurationCenterXPercentKey];
+    [DYYYPreferences setDouble:self.center.y / rootHeight forKey:kDYYYLiveDurationCenterYPercentKey];
 }
 
 - (CGRect)frameByApplyingSavedPositionToFrame:(CGRect)frame inRoot:(UIView *)root {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if (![defaults objectForKey:kDYYYLiveDurationCenterXPercentKey] || ![defaults objectForKey:kDYYYLiveDurationCenterYPercentKey]) {
+    if (![DYYYPreferences objectForKey:kDYYYLiveDurationCenterXPercentKey] || ![DYYYPreferences objectForKey:kDYYYLiveDurationCenterYPercentKey]) {
         return frame;
     }
 
@@ -2361,8 +2362,8 @@ static CGPoint DYYYLiveDurationClampedCenter(CGPoint center, CGSize viewSize, UI
         return frame;
     }
 
-    CGFloat centerXPercent = fmin(fmax([defaults doubleForKey:kDYYYLiveDurationCenterXPercentKey], 0.0), 1.0);
-    CGFloat centerYPercent = fmin(fmax([defaults doubleForKey:kDYYYLiveDurationCenterYPercentKey], 0.0), 1.0);
+    CGFloat centerXPercent = fmin(fmax([DYYYPreferences doubleForKey:kDYYYLiveDurationCenterXPercentKey], 0.0), 1.0);
+    CGFloat centerYPercent = fmin(fmax([DYYYPreferences doubleForKey:kDYYYLiveDurationCenterYPercentKey], 0.0), 1.0);
     CGPoint center = CGPointMake(centerXPercent * rootWidth, centerYPercent * rootHeight);
     center = DYYYLiveDurationClampedCenter(center, frame.size, root);
     return CGRectIntegral(CGRectMake(center.x - frame.size.width / 2.0, center.y - frame.size.height / 2.0, frame.size.width, frame.size.height));
@@ -3830,7 +3831,7 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
     %orig;
     DYYYApplyFloatClearProgressStateToView(self);
 
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYEnableFullScreen"]) {
         return;
     }
 
@@ -3863,7 +3864,7 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
         return label;
     }
 
-    NSString *labelColorHex = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLabelColor"];
+    NSString *labelColorHex = [DYYYPreferences objectForKey:@"DYYYLabelColor"];
     if (DYYYGetBool(@"DYYYEnableRandomGradient")) {
         labelColorHex = @"random_gradient";
     }
@@ -3921,7 +3922,7 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
     if (cachedLocation) {
         updateLabelWithLocation(label, cachedLocation);
 
-        NSString *ipScaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
+        NSString *ipScaleValue = [DYYYPreferences objectForKey:@"DYYYNicknameScale"];
         if (ipScaleValue.length > 0) {
             UIFont *originalFont = label.font;
             CGFloat offset = DYYYGetFloat(@"DYYYIPLabelVerticalOffset");
@@ -4021,7 +4022,7 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
     [locationCache setObject:displayLocation forKey:cacheKey];
     updateLabelWithLocation(label, displayLocation);
 
-    NSString *ipScaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
+    NSString *ipScaleValue = [DYYYPreferences objectForKey:@"DYYYNicknameScale"];
     if (ipScaleValue.length > 0) {
         UIFont *originalFont = label.font;
         CGFloat offset = DYYYGetFloat(@"DYYYIPLabelVerticalOffset");
@@ -4073,7 +4074,7 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
 
     self.transform = CGAffineTransformIdentity;
 
-    NSString *descriptionOffsetValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDescriptionVerticalOffset"];
+    NSString *descriptionOffsetValue = [DYYYPreferences objectForKey:@"DYYYDescriptionVerticalOffset"];
     CGFloat verticalOffset = 0;
     if (descriptionOffsetValue.length > 0) {
         verticalOffset = [descriptionOffsetValue floatValue];
@@ -4104,7 +4105,7 @@ static NSString *const kDYYYLongPressCopyEnabledKey = @"DYYYLongPressCopyTextEna
 
     BOOL longPressCopyEnabled = DYYYGetBool(kDYYYLongPressCopyEnabledKey);
 
-    if (![[NSUserDefaults standardUserDefaults] objectForKey:kDYYYLongPressCopyEnabledKey]) {
+    if (![DYYYPreferences objectForKey:kDYYYLongPressCopyEnabledKey]) {
         longPressCopyEnabled = NO;
         [DYYYPreferences setBool:NO forKey:kDYYYLongPressCopyEnabledKey];
     }
@@ -4171,7 +4172,7 @@ static NSString *const kDYYYLongPressCopyEnabledKey = @"DYYYLongPressCopyTextEna
 
     self.transform = CGAffineTransformIdentity;
 
-    NSString *descriptionOffsetValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDescriptionVerticalOffset"];
+    NSString *descriptionOffsetValue = [DYYYPreferences objectForKey:@"DYYYDescriptionVerticalOffset"];
     CGFloat verticalOffset = 0;
     if (descriptionOffsetValue.length > 0) {
         verticalOffset = [descriptionOffsetValue floatValue];
@@ -5370,7 +5371,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         NSMutableArray *actions = [NSMutableArray array];
 
         // 添加下载选项
-        if (DYYYGetBool(@"DYYYDoubleTapDownload") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapDownload"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapDownload") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapDownload"]) {
 
             AWEUserSheetAction *downloadAction = [NSClassFromString(@"AWEUserSheetAction")
                 actionWithTitle:downloadTitle
@@ -5518,7 +5519,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加下载音频选项
-        if (DYYYGetBool(@"DYYYDoubleTapDownloadAudio") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapDownloadAudio"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapDownloadAudio") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapDownloadAudio"]) {
 
             AWEUserSheetAction *downloadAudioAction = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"保存音频"
                                                                                                         imgName:nil
@@ -5533,7 +5534,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 
         // 添加接口保存选项
         if (DYYYGetBool(@"DYYYDoubleInterfaceDownload")) {
-            NSString *apiKey = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
+            NSString *apiKey = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
             if (apiKey.length > 0) {
                 AWEUserSheetAction *apiDownloadAction = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"接口保存"
                                                                                                           imgName:nil
@@ -5552,7 +5553,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加制作视频功能
-        if (DYYYGetBool(@"DYYYDoubleCreateVideo") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleCreateVideo"]) {
+        if (DYYYGetBool(@"DYYYDoubleCreateVideo") || ![DYYYPreferences objectForKey:@"DYYYDoubleCreateVideo"]) {
             if (isImageContent) {
                 AWEUserSheetAction *createVideoAction = [NSClassFromString(@"AWEUserSheetAction")
                     actionWithTitle:@"制作视频"
@@ -5618,7 +5619,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加复制文案选项
-        if (DYYYGetBool(@"DYYYDoubleTapCopyDesc") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapCopyDesc"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapCopyDesc") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapCopyDesc"]) {
 
             AWEUserSheetAction *copyTextAction = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"复制文案"
                                                                                                    imgName:nil
@@ -5631,7 +5632,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加打开评论区选项
-        if (DYYYGetBool(@"DYYYDoubleTapComment") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapComment"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapComment") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapComment"]) {
 
             AWEUserSheetAction *openCommentAction = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"打开评论"
                                                                                                       imgName:nil
@@ -5642,7 +5643,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加分享选项
-        if (DYYYGetBool(@"DYYYDoubleTapshowSharePanel") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapshowSharePanel"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapshowSharePanel") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapshowSharePanel"]) {
 
             AWEUserSheetAction *showSharePanel = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"分享视频"
                                                                                                    imgName:nil
@@ -5653,7 +5654,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加点赞视频选项
-        if (DYYYGetBool(@"DYYYDoubleTapLike") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapLike"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapLike") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapLike"]) {
 
             AWEUserSheetAction *likeAction = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"点赞视频"
                                                                                                imgName:nil
@@ -5664,7 +5665,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
 
         // 添加长按面板
-        if (DYYYGetBool(@"DYYYDoubleTapshowDislikeOnVideo") || ![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDoubleTapshowDislikeOnVideo"]) {
+        if (DYYYGetBool(@"DYYYDoubleTapshowDislikeOnVideo") || ![DYYYPreferences objectForKey:@"DYYYDoubleTapshowDislikeOnVideo"]) {
 
             AWEUserSheetAction *showDislikeOnVideo = [NSClassFromString(@"AWEUserSheetAction") actionWithTitle:@"长按面板"
                                                                                                        imgName:nil
@@ -5998,7 +5999,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 - (void)layoutSubviews {
     %orig;
 
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYEnableFullScreen"]) {
         return;
     }
 
@@ -6065,7 +6066,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     %orig;
     DYYYApplyFloatClearProgressStateToView(self);
 
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableFullScreen"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYEnableFullScreen"]) {
         return;
     }
 
@@ -6421,7 +6422,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     applyTopBarTransparency(self);
 }
 - (void)setAlpha:(CGFloat)alpha {
-    NSString *transparentValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTopBarTransparent"];
+    NSString *transparentValue = [DYYYPreferences objectForKey:@"DYYYTopBarTransparent"];
     if (transparentValue && transparentValue.length > 0) {
         CGFloat alphaValue = [transparentValue floatValue];
         if (alphaValue >= 0.0 && alphaValue <= 1.0) {
@@ -6578,7 +6579,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 - (void)applyBlurEffectIfNeeded {
     if (DYYYGetBool(@"DYYYEnableCommentBlur") && [self isKindOfClass:NSClassFromString(@"AWECommentPanelContainerSwiftImpl.CommentContainerInnerViewController")]) {
         // 动态获取用户设置的透明度
-        float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
+        float userTransparency = [[DYYYPreferences objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
         if (userTransparency <= 0 || userTransparency > 1) {
             userTransparency = 0.9;
         }
@@ -6678,7 +6679,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         self.containerView.backgroundColor = [UIColor clearColor];
 
         // 动态获取用户设置的透明度
-        float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYSheetBlurTransparent"] floatValue];
+        float userTransparency = [[DYYYPreferences objectForKey:@"DYYYSheetBlurTransparent"] floatValue];
         if (userTransparency <= 0 || userTransparency > 1) {
             userTransparency = 0.9; // 默认值0.9
         }
@@ -6889,7 +6890,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
             return;
         }
         // 应用透明度设置
-        NSString *transparencyValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYAvatarViewTransparency"];
+        NSString *transparencyValue = [DYYYPreferences objectForKey:@"DYYYAvatarViewTransparency"];
         if (transparencyValue && transparencyValue.length > 0) {
             CGFloat alphaValue = [transparencyValue floatValue];
             self.alpha = alphaValue;
@@ -6909,7 +6910,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     }
 
     // 应用透明度设置
-    NSString *transparencyValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYAvatarViewTransparency"];
+    NSString *transparencyValue = [DYYYPreferences objectForKey:@"DYYYAvatarViewTransparency"];
     if (transparencyValue && transparencyValue.length > 0) {
         CGFloat alphaValue = [transparencyValue floatValue];
         if (alphaValue >= 0.0 && alphaValue <= 1.0) {
@@ -7128,7 +7129,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
     }
 
-    if (!(parentVC && [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLeftSideBar"])) {
+    if (!(parentVC && [DYYYPreferences boolForKey:@"DYYYHideLeftSideBar"])) {
         return;
     }
 
@@ -7163,17 +7164,17 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     BOOL hideLabel = NO;
 
     if ([accessibilityLabel isEqualToString:@"点赞"]) {
-        hideBtn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLikeButton"];
-        hideLabel = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLikeLabel"];
+        hideBtn = [DYYYPreferences boolForKey:@"DYYYHideLikeButton"];
+        hideLabel = [DYYYPreferences boolForKey:@"DYYYHideLikeLabel"];
     } else if ([accessibilityLabel isEqualToString:@"评论"]) {
-        hideBtn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentButton"];
-        hideLabel = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLabel"];
+        hideBtn = [DYYYPreferences boolForKey:@"DYYYHideCommentButton"];
+        hideLabel = [DYYYPreferences boolForKey:@"DYYYHideCommentLabel"];
     } else if ([accessibilityLabel isEqualToString:@"分享"]) {
-        hideBtn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideShareButton"];
-        hideLabel = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideShareLabel"];
+        hideBtn = [DYYYPreferences boolForKey:@"DYYYHideShareButton"];
+        hideLabel = [DYYYPreferences boolForKey:@"DYYYHideShareLabel"];
     } else if ([accessibilityLabel isEqualToString:@"收藏"]) {
-        hideBtn = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCollectButton"];
-        hideLabel = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCollectLabel"];
+        hideBtn = [DYYYPreferences boolForKey:@"DYYYHideCollectButton"];
+        hideLabel = [DYYYPreferences boolForKey:@"DYYYHideCollectLabel"];
     }
 
     if (!hideBtn && !hideLabel) {
@@ -7532,7 +7533,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         self.hidden = YES;
         return;
     }
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSearchEntranceIndicator"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYHideSearchEntranceIndicator"]) {
         static char kDYSearchIndicatorKey;
         NSArray *indicatorViews = objc_getAssociatedObject(self, &kDYSearchIndicatorKey);
         if (!indicatorViews) {
@@ -7561,7 +7562,7 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 - (void)layoutSubviews {
     %orig;
 
-    BOOL shouldHide = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideStoryProgressSlide"];
+    BOOL shouldHide = [DYYYPreferences boolForKey:@"DYYYHideStoryProgressSlide"];
     if (!shouldHide)
         return;
 
@@ -7920,7 +7921,7 @@ static NSHashTable *processedParentViews = nil;
 %hook AWEIMCellLiveStatusContainerView
 
 - (void)p_initUI {
-    if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYHideGroupLiveIndicator"])
+    if (![DYYYPreferences objectForKey:@"DYYYHideGroupLiveIndicator"])
         %orig;
 }
 %end
@@ -7997,19 +7998,19 @@ static NSHashTable *processedParentViews = nil;
 %hook AWEHPTopBarCTAItemView
 
 - (void)showRedDot {
-    if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYHideSidebarDot"])
+    if (![DYYYPreferences objectForKey:@"DYYYHideSidebarDot"])
         %orig;
 }
 
 - (void)hideCountRedDot {
-    if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYHideSidebarDot"])
+    if (![DYYYPreferences objectForKey:@"DYYYHideSidebarDot"])
         %orig;
 }
 
 - (void)layoutSubviews {
     %orig;
 
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSidebarDot"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYHideSidebarDot"]) {
         return;
     }
 
@@ -8060,7 +8061,7 @@ static NSHashTable *processedParentViews = nil;
 %hook AWEVideoTypeTagView
 
 - (void)setupUI {
-    if (![[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYHideLiveGIF"])
+    if (![DYYYPreferences objectForKey:@"DYYYHideLiveGIF"])
         %orig;
 }
 %end
@@ -8080,10 +8081,10 @@ static NSHashTable *processedParentViews = nil;
 
 - (void)layoutSubviews {
     %orig;
-    BOOL hideClear = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLiveRoomClear"];
-    BOOL hideMirror = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLiveRoomMirroring"];
-    BOOL hideFull = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLiveRoomFullscreen"];
-    BOOL hideClose = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideLiveRoomClose"];
+    BOOL hideClear = [DYYYPreferences boolForKey:@"DYYYHideLiveRoomClear"];
+    BOOL hideMirror = [DYYYPreferences boolForKey:@"DYYYHideLiveRoomMirroring"];
+    BOOL hideFull = [DYYYPreferences boolForKey:@"DYYYHideLiveRoomFullscreen"];
+    BOOL hideClose = [DYYYPreferences boolForKey:@"DYYYHideLiveRoomClose"];
 
     if (!(hideClear || hideMirror || hideFull)) {
         return;
@@ -8348,7 +8349,7 @@ static NSHashTable *processedParentViews = nil;
     UIViewController *vc = [DYYYUtils firstAvailableViewControllerFromView:self];
     Class playVCClass = NSClassFromString(@"AWEPlayVideoViewController");
     if (vc && playVCClass && [vc isKindOfClass:playVCClass]) {
-        NSString *colorHex = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYVideoBGColor"];
+        NSString *colorHex = [DYYYPreferences objectForKey:@"DYYYVideoBGColor"];
         if (colorHex && colorHex.length > 0) {
             CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
             UIColor *customColor = [DYYYUtils colorFromSchemeHexString:colorHex targetWidth:screenWidth];
@@ -8782,7 +8783,7 @@ static Class tabBarButtonClass = nil;
 
 - (void)layoutSubviews {
     %orig;
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideBottomDot"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYHideBottomDot"]) {
         return;
     }
 
@@ -8836,10 +8837,10 @@ static Class tabBarButtonClass = nil;
             return;
         }
 
-        NSString *indexTitle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYIndexTitle"];
-        NSString *friendsTitle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFriendsTitle"];
-        NSString *msgTitle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYMsgTitle"];
-        NSString *selfTitle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYSelfTitle"];
+        NSString *indexTitle = [DYYYPreferences objectForKey:@"DYYYIndexTitle"];
+        NSString *friendsTitle = [DYYYPreferences objectForKey:@"DYYYFriendsTitle"];
+        NSString *msgTitle = [DYYYPreferences objectForKey:@"DYYYMsgTitle"];
+        NSString *selfTitle = [DYYYPreferences objectForKey:@"DYYYSelfTitle"];
 
         if (!(indexTitle.length || friendsTitle.length || msgTitle.length || selfTitle.length)) {
             return;
@@ -8918,7 +8919,7 @@ static Class tabBarButtonClass = nil;
 - (void)layoutSubviews {
     @try {
         %orig;
-        if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideDoubleColumnEntry"]) {
+        if (![DYYYPreferences boolForKey:@"DYYYHideDoubleColumnEntry"]) {
             return;
         }
 
@@ -8953,7 +8954,7 @@ static Class tabBarButtonClass = nil;
             return;
         }
 
-        NSString *indexTitle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYIndexTitle"];
+        NSString *indexTitle = [DYYYPreferences objectForKey:@"DYYYIndexTitle"];
 
         if (!(indexTitle.length)) {
             return;
@@ -9050,7 +9051,7 @@ static Class tabBarButtonClass = nil;
     dyyyCommentViewVisible = YES;
     updateSpeedButtonVisibility();
     updateClearButtonVisibility();
-    NSString *transparentValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTopBarTransparent"];
+    NSString *transparentValue = [DYYYPreferences objectForKey:@"DYYYTopBarTransparent"];
     if (transparentValue && transparentValue.length > 0) {
         CGFloat alphaValue = [transparentValue floatValue];
         if (alphaValue >= 0.0 && alphaValue <= 1.0) {
@@ -9086,7 +9087,7 @@ static Class tabBarButtonClass = nil;
     for (UIView *containerView in containerViews) {
         for (UIView *subview in containerView.subviews) {
             if (subview.hidden == NO && subview.backgroundColor && CGColorGetAlpha(subview.backgroundColor.CGColor) == 1) {
-                float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
+                float userTransparency = [[DYYYPreferences objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
                 if (userTransparency <= 0 || userTransparency > 1) {
                     userTransparency = 0.8;
                 }
@@ -9685,7 +9686,7 @@ static Class tabBarButtonClass = nil;
 
         // 右侧元素的处理逻辑
         if (isRightStack) {
-            NSString *scaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYElementScale"];
+            NSString *scaleValue = [DYYYPreferences objectForKey:@"DYYYElementScale"];
             self.transform = CGAffineTransformIdentity;
             if (scaleValue.length > 0) {
                 CGFloat scale = [scaleValue floatValue];
@@ -9706,7 +9707,7 @@ static Class tabBarButtonClass = nil;
         }
         // 左侧元素的处理逻辑
         else if (isLeftStack) {
-            NSString *scaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
+            NSString *scaleValue = [DYYYPreferences objectForKey:@"DYYYNicknameScale"];
             if (scaleValue.length > 0) {
                 CGFloat scale = [scaleValue floatValue];
                 self.transform = CGAffineTransformIdentity;
@@ -9734,7 +9735,7 @@ static Class tabBarButtonClass = nil;
     if ([viewController isKindOfClass:%c(AWEPlayInteractionViewController)]) {
 
         if ([self.accessibilityLabel isEqualToString:@"left"] || [DYYYUtils containsSubviewOfClass:NSClassFromString(@"AWEFeedAnchorContainerView") inContainer:self]) {
-            NSString *scaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
+            NSString *scaleValue = [DYYYPreferences objectForKey:@"DYYYNicknameScale"];
             if (scaleValue.length > 0) {
                 CGFloat scale = [scaleValue floatValue];
                 self.transform = CGAffineTransformIdentity;
@@ -10095,7 +10096,7 @@ static Class tabBarButtonClass = nil;
         [self.superview bringSubviewToFront:self];
     }
 
-    NSString *scaleValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameScale"];
+    NSString *scaleValue = [DYYYPreferences objectForKey:@"DYYYNicknameScale"];
     CGFloat scale = scaleValue.length > 0 ? [scaleValue floatValue] : 1.0;
     if (scale > 0 && scale != 1.0) {
         self.transform = CGAffineTransformMakeScale(scale, scale);
@@ -10482,33 +10483,33 @@ static Class tabBarButtonClass = nil;
         BOOL isHideChannel = NO;
 
         if ([channelID isEqualToString:@"homepage_hot_container"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideHotContainer"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideHotContainer"];
         } else if ([channelID isEqualToString:@"homepage_follow"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideFollow"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideFollow"];
         } else if ([channelID isEqualToString:@"homepage_mall"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideMall"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideMall"];
         } else if ([channelID isEqualToString:@"homepage_nearby"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideNearby"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideNearby"];
         } else if ([channelID isEqualToString:@"homepage_groupon"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideGroupon"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideGroupon"];
         } else if ([channelID isEqualToString:@"homepage_tablive"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideTabLive"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideTabLive"];
         } else if ([channelID isEqualToString:@"homepage_pad_hot"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHidePadHot"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHidePadHot"];
         } else if ([channelID isEqualToString:@"homepage_hangout"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideHangout"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideHangout"];
         } else if ([channelID isEqualToString:@"homepage_familiar"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideFriend"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideFriend"];
         } else if ([channelID isEqualToString:@"homepage_playlet_stream"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHidePlaylet"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHidePlaylet"];
         } else if ([channelID isEqualToString:@"homepage_pad_cinema"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideCinema"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideCinema"];
         } else if ([channelID isEqualToString:@"homepage_pad_kids_v2"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideKidsV2"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideKidsV2"];
         } else if ([channelID isEqualToString:@"homepage_pad_game"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideGame"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideGame"];
         } else if ([channelID isEqualToString:@"homepage_mediumvideo"]) {
-            isHideChannel = [defaults boolForKey:@"DYYYHideMediumVideo"];
+            isHideChannel = [DYYYPreferences boolForKey:@"DYYYHideMediumVideo"];
         }
 
         if (!isHideChannel) {
@@ -10582,7 +10583,7 @@ static Class tabBarButtonClass = nil;
 %new
 - (CGFloat)dyyy_scheduleVerticalOffset {
     CGFloat verticalOffset = -12.5;
-    NSString *offsetValueString = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimelineVerticalPosition"];
+    NSString *offsetValueString = [DYYYPreferences objectForKey:@"DYYYTimelineVerticalPosition"];
     if (offsetValueString.length > 0) {
         CGFloat configuredOffset = [offsetValueString floatValue];
         if (configuredOffset != 0) {
@@ -10626,7 +10627,7 @@ static Class tabBarButtonClass = nil;
     [parentView layoutIfNeeded];
     [self layoutIfNeeded];
 
-    NSString *scheduleStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYScheduleStyle"];
+    NSString *scheduleStyle = [DYYYPreferences objectForKey:@"DYYYScheduleStyle"];
     BOOL showRightRemainingTime = [scheduleStyle isEqualToString:@"进度条右侧剩余"];
     BOOL showRightCompleteTime = [scheduleStyle isEqualToString:@"进度条右侧完整"];
     BOOL showLeftRemainingTime = [scheduleStyle isEqualToString:@"进度条左侧剩余"];
@@ -10656,7 +10657,7 @@ static Class tabBarButtonClass = nil;
     CGFloat labelYPosition = CGRectGetMinY(sliderFrameInParent) + [self dyyy_scheduleVerticalOffset];
     CGFloat labelHeight = 15.0;
     UIFont *labelFont = [UIFont systemFontOfSize:8];
-    NSString *labelColorHex = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYProgressLabelColor"];
+    NSString *labelColorHex = [DYYYPreferences objectForKey:@"DYYYProgressLabelColor"];
 
     UILabel *leftLabel = (UILabel *)[parentView viewWithTag:10001];
     if (leftLabel && ![leftLabel isKindOfClass:[UILabel class]]) {
@@ -10787,7 +10788,7 @@ static Class tabBarButtonClass = nil;
 - (void)setupStreamQuality:(id)arg1 {
     %orig;
 
-    NSString *preferredQuality = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLiveQuality"];
+    NSString *preferredQuality = [DYYYPreferences objectForKey:@"DYYYLiveQuality"];
     if (!preferredQuality || [preferredQuality isEqualToString:@"自动"]) {
         NSLog(@"[DYYY] Live quality auto - skipping hook");
         return;
@@ -11260,7 +11261,7 @@ static Class tabBarButtonClass = nil;
     BOOL shouldFilterUser = NO;
 
     // 获取用户设置的需要过滤的关键词
-    NSString *filterKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"];
+    NSString *filterKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"];
     NSArray *keywordsList = nil;
 
     if (filterKeywords.length > 0) {
@@ -11268,7 +11269,7 @@ static Class tabBarButtonClass = nil;
     }
 
     // 过滤包含指定拍同款的视频
-    NSString *filterProp = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterProp"];
+    NSString *filterProp = [DYYYPreferences objectForKey:@"DYYYFilterProp"];
     NSArray *propKeywordsList = nil;
 
     if (filterProp.length > 0) {
@@ -11276,7 +11277,7 @@ static Class tabBarButtonClass = nil;
     }
 
     // 获取需要过滤的用户列表
-    NSString *filterUsers = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"];
+    NSString *filterUsers = [DYYYPreferences objectForKey:@"DYYYFilterUsers"];
     BOOL disableHDR = DYYYShouldDisableAllHDR();
 
     // 检查是否需要过滤特定用户
@@ -11387,7 +11388,7 @@ static Class tabBarButtonClass = nil;
 }
 
 - (void)setDescriptionString:(NSString *)desc {
-    NSString *labelStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLabelStyle"];
+    NSString *labelStyle = [DYYYPreferences objectForKey:@"DYYYLabelStyle"];
     BOOL hideLabel = [labelStyle isEqualToString:@"文案标签隐藏"];
     if (hideLabel) {
         // 过滤掉所有以 # 开头的标签
@@ -11402,7 +11403,7 @@ static Class tabBarButtonClass = nil;
 }
 
 - (void)setTextExtras:(NSArray *)extras {
-    NSString *labelStyle = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYLabelStyle"];
+    NSString *labelStyle = [DYYYPreferences objectForKey:@"DYYYLabelStyle"];
     BOOL disableLabelSearch = [labelStyle isEqualToString:@"文案标签禁止跳转搜索"] || [labelStyle isEqualToString:@"文案标签隐藏"];
     if (disableLabelSearch && [extras isKindOfClass:[NSArray class]]) {
         NSMutableArray *filtered = [NSMutableArray array];
@@ -11418,14 +11419,14 @@ static Class tabBarButtonClass = nil;
 
 // 固定设置为 1，启用自定义背景色
 - (NSUInteger)awe_playerBackgroundViewShowType {
-    if ([[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYVideoBGColor"]) {
+    if ([DYYYPreferences objectForKey:@"DYYYVideoBGColor"]) {
         return 1;
     }
     return %orig;
 }
 
 - (UIColor *)awe_smartBackgroundColor {
-    NSString *colorHex = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYVideoBGColor"];
+    NSString *colorHex = [DYYYPreferences objectForKey:@"DYYYVideoBGColor"];
     if (colorHex && colorHex.length > 0) {
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         UIColor *customColor = [DYYYUtils colorFromSchemeHexString:colorHex targetWidth:screenWidth];
@@ -11751,7 +11752,7 @@ static Class tabBarButtonClass = nil;
 
 %hook AWEFeedCommentConfigModel
 - (void)setCommentInputConfigText:(NSString *)text {
-    NSString *customText = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentContent"];
+    NSString *customText = [DYYYPreferences objectForKey:@"DYYYCommentContent"];
     if (customText && customText.length > 0) {
         text = customText;
     }
@@ -12378,7 +12379,7 @@ static Class tabBarButtonClass = nil;
 %hook AWEDanmakuContentLabel
 - (void)setTextColor:(UIColor *)textColor {
     if (DYYYGetBool(@"DYYYEnableDanmuColor")) {
-        NSString *danmuColor = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYDanmuColor"];
+        NSString *danmuColor = [DYYYPreferences objectForKey:@"DYYYDanmuColor"];
         if (DYYYGetBool(@"DYYYDanmuRainbowRotating")) {
             danmuColor = @"rainbow_rotating";
         }
@@ -12444,7 +12445,7 @@ static Class tabBarButtonClass = nil;
     self.transform = CGAffineTransformIdentity;
 
     // 添加垂直偏移支持
-    NSString *verticalOffsetValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNicknameVerticalOffset"];
+    NSString *verticalOffsetValue = [DYYYPreferences objectForKey:@"DYYYNicknameVerticalOffset"];
     CGFloat verticalOffset = 0;
     if (verticalOffsetValue.length > 0) {
         verticalOffset = [verticalOffsetValue floatValue];
@@ -12513,7 +12514,7 @@ static Class tabBarButtonClass = nil;
 
 - (void)layoutSubviews {
     %orig;
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnableNotificationTransparency"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYEnableNotificationTransparency"]) {
         [self setupBlurEffectForNotificationView];
     }
 }
@@ -12544,7 +12545,7 @@ static Class tabBarButtonClass = nil;
 
       containerView.backgroundColor = [UIColor clearColor];
 
-      float userRadius = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYNotificationCornerRadius"] floatValue];
+      float userRadius = [[DYYYPreferences objectForKey:@"DYYYNotificationCornerRadius"] floatValue];
       if (!userRadius || userRadius < 0 || userRadius > 50) {
           userRadius = 12;
       }
@@ -12569,7 +12570,7 @@ static Class tabBarButtonClass = nil;
       blurView.layer.cornerRadius = userRadius;
       blurView.layer.masksToBounds = YES;
 
-      float userTransparency = [[[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
+      float userTransparency = [[DYYYPreferences objectForKey:@"DYYYCommentBlurTransparent"] floatValue];
       if (userTransparency <= 0 || userTransparency > 1) {
           userTransparency = 0.5;
       }

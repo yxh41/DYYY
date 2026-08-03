@@ -65,8 +65,8 @@ typedef NS_ENUM(NSInteger, DYYYClearProgressMode) {
 
 // 清屏隐藏状态栏：遍历所有 window 的 VC 层级，触发系统重新评估状态栏显隐
 static void DYYYRefreshStatusBarVisibility(void) {
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideStatusBarOnClear"] ||
-        [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideStatusbar"]) {
+    if (![DYYYPreferences boolForKey:@"DYYYHideStatusBarOnClear"] ||
+        [DYYYPreferences boolForKey:@"DYYYHideStatusbar"]) {
         return;
     }
     for (UIWindow *window in [UIApplication sharedApplication].windows) {
@@ -146,10 +146,10 @@ void DYYYRestoreClearTargetViewStateIfNeeded(UIView *view) {
 
 static DYYYClearProgressMode DYYYCurrentClearProgressMode(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if ([defaults boolForKey:@"DYYYRemoveTimeProgress"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYRemoveTimeProgress"]) {
         return DYYYClearProgressModeRemove;
     }
-    if ([defaults boolForKey:@"DYYYHideTimeProgress"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYHideTimeProgress"]) {
         return DYYYClearProgressModeHide;
     }
     return DYYYClearProgressModeNone;
@@ -363,11 +363,11 @@ static void reapplyHidingToAllElements(HideUIButton *button) {
 void initTargetClassNames(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSUInteger configuration = 0;
-    configuration |= [defaults boolForKey:@"DYYYHideTabBar"] ? (1U << 0) : 0;
-    configuration |= [defaults boolForKey:@"DYYYHideDanmaku"] ? (1U << 1) : 0;
-    configuration |= [defaults boolForKey:@"DYYYHideSlider"] ? (1U << 2) : 0;
-    configuration |= [defaults boolForKey:@"DYYYHideChapter"] ? (1U << 3) : 0;
-    configuration |= [defaults boolForKey:@"DYYYHidePauseVideoIcon"] ? (1U << 4) : 0;
+    configuration |= [DYYYPreferences boolForKey:@"DYYYHideTabBar"] ? (1U << 0) : 0;
+    configuration |= [DYYYPreferences boolForKey:@"DYYYHideDanmaku"] ? (1U << 1) : 0;
+    configuration |= [DYYYPreferences boolForKey:@"DYYYHideSlider"] ? (1U << 2) : 0;
+    configuration |= [DYYYPreferences boolForKey:@"DYYYHideChapter"] ? (1U << 3) : 0;
+    configuration |= [DYYYPreferences boolForKey:@"DYYYHidePauseVideoIcon"] ? (1U << 4) : 0;
     if (targetClassNames && dyyyTargetClassConfiguration == configuration) {
         return;
     }
@@ -411,7 +411,7 @@ void reloadClearButtonConfiguration(void) {
     initTargetClassNames();
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL isEnabled = [defaults boolForKey:@"DYYYEnableFloatClearButton"];
+    BOOL isEnabled = [DYYYPreferences boolForKey:@"DYYYEnableFloatClearButton"];
     if (!isEnabled) {
         if (hideButton) {
             if (hideButton.isElementsHidden) {
@@ -428,7 +428,7 @@ void reloadClearButtonConfiguration(void) {
         return;
     }
 
-    CGFloat buttonSize = [defaults floatForKey:@"DYYYEnableFloatClearButtonSize"];
+    CGFloat buttonSize = [DYYYPreferences floatForKey:@"DYYYEnableFloatClearButtonSize"];
     if (buttonSize <= 0.0) {
         buttonSize = 40.0;
     }
@@ -572,8 +572,8 @@ void reloadClearButtonConfiguration(void) {
         CGFloat centerXPercent = self.center.x / self.superview.bounds.size.width;
         CGFloat centerYPercent = self.center.y / self.superview.bounds.size.height;
         
-        [defaults setFloat:centerXPercent forKey:@"DYYYHideButtonCenterXPercent"];
-        [defaults setFloat:centerYPercent forKey:@"DYYYHideButtonCenterYPercent"];
+        [DYYYPreferences setFloat:centerXPercent forKey:@"DYYYHideButtonCenterXPercent"];
+        [DYYYPreferences setFloat:centerYPercent forKey:@"DYYYHideButtonCenterYPercent"];
     }
 }
 
@@ -583,8 +583,8 @@ void reloadClearButtonConfiguration(void) {
     }
     
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    float centerXPercent = [defaults floatForKey:@"DYYYHideButtonCenterXPercent"];
-    float centerYPercent = [defaults floatForKey:@"DYYYHideButtonCenterYPercent"];
+    float centerXPercent = [DYYYPreferences floatForKey:@"DYYYHideButtonCenterXPercent"];
+    float centerYPercent = [DYYYPreferences floatForKey:@"DYYYHideButtonCenterYPercent"];
     
     if (centerXPercent > 0 && centerYPercent > 0) {
         self.center = CGPointMake(centerXPercent * self.superview.bounds.size.width,
@@ -600,7 +600,7 @@ void reloadClearButtonConfiguration(void) {
 }
 
 - (void)loadLockState {
-    self.isLocked = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideUIButtonLockState"];
+    self.isLocked = [DYYYPreferences boolForKey:@"DYYYHideUIButtonLockState"];
 }
 
 - (void)loadIcons {
@@ -690,7 +690,7 @@ void reloadClearButtonConfiguration(void) {
 }
 
 - (BOOL)dyyy_shouldSelfHideOnClear {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideClearButtonOnTap"];
+    return [DYYYPreferences boolForKey:@"DYYYHideClearButtonOnTap"];
 }
 
 - (BOOL)dyyy_isInSelfHiddenState {
@@ -763,7 +763,7 @@ void reloadClearButtonConfiguration(void) {
         self.isElementsHidden = YES;
         self.selected = YES;
 
-        BOOL hideSpeed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSpeed"];
+        BOOL hideSpeed = [DYYYPreferences boolForKey:@"DYYYHideSpeed"];
         if (hideSpeed) {
             hideSpeedButton();
         }
@@ -781,7 +781,7 @@ void reloadClearButtonConfiguration(void) {
         [self.hiddenViewsList removeAllObjects];
         self.selected = NO;
 
-        BOOL hideSpeed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSpeed"];
+        BOOL hideSpeed = [DYYYPreferences boolForKey:@"DYYYHideSpeed"];
         if (hideSpeed) {
             showSpeedButton();
             // 退出清屏时主动刷新一次：清屏期间可能发生过 PlayInteractionVC 的 viewDidDisappear，
@@ -901,7 +901,7 @@ void reloadClearButtonConfiguration(void) {
         [self.superview bringSubviewToFront:self];
     }
 
-    BOOL hideSpeed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSpeed"];
+    BOOL hideSpeed = [DYYYPreferences boolForKey:@"DYYYHideSpeed"];
     if (hideSpeed) {
         showSpeedButton();
     }

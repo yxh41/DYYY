@@ -21,6 +21,7 @@ FOUNDATION_EXPORT NSString *const kDYYYPreferencesDidChangeNotification;
 /// 读取（命中内存缓存，未命中回源 NSUserDefaults）
 + (BOOL)boolForKey:(NSString *)key;
 + (float)floatForKey:(NSString *)key;
++ (double)doubleForKey:(NSString *)key;
 + (NSInteger)integerForKey:(NSString *)key;
 + (NSString * _Nullable)stringForKey:(NSString *)key;
 + (id _Nullable)objectForKey:(NSString *)key;
@@ -30,6 +31,7 @@ FOUNDATION_EXPORT NSString *const kDYYYPreferencesDidChangeNotification;
 + (void)setBool:(BOOL)value forKey:(NSString *)key;
 + (void)setInteger:(NSInteger)value forKey:(NSString *)key;
 + (void)setFloat:(float)value forKey:(NSString *)key;
++ (void)setDouble:(double)value forKey:(NSString *)key;
 + (void)removeObjectForKey:(NSString *)key;
 
 @end

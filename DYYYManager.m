@@ -1,4 +1,5 @@
 #import "DYYYManager.h"
+#import "DYYYPreferences.h"
 #import <CoreAudioTypes/CoreAudioTypes.h>
 #import <CoreMedia/CMMetadata.h>
 #import <ImageIO/ImageIO.h>
@@ -1924,7 +1925,7 @@
     BOOL hasImages = [images isKindOfClass:[NSArray class]] && images.count > 0;
     BOOL hasImgArray = [imgArray isKindOfClass:[NSArray class]] && imgArray.count > 0;
 
-    BOOL shouldShowQualityOptions = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYShowAllVideoQuality"];
+    BOOL shouldShowQualityOptions = [DYYYPreferences boolForKey:@"DYYYShowAllVideoQuality"];
 
     // 如果只有图片没有视频，直接处理图片下载
     if (!hasVideos && singleVideoURL == nil && (hasImages || hasImgArray || coverURL != nil)) {

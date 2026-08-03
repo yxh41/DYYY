@@ -1,4 +1,5 @@
 #import "AwemeHeaders.h"
+#import "DYYYPreferences.h"
 #import "DYYYBottomAlertView.h"
 #import "DYYYConfirmCloseView.h"
 #import "DYYYCustomInputView.h"
@@ -337,7 +338,7 @@
     }
 
     // 接口保存功能
-    NSString *apiKey = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
+    NSString *apiKey = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
     if (enableApiDownload && apiKey.length > 0) {
         AWELongPressPanelBaseViewModel *apiDownload = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         apiDownload.awemeModel = self.awemeModel;
@@ -526,7 +527,7 @@
           // 创建当前用户的过滤格式 "nickname-shortid"
           NSString *currentUserFilter = [NSString stringWithFormat:@"%@-%@", nickname, shortId];
           // 获取保存的过滤用户列表
-          NSString *savedUsers = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"] ?: @"";
+          NSString *savedUsers = [DYYYPreferences objectForKey:@"DYYYFilterUsers"] ?: @"";
           NSArray *userArray = [savedUsers length] > 0 ? [savedUsers componentsSeparatedByString:@","] : @[];
           BOOL userExists = NO;
           for (NSString *userInfo in userArray) {
@@ -601,7 +602,7 @@
           DYYYFilterSettingsView *filterView = [[DYYYFilterSettingsView alloc] initWithTitle:@"过滤关键词调整" text:descText propName:propName];
           filterView.onConfirm = ^(NSString *selectedText) {
             if (selectedText.length > 0) {
-                NSString *currentKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
+                NSString *currentKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
                 NSString *newKeywords;
                 if (currentKeywords.length > 0) {
                     newKeywords = [NSString stringWithFormat:@"%@,%@", currentKeywords, selectedText];
@@ -615,7 +616,7 @@
           // 设置过滤关键词按钮回调
           filterView.onKeywordFilterTap = ^{
             // 获取保存的关键词
-            NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
+            NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
             NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
             // 创建并显示关键词列表视图
             DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤关键词" keywords:keywordArray];
@@ -644,21 +645,21 @@
         timerCloseViewModel.actionType = 676;
         timerCloseViewModel.duxIconName = @"ic_c_alarm_outlined";
         // 检查是否已有定时任务在运行
-        NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+        NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
         BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
         timerCloseViewModel.describeString = hasActiveTimer ? @"取消定时" : @"定时关闭";
         timerCloseViewModel.action = ^{
           AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
           [panelManager dismissWithAnimation:YES completion:nil];
-          NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+          NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
           BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
           if (hasActiveTimer) {
-              [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
+              [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
               [DYYYUtils showToast:@"已取消定时关闭任务"];
               return;
           }
           // 读取上次设置的时间
-          NSInteger defaultMinutes = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYTimerCloseMinutes"];
+          NSInteger defaultMinutes = [DYYYPreferences integerForKey:@"DYYYTimerCloseMinutes"];
           if (defaultMinutes <= 0) {
               defaultMinutes = 5;
           }
@@ -676,9 +677,9 @@
             [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-              NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+              NSNumber *currentShutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
               if (currentShutdownTime != nil && [currentShutdownTime doubleValue] <= [[NSDate date] timeIntervalSince1970]) {
-                  [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
+                  [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
                   // 显示确认关闭弹窗，而不是直接退出
                   DYYYConfirmCloseView *confirmView = [[DYYYConfirmCloseView alloc] initWithTitle:@"定时关闭" message:@"定时关闭时间已到，是否关闭抖音？"];
                   [confirmView show];
@@ -1107,7 +1108,7 @@
     }
 
     // 接口保存功能
-    NSString *apiKey = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
+    NSString *apiKey = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
     if (enableApiDownload && apiKey.length > 0) {
         AWELongPressPanelBaseViewModel *apiDownload = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         apiDownload.awemeModel = self.awemeModel;
@@ -1296,7 +1297,7 @@
           // 创建当前用户的过滤格式 "nickname-shortid"
           NSString *currentUserFilter = [NSString stringWithFormat:@"%@-%@", nickname, shortId];
           // 获取保存的过滤用户列表
-          NSString *savedUsers = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"] ?: @"";
+          NSString *savedUsers = [DYYYPreferences objectForKey:@"DYYYFilterUsers"] ?: @"";
           NSArray *userArray = [savedUsers length] > 0 ? [savedUsers componentsSeparatedByString:@","] : @[];
           BOOL userExists = NO;
           for (NSString *userInfo in userArray) {
@@ -1371,7 +1372,7 @@
           DYYYFilterSettingsView *filterView = [[DYYYFilterSettingsView alloc] initWithTitle:@"过滤关键词调整" text:descText propName:propName];
           filterView.onConfirm = ^(NSString *selectedText) {
             if (selectedText.length > 0) {
-                NSString *currentKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
+                NSString *currentKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
                 NSString *newKeywords;
                 if (currentKeywords.length > 0) {
                     newKeywords = [NSString stringWithFormat:@"%@,%@", currentKeywords, selectedText];
@@ -1385,7 +1386,7 @@
           // 设置过滤关键词按钮回调
           filterView.onKeywordFilterTap = ^{
             // 获取保存的关键词
-            NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
+            NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
             NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
             // 创建并显示关键词列表视图
             DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤关键词" keywords:keywordArray];
@@ -1414,21 +1415,21 @@
         timerCloseViewModel.actionType = 676;
         timerCloseViewModel.duxIconName = @"ic_c_alarm_outlined";
         // 检查是否已有定时任务在运行
-        NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+        NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
         BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
         timerCloseViewModel.describeString = hasActiveTimer ? @"取消定时" : @"定时关闭";
         timerCloseViewModel.action = ^{
           AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
           [panelManager dismissWithAnimation:YES completion:nil];
-          NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+          NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
           BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
           if (hasActiveTimer) {
-              [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
+              [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
               [DYYYUtils showToast:@"已取消定时关闭任务"];
               return;
           }
           // 读取上次设置的时间
-          NSInteger defaultMinutes = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYTimerCloseMinutes"];
+          NSInteger defaultMinutes = [DYYYPreferences integerForKey:@"DYYYTimerCloseMinutes"];
           if (defaultMinutes <= 0) {
               defaultMinutes = 5;
           }
@@ -1446,9 +1447,9 @@
             [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-              NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
+              NSNumber *currentShutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
               if (currentShutdownTime != nil && [currentShutdownTime doubleValue] <= [[NSDate date] timeIntervalSince1970]) {
-                  [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
+                  [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
                   // 显示确认关闭弹窗，而不是直接退出
                   DYYYConfirmCloseView *confirmView = [[DYYYConfirmCloseView alloc] initWithTitle:@"定时关闭" message:@"定时关闭时间已到，是否关闭抖音？"];
                   [confirmView show];
@@ -1480,7 +1481,7 @@
 - (void)layoutSubviews {
     %orig;
 
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentShareToFriends"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
         self.hidden = YES;
     } else {
         self.hidden = NO;
@@ -1492,14 +1493,14 @@
 %hook AWEIMCommentShareUserHorizontalSectionController
 
 - (CGSize)sizeForItemAtIndex:(NSInteger)index model:(id)model collectionViewSize:(CGSize)size {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentShareToFriends"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
         return CGSizeZero;
     }
     return %orig;
 }
 
 - (void)configCell:(id)cell index:(NSInteger)index model:(id)model {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentShareToFriends"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
         return;
     }
     %orig;
@@ -1508,7 +1509,7 @@
 %end
 
 %ctor {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"]) {
         %init;
     }
 }
@@ -1530,25 +1531,25 @@
         NSString *className = NSStringFromClass([item class]);
 
         BOOL shouldFilter = ([className isEqualToString:@"AWECommentIMSwiftImpl.CommentLongPressPanelForwardElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressDaily"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressDaily"]) ||
 
                             ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressCopy"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressCopy"]) ||
 
                             ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelSaveImageElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressSaveImage"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressSaveImage"]) ||
 
                             ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelReportElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressReport"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressReport"]) ||
 
                             ([className isEqualToString:@"AWECommentStudioSwiftImpl.CommentLongPressPanelVideoReplyElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressVideoReply"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressVideoReply"]) ||
 
                             ([className isEqualToString:@"AWECommentSearchSwiftImpl.CommentLongPressPanelPictureSearchElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressPictureSearch"]) ||
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressPictureSearch"]) ||
 
                             ([className isEqualToString:@"AWECommentSearchSwiftImpl.CommentLongPressPanelSearchElement"] &&
-                             [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentLongPressSearch"]);
+                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressSearch"]);
 
         if (shouldFilter) {
             if (!filteredArray) {

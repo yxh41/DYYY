@@ -1,4 +1,5 @@
 #import "DYYYUtils.h"
+#import "DYYYPreferences.h"
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
 #import <MobileCoreServices/UTCoreTypes.h>
@@ -478,7 +479,7 @@ static const void *kCurrentIPRequestCityCodeKey = &kCurrentIPRequestCityCodeKey;
 }
 
 + (NSArray *)arrayByRemovingAdvertisements:(id)array {
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYNoAds"] || ![array isKindOfClass:[NSArray class]]) {
+    if (![DYYYPreferences boolForKey:@"DYYYNoAds"] || ![array isKindOfClass:[NSArray class]]) {
         return array;
     }
 
@@ -2439,11 +2440,11 @@ UIViewController *findViewControllerOfClass(UIViewController *vc, Class targetCl
 void applyTopBarTransparency(UIView *topBar) {
     if (!topBar)
         return;
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnablePure"]) {
+    if ([DYYYPreferences boolForKey:@"DYYYEnablePure"]) {
         return;
     }
 
-    NSString *transparentValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTopBarTransparent"];
+    NSString *transparentValue = [DYYYPreferences objectForKey:@"DYYYTopBarTransparent"];
     if (transparentValue && transparentValue.length > 0) {
         CGFloat alphaValue = [transparentValue floatValue];
         if (alphaValue >= 0.0 && alphaValue <= 1.0) {

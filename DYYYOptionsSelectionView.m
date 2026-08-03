@@ -1,4 +1,5 @@
 #import "DYYYOptionsSelectionView.h"
+#import "DYYYPreferences.h"
 #import <objc/runtime.h>
 #import "AwemeHeaders.h"
 #import "DYYYUtils.h"
@@ -148,7 +149,7 @@ static void DYYYApplySelectionSheetThemeToView(UIView *view, BOOL darkMode) {
                          headerText:(NSString *)headerText
                      onPresentingVC:(UIViewController *)presentingVC
                    selectionChanged:(void (^)(NSString *selectedValue))callback {
-    NSString *savedPreference = [[NSUserDefaults standardUserDefaults] stringForKey:preferenceKey];
+    NSString *savedPreference = [DYYYPreferences stringForKey:preferenceKey];
     if (!savedPreference && optionsArray.count > 0) {
         savedPreference = optionsArray[0];
     }

@@ -1,4 +1,5 @@
 #import "AwemeHeaders.h"
+#import "DYYYPreferences.h"
 #import "DYYYFloatClearButton.h"
 #import "DYYYFloatSpeedButton.h"
 #import "DYYYUtils.h"
@@ -45,7 +46,7 @@ static void DYYYApplySpeedButtonHiddenState(UIView *button, BOOL hidden) {
 static BOOL DYYYShouldHideSpeedButton(void) {
     BOOL clearModeActive = (hideButton && hideButton.isElementsHidden);
     if (clearModeActive) {
-        BOOL hideSpeedInClearMode = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSpeed"];
+        BOOL hideSpeedInClearMode = [DYYYPreferences boolForKey:@"DYYYHideSpeed"];
         if (hideSpeedInClearMode) {
             return YES;
         }
@@ -112,7 +113,7 @@ static NSArray<NSString *> *DYYYParsedSpeedOptionsFromString(NSString *speedConf
 }
 
 static double DYYYSpeedPreferenceValue(NSString *key, double fallback) {
-    id value = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    id value = [DYYYPreferences objectForKey:key];
     double speed = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : fallback;
     if (!isfinite(speed) || speed <= 0.0) {
         return fallback;
@@ -142,7 +143,7 @@ static BOOL DYYYSpeedOptionsCoverRequiredPlaybackSpeeds(NSArray<NSString *> *spe
 
 BOOL DYYYNormalizeSpeedSettingsForRequiredSpeeds(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([defaults objectForKey:@"DYYYSpeedSettings"]);
+    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([DYYYPreferences objectForKey:@"DYYYSpeedSettings"]);
     NSArray<NSString *> *validSpeeds = DYYYParsedSpeedOptionsFromString(speedConfig ?: @"");
     BOOL shouldUseDefaultSettings = speedConfig.length == 0 ||
                                     validSpeeds.count == 0 ||
@@ -153,7 +154,7 @@ BOOL DYYYNormalizeSpeedSettingsForRequiredSpeeds(void) {
     }
 
     if (![speedConfig isEqualToString:kDYYYDefaultSpeedSettingsString]) {
-        [defaults setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
+        [DYYYPreferences setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
         return YES;
     }
     return NO;
@@ -163,10 +164,10 @@ NSArray *getSpeedOptions() {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     DYYYNormalizeSpeedSettingsForRequiredSpeeds();
 
-    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([defaults objectForKey:@"DYYYSpeedSettings"]) ?: kDYYYDefaultSpeedSettingsString;
+    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([DYYYPreferences objectForKey:@"DYYYSpeedSettings"]) ?: kDYYYDefaultSpeedSettingsString;
     NSArray<NSString *> *validSpeeds = DYYYParsedSpeedOptionsFromString(speedConfig);
     if (validSpeeds.count == 0) {
-        [defaults setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
+        [DYYYPreferences setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
         validSpeeds = DYYYParsedSpeedOptionsFromString(kDYYYDefaultSpeedSettingsString);
     }
 
@@ -174,7 +175,7 @@ NSArray *getSpeedOptions() {
 }
 
 NSInteger getCurrentSpeedIndex() {
-    NSInteger index = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYCurrentSpeedIndex"];
+    NSInteger index = [DYYYPreferences integerForKey:@"DYYYCurrentSpeedIndex"];
     NSArray *speeds = getSpeedOptions();
 
     if (index >= speeds.count || index < 0) {
@@ -297,10 +298,10 @@ void updateSpeedButtonVisibility() {
 
 + (void)reloadConfiguration {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    isFloatSpeedButtonEnabled = [defaults boolForKey:@"DYYYEnableFloatSpeedButton"];
-    showSpeedX = [defaults boolForKey:@"DYYYSpeedButtonShowX"];
+    isFloatSpeedButtonEnabled = [DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"];
+    showSpeedX = [DYYYPreferences boolForKey:@"DYYYSpeedButtonShowX"];
 
-    CGFloat configuredSize = [defaults floatForKey:@"DYYYSpeedButtonSize"];
+    CGFloat configuredSize = [DYYYPreferences floatForKey:@"DYYYSpeedButtonSize"];
     if (configuredSize <= 0.0) {
         configuredSize = 32.0;
     }
@@ -554,18 +555,18 @@ void updateSpeedButtonVisibility() {
 - (void)saveButtonPosition {
     if (self.superview) {
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        [defaults setFloat:self.center.x / self.superview.bounds.size.width forKey:@"DYYYSpeedButtonCenterXPercent"];
-        [defaults setFloat:self.center.y / self.superview.bounds.size.height forKey:@"DYYYSpeedButtonCenterYPercent"];
-        [defaults setBool:self.isLocked forKey:@"DYYYSpeedButtonLocked"];
+        [DYYYPreferences setFloat:self.center.x / self.superview.bounds.size.width forKey:@"DYYYSpeedButtonCenterXPercent"];
+        [DYYYPreferences setFloat:self.center.y / self.superview.bounds.size.height forKey:@"DYYYSpeedButtonCenterYPercent"];
+        [DYYYPreferences setBool:self.isLocked forKey:@"DYYYSpeedButtonLocked"];
     }
 }
 
 - (void)loadSavedPosition {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    float centerXPercent = [defaults floatForKey:@"DYYYSpeedButtonCenterXPercent"];
-    float centerYPercent = [defaults floatForKey:@"DYYYSpeedButtonCenterYPercent"];
+    float centerXPercent = [DYYYPreferences floatForKey:@"DYYYSpeedButtonCenterXPercent"];
+    float centerYPercent = [DYYYPreferences floatForKey:@"DYYYSpeedButtonCenterYPercent"];
 
-    self.isLocked = [defaults boolForKey:@"DYYYSpeedButtonLocked"];
+    self.isLocked = [DYYYPreferences boolForKey:@"DYYYSpeedButtonLocked"];
 
     if (centerXPercent > 0 && centerYPercent > 0 && self.superview) {
         CGFloat halfWidth = self.bounds.size.width / 2.0;

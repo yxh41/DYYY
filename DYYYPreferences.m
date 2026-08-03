@@ -46,6 +46,10 @@ static void DYYYPreferencesDarwinCallback(CFNotificationCenterRef center,
     return [[self objectForKey:key] floatValue];
 }
 
++ (double)doubleForKey:(NSString *)key {
+    return [[self objectForKey:key] doubleValue];
+}
+
 + (NSInteger)integerForKey:(NSString *)key {
     return [[self objectForKey:key] integerValue];
 }
@@ -103,6 +107,10 @@ static void DYYYPreferencesDarwinCallback(CFNotificationCenterRef center,
 }
 
 + (void)setFloat:(float)value forKey:(NSString *)key {
+    [self setObject:@(value) forKey:key];
+}
+
++ (void)setDouble:(double)value forKey:(NSString *)key {
     [self setObject:@(value) forKey:key];
 }
 

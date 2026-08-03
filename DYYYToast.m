@@ -1,4 +1,5 @@
 #import "DYYYToast.h"
+#import "DYYYPreferences.h"
 #import "DYYYUtils.h"
 
 @interface DYYYToast ()
@@ -256,7 +257,7 @@
                   if (!toast) {
                       return;
                   }
-                  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHapticFeedbackEnabled"]) {
+                  if ([DYYYPreferences boolForKey:@"DYYYHapticFeedbackEnabled"]) {
                       UINotificationFeedbackGenerator *feedbackGenerator = [[UINotificationFeedbackGenerator alloc] init];
                       [feedbackGenerator notificationOccurred:UINotificationFeedbackTypeSuccess];
                   }
@@ -367,7 +368,7 @@
             if (!toast) {
                 return;
             }
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHapticFeedbackEnabled"]) {
+            if ([DYYYPreferences boolForKey:@"DYYYHapticFeedbackEnabled"]) {
                 UINotificationFeedbackGenerator *feedbackGenerator = [[UINotificationFeedbackGenerator alloc] init];
                 [feedbackGenerator notificationOccurred:UINotificationFeedbackTypeError];
             }
@@ -494,7 +495,7 @@
       if (!toast) {
           return;
       }
-      if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHapticFeedbackEnabled"]) {
+      if ([DYYYPreferences boolForKey:@"DYYYHapticFeedbackEnabled"]) {
           UINotificationFeedbackGenerator *feedbackGenerator = [[UINotificationFeedbackGenerator alloc] init];
           [feedbackGenerator notificationOccurred:UINotificationFeedbackTypeSuccess];
       }

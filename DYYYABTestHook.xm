@@ -40,7 +40,7 @@ static void DYYYQueueSync(dispatch_block_t block) {
 }
 
 static NSNumber *DYYYResolveTabBarHeightFromSettings(void) {
-    NSString *heightString = [[NSUserDefaults standardUserDefaults] stringForKey:kDYYYTabBarHeightKey];
+    NSString *heightString = [DYYYPreferences stringForKey:kDYYYTabBarHeightKey];
     if (heightString.length == 0) {
         return nil;
     }
@@ -130,7 +130,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  * 转换为类方法
  */
 + (BOOL)isPatchMode {
-    NSString *savedMode = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYABTestModeString"];
+    NSString *savedMode = [DYYYPreferences objectForKey:@"DYYYABTestModeString"];
     if (savedMode) {
         if ([savedMode isEqualToString:DYYY_REMOTE_MODE_STRING] || [[savedMode lowercaseString] isEqualToString:@"remote"]) {
             if (s_fileMode) {
@@ -165,7 +165,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  * 当前是否处于远程模式
  */
 + (BOOL)isRemoteMode {
-    NSString *savedMode = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYABTestModeString"];
+    NSString *savedMode = [DYYYPreferences objectForKey:@"DYYYABTestModeString"];
     if (savedMode) {
         return [savedMode isEqualToString:DYYY_REMOTE_MODE_STRING] || [[savedMode lowercaseString] isEqualToString:@"remote"];
     }
@@ -330,7 +330,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  */
 + (void)checkForRemoteConfigUpdate:(BOOL)notify {
     dispatch_async(DYYYABTestQueue(), ^{
-      NSString *urlString = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYRemoteConfigURL"];
+      NSString *urlString = [DYYYPreferences objectForKey:@"DYYYRemoteConfigURL"];
       if (urlString.length == 0) {
           urlString = kDefaultRemoteConfigURL;
       }
@@ -543,7 +543,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
 
     // 在队列上异步读取初始状态并加载/应用配置
     dispatch_async(DYYYABTestQueue(), ^{
-      s_abTestBlockEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYABTestBlockEnabled"];
+      s_abTestBlockEnabled = [DYYYPreferences boolForKey:@"DYYYABTestBlockEnabled"];
 
       NSString *currentMode = nil;
       if ([DYYYABTestHook isRemoteMode]) {

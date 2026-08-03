@@ -1,4 +1,5 @@
 #import "CityManager.h"
+#import "DYYYPreferences.h"
 #import <Foundation/Foundation.h>
 #import "DYYYConstants.h"
 
@@ -728,7 +729,7 @@
         return;
     }
 
-    NSString *username = [[NSUserDefaults standardUserDefaults] stringForKey:@"DYYYGeonamesUsername"];
+    NSString *username = [DYYYPreferences stringForKey:@"DYYYGeonamesUsername"];
     if (!username || [username length] == 0) {
         if (completionHandler) {
             NSError *noAccountError = [NSError errorWithDomain:DYYYGeonamesErrorDomain code:-4 userInfo:@{NSLocalizedDescriptionKey : @"未配置 GeoNames 账号"}];
