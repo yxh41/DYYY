@@ -66,7 +66,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     [self setupSettingItems];
     [self setupSectionTitles];
     [self setupFooterLabel];
-    [self addTitleGradientAnimation];
 }
 
 - (void)setupDefaultValues {
@@ -94,30 +93,24 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 }
 
 - (void)setupAppearance {
+    // 透明导航栏，露出底层自适应毛玻璃；文字/按钮用语义色跟随系统深浅模式
     self.navigationController.navigationBar.barTintColor = [UIColor clearColor];
-    self.navigationController.navigationBar.tintColor = [UIColor whiteColor];
-    self.navigationController.navigationBar.largeTitleTextAttributes = @{NSForegroundColorAttributeName : [UIColor whiteColor]};
+    self.navigationController.navigationBar.tintColor = [UIColor labelColor];
+    self.navigationController.navigationBar.largeTitleTextAttributes = @{NSForegroundColorAttributeName : [UIColor labelColor]};
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
     self.navigationController.navigationBar.prefersLargeTitles = YES;
+    [self.navigationController.navigationBar setBackgroundImage:[UIImage new] forBarMetrics:UIBarMetricsDefault];
+    self.navigationController.navigationBar.shadowImage = [UIImage new];
+    self.navigationController.navigationBar.translucent = YES;
 }
 
 - (void)setupBlurEffect {
-    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+    // 自适应毛玻璃：浅色模式下是浅色磨砂，深色模式下是深色磨砂，跟随系统
+    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
     self.blurEffectView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
     self.blurEffectView.frame = self.view.bounds;
     self.blurEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.blurEffectView];
-
-    UIVibrancyEffect *vibrancyEffect = [UIVibrancyEffect effectForBlurEffect:blurEffect];
-    self.vibrancyEffectView = [[UIVisualEffectView alloc] initWithEffect:vibrancyEffect];
-    self.vibrancyEffectView.frame = self.blurEffectView.bounds;
-    self.vibrancyEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.blurEffectView.contentView addSubview:self.vibrancyEffectView];
-
-    UIView *overlayView = [[UIView alloc] initWithFrame:self.view.bounds];
-    overlayView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
-    overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:overlayView];
 }
 
 - (void)setupTableView {
@@ -392,38 +385,14 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     self.footerLabel.text = [NSString stringWithFormat:@"Developer By @huamidev\nVersion: %@ (%@)", DYYY_VERSION, @"260104"];
     self.footerLabel.textAlignment = NSTextAlignmentCenter;
     self.footerLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
-    self.footerLabel.textColor = [UIColor colorWithRed:173 / 255.0 green:216 / 255.0 blue:230 / 255.0 alpha:1.0];
+    self.footerLabel.textColor = [UIColor tertiaryLabelColor];
     self.footerLabel.numberOfLines = 2;
     self.footerLabel.lineBreakMode = NSLineBreakByWordWrapping;
     self.tableView.tableFooterView = self.footerLabel;
 }
 
 - (void)addTitleGradientAnimation {
-    CAGradientLayer *gradient = [CAGradientLayer layer];
-    gradient.colors = @[ (__bridge id)[UIColor systemRedColor].CGColor, (__bridge id)[UIColor systemBlueColor].CGColor ];
-    gradient.startPoint = CGPointMake(0, 0);
-    gradient.endPoint = CGPointMake(1, 0);
-    gradient.frame = CGRectMake(0, 0, 150, 30);
-
-    UIView *titleView = [[UIView alloc] initWithFrame:gradient.frame];
-    [titleView.layer addSublayer:gradient];
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:titleView.bounds];
-    titleLabel.text = self.title;
-    titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.font = [UIFont boldSystemFontOfSize:20];
-    titleLabel.textColor = [UIColor clearColor];
-
-    gradient.mask = titleLabel.layer;
-    self.navigationItem.titleView = titleView;
-
-    CABasicAnimation *colorChange = [CABasicAnimation animationWithKeyPath:@"colors"];
-    colorChange.toValue = @[ (__bridge id)[UIColor systemYellowColor].CGColor, (__bridge id)[UIColor systemGreenColor].CGColor ];
-    colorChange.duration = 2.0;
-    colorChange.autoreverses = YES;
-    colorChange.repeatCount = HUGE_VALF;
-
-    [gradient addAnimation:colorChange forKey:@"colorChangeAnimation"];
+    // 已移除彩虹渐变标题动画，改用系统标准大标题（跟随主题，克制现代）
 }
 
 #pragma mark - Helper Methods
@@ -559,13 +528,13 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 0, headerView.bounds.size.width - 50, 44)];
     titleLabel.text = [self tableView:tableView titleForHeaderInSection:section];
-    titleLabel.textColor = [UIColor whiteColor];
-    titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    titleLabel.textColor = [UIColor secondaryLabelColor];
+    titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     [headerView addSubview:titleLabel];
 
     UIImageView *arrowImageView = [[UIImageView alloc] initWithFrame:CGRectMake(titleLabel.frame.origin.x + titleLabel.frame.size.width - 30, 15, 14, 14)];
     arrowImageView.image = [UIImage systemImageNamed:[self.expandedSections containsObject:@(section)] ? @"chevron.down" : @"chevron.right"];
-    arrowImageView.tintColor = [UIColor lightGrayColor];
+    arrowImageView.tintColor = [UIColor tertiaryLabelColor];
     arrowImageView.tag = 100;
     arrowImageView.contentMode = UIViewContentModeScaleAspectFit;
     [headerView addSubview:arrowImageView];
@@ -609,24 +578,34 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         [cell.textLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor].active = YES;
 
         UIView *selectedBackgroundView = [[UIView alloc] init];
-        selectedBackgroundView.backgroundColor = [UIColor colorWithRed:84 / 255.0 green:84 / 255.0 blue:84 / 255.0 alpha:1.0];
+        selectedBackgroundView.backgroundColor = [UIColor systemFillColor];
         cell.selectedBackgroundView = selectedBackgroundView;
     }
 
     cell.textLabel.text = item.title;
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
+    cell.textLabel.textColor = [UIColor labelColor];
+    cell.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
 
     cell.backgroundView = nil;
 
-    if (indexPath.row == [self.settingSections[indexPath.section] count] - 1) {
-        cell.layer.cornerRadius = 10;
+    // 卡片式圆角：首行圆顶角，末行圆底角，单行全圆角，中间行方角——形成连续卡片
+    NSInteger rowCount = [self.settingSections[indexPath.section] count];
+    BOOL isFirst = indexPath.row == 0;
+    BOOL isLast = indexPath.row == rowCount - 1;
+    if (isFirst && isLast) {
+        cell.layer.cornerRadius = 12;
+        cell.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+    } else if (isFirst) {
+        cell.layer.cornerRadius = 12;
+        cell.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    } else if (isLast) {
+        cell.layer.cornerRadius = 12;
         cell.layer.maskedCorners = kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
-        cell.layer.masksToBounds = YES;
     } else {
         cell.layer.cornerRadius = 0;
         cell.layer.maskedCorners = 0;
     }
+    cell.layer.masksToBounds = YES;
 
     if (item.type == DYYYSettingItemTypeSwitch) {
         UISwitch *switchView = [[UISwitch alloc] init];
@@ -638,11 +617,11 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         UITextField *textField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 100, 30)];
         textField.borderStyle = UITextBorderStyleRoundedRect;
         textField.placeholder = item.placeholder;
-        textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor lightGrayColor]}];
+        textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor placeholderTextColor]}];
         textField.text = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
         textField.textAlignment = NSTextAlignmentRight;
-        textField.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
-        textField.textColor = [UIColor whiteColor];
+        textField.backgroundColor = [UIColor tertiarySystemFillColor];
+        textField.textColor = [UIColor labelColor];
 
         [textField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingDidEnd];
         textField.tag = indexPath.section * 1000 + indexPath.row;
@@ -658,7 +637,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         }
 
         pickerLabel.text = [self displayValueForKey:item.key value:currentValue];
-        pickerLabel.textColor = [UIColor whiteColor];
+        pickerLabel.textColor = [UIColor secondaryLabelColor];
         pickerLabel.textAlignment = NSTextAlignmentRight;
         pickerLabel.tag = indexPath.section * 1000 + indexPath.row;
 
@@ -679,8 +658,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    CGFloat sectionInset = 16;
-    cell.contentView.frame = UIEdgeInsetsInsetRect(cell.contentView.frame, UIEdgeInsetsMake(0, sectionInset, 0, sectionInset));
+    // InsetGrouped 样式已自动处理分组内边距与圆角裁切，无需手动 inset
 }
 
 #pragma mark - UITableViewDelegate
