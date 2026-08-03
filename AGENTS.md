@@ -3,7 +3,7 @@
 本项目是基于 Theos/Logos 的抖音 UI 调整 Tweak。当前仓库 README 标注仅在 **抖音 36.5.0** 版本测试；回答需求时请以仓库现状为准，不要沿用旧版本描述。
 
 ## 工程关键点
-- **Hook 入口**：`DYYY.xmi` 负责 Feed、浮窗、全局透明度与 Tab Bar 高度等通用 Hook；`DYYYSettings.xm` 负责抖音设置页相关 Hook（`AWESettingBaseViewController`、`AWELeftSideBarWeatherLabel` 等）并构造 DYYY 自定义设置。
+- **Hook 入口**：`DYYY.xm` 负责 Feed、浮窗、全局透明度与 Tab Bar 高度等通用 Hook；`DYYYSettings.xm` 负责抖音设置页相关 Hook（`AWESettingBaseViewController`、`AWELeftSideBarWeatherLabel` 等）并构造 DYYY 自定义设置。
 - **业务核心**：`DYYYManager` 统一处理媒体下载、批量任务、Live Photo/GIF/WebP 转换及保存流程，内部维护 `NSOperationQueue` 与下载任务/回调映射；`DYYYSettingsHelper` 管理设置依赖、入口查找、用户协议弹窗；`DYYYUtils` 处理 IP 属地、颜色、窗口查找、缓存路径等可复用逻辑。
 - **UI 组件**：所有自定义视图/弹窗（如 `DYYYBottomAlertView`、`DYYYFloatSpeedButton`、`DYYYAboutDialogView` 等）都有 `.h/.m` 配对文件，并在设置控制器中组合使用。
 - **模型/数据**：`CityManager` 负责本地城市映射与 GeoNames 查询；GeoNames 结果缓存逻辑在 `DYYYUtils`；`DYYYConstants.h`、`DYYYSettingsHelper` 中定义的 Key 控制远程 ABTest、依赖关系与通知。
@@ -11,7 +11,7 @@
 
 ## 类路径速查（按 UI/功能分组）
 - **入口 Hook / 控制器**
-  - `DYYY.xmi`、`DYYYSettings.xm`：全局 Hook、设置页 Hook。
+  - `DYYY.xm`、`DYYYSettings.xm`：全局 Hook、设置页 Hook。
   - `DYYYSettingViewController.(h/m)`：自定义设置主界面。
   - `DYYYSettingsHelper.(h/m)`：设置项依赖、入口、协议弹窗。
 - **业务/下载**
@@ -106,7 +106,7 @@
 ## 常见工作流示例
 1. **新增抖音 UI Hook**
    - 在 `AwemeHeaders.h` 声明目标类/属性。
-   - 于 `DYYY.xmi` 或 `DYYYSettings.xm` 新增 `%hook`，逻辑用 `NSUserDefaults` 开关控制。
+   - 于 `DYYY.xm` 或 `DYYYSettings.xm` 新增 `%hook`，逻辑用 `NSUserDefaults` 开关控制。
    - 如果需要 UI，则在 `DYYY` 前缀视图中实现并在 Hook 内调用。
 2. **扩展设置开关**
    - 在 `DYYYSettingsHelper` 为依赖体系补充 key。
