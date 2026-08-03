@@ -3367,18 +3367,27 @@ BOOL commentLivePhotoNotWaterMark = DYYYGetBool(@"DYYYCommentLivePhotoNotWaterMa
 
 %end
 
+static char kDYYYHDRDisabledLayerKey;
+
 %hook AVPlayerLayer
 
 - (void)setPlayer:(AVPlayer *)player {
     DYYYDisableAVPlayerItemHDRMetadata(player.currentItem);
     %orig;
     DYYYDisableExtendedRangeForLayer(self);
+    if (DYYYShouldDisableAllHDR()) {
+        objc_setAssociatedObject(self, &kDYYYHDRDisabledLayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 - (void)layoutSublayers {
     %orig;
+    if (!DYYYShouldDisableAllHDR()) return;
+    // HDR-disable 已应用过则跳过，避免每次布局重复设幂等属性（60次/秒→1次）
+    if (objc_getAssociatedObject(self, &kDYYYHDRDisabledLayerKey)) return;
     DYYYDisableAVPlayerItemHDRMetadata(self.player.currentItem);
     DYYYDisableExtendedRangeForLayer(self);
+    objc_setAssociatedObject(self, &kDYYYHDRDisabledLayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 %end
@@ -9115,10 +9124,16 @@ static Class tabBarButtonClass = nil;
                         innerSubview.subviews[0].hidden = YES;
                     }
 
-                    UIView *whiteBackgroundView = [[UIView alloc] initWithFrame:innerSubview.bounds];
-                    whiteBackgroundView.backgroundColor = [UIColor whiteColor];
-                    whiteBackgroundView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    [innerSubview addSubview:whiteBackgroundView];
+                    // 用 tag 检查白色背景视图是否已存在，避免每次布局都 alloc+addSubview 导致内存泄漏
+                    const NSInteger kDYYYDanmuWhiteBgTag = 99988;
+                    UIView *existingBg = [innerSubview viewWithTag:kDYYYDanmuWhiteBgTag];
+                    if (!existingBg) {
+                        UIView *whiteBackgroundView = [[UIView alloc] initWithFrame:innerSubview.bounds];
+                        whiteBackgroundView.backgroundColor = [UIColor whiteColor];
+                        whiteBackgroundView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                        whiteBackgroundView.tag = kDYYYDanmuWhiteBgTag;
+                        [innerSubview addSubview:whiteBackgroundView];
+                    }
                     break;
                 }
             }
@@ -10127,6 +10142,17 @@ static Class tabBarButtonClass = nil;
 
 - (void)layoutSubviews {
     %orig;
+
+    static char kDYCommentHideCacheKey;
+    UIView *target = objc_getAssociatedObject(self, &kDYCommentHideCacheKey);
+
+    // 已缓存 target → 之前确认过在 detail VC 中，直接更新 hidden，跳过 performSelector 开销
+    if (target) {
+        target.hidden = ([(UIView *)self frame].size.height == gCurrentTabBarHeight);
+        return;
+    }
+
+    // 未缓存 → 首次检查是否在 detail VC 中（performSelector 只跑一次）
     UIViewController *parentVC = nil;
     if ([self respondsToSelector:@selector(viewController)]) {
         id viewController = [self performSelector:@selector(viewController)];
@@ -10136,19 +10162,13 @@ static Class tabBarButtonClass = nil;
     }
 
     if (parentVC && ([parentVC isKindOfClass:%c(AWEAwemeDetailTableViewController)] || [parentVC isKindOfClass:%c(AWEAwemeDetailCellViewController)])) {
-        static char kDYCommentHideCacheKey;
-        UIView *target = objc_getAssociatedObject(self, &kDYCommentHideCacheKey);
-        if (!target) {
-            for (UIView *subview in [self subviews]) {
-                if ([subview class] == [UIView class]) {
-                    target = subview;
-                    objc_setAssociatedObject(self, &kDYCommentHideCacheKey, target, OBJC_ASSOCIATION_ASSIGN);
-                    break;
-                }
+        for (UIView *subview in [self subviews]) {
+            if ([subview class] == [UIView class]) {
+                target = subview;
+                objc_setAssociatedObject(self, &kDYCommentHideCacheKey, target, OBJC_ASSOCIATION_ASSIGN);
+                target.hidden = ([(UIView *)self frame].size.height == gCurrentTabBarHeight);
+                break;
             }
-        }
-        if (target) {
-            target.hidden = ([(UIView *)self frame].size.height == gCurrentTabBarHeight);
         }
     }
 }
