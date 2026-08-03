@@ -3100,6 +3100,13 @@ static void findTargetViewInView(UIView *view) {
     }
 }
 
+#include "DYYYDownload.xm"
+#include "DYYYPlayback.xm"
+#include "DYYYUI.xm"
+#include "DYYYFeed.xm"
+#include "DYYYInteraction.xm"
+#include "DYYYMisc.xm"
+
 %ctor {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         @"DYYYDisableFeedNowPlayingInfo" : @YES
@@ -3200,10 +3207,3 @@ static void findTargetViewInView(UIView *view) {
                                                     }];
     }
 }
-
-#include "DYYYDownload.xm"
-#include "DYYYPlayback.xm"
-#include "DYYYUI.xm"
-#include "DYYYFeed.xm"
-#include "DYYYInteraction.xm"
-#include "DYYYMisc.xm"
