@@ -1090,6 +1090,22 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"detail" : @"",
               @"cellType" : @37,
               @"imageName" : @"ic_location_outlined_20"
+          },
+          @{
+              @"identifier" : @"DYYYEnableHighFPS",
+              @"title" : @"强制高帧率",
+              @"subTitle" : @"解锁系统 60Hz 限制并调用 ProMotion 拉高刷新率（仅标准版抖音有效）",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_speed_outlined_20"
+          },
+          @{
+              @"identifier" : @"DYYYEnableFPSOverlay",
+              @"title" : @"显示帧率浮窗",
+              @"subTitle" : @"屏幕右上角显示实时 FPS（建议配合强制高帧率使用）",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_speed_outlined_20"
           }
       ];
 
@@ -1165,6 +1181,21 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
                                                  item.detail = selectedValue;
                                                  [item refreshCell];
                                                }];
+              };
+          }
+
+          else if ([item.identifier isEqualToString:@"DYYYEnableHighFPS"] || [item.identifier isEqualToString:@"DYYYEnableFPSOverlay"]) {
+              // 高帧率/FPS 浮窗为运行时可切换功能，开关变化后立即应用
+              extern void DYYYApplyHighFPSSettingChange(BOOL enabled);
+              extern void DYYYApplyFPSOverlaySettingChange(void);
+              void (^origBlock)(void) = item.switchChangedBlock;
+              item.switchChangedBlock = ^{
+                if (origBlock) origBlock();
+                if ([item.identifier isEqualToString:@"DYYYEnableHighFPS"]) {
+                    DYYYApplyHighFPSSettingChange([DYYYPreferences boolForKey:@"DYYYEnableHighFPS"]);
+                } else {
+                    DYYYApplyFPSOverlaySettingChange();
+                }
               };
           }
 

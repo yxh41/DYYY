@@ -21,4 +21,8 @@
 #define DYYYGeonamesErrorDomain @"com.dyyy.geonames.api.error"
 #define DYYYGeonamesStatusUserInfoKey @"com.dyyy.geonames.api.status"
 
+// 高帧率与实时帧率浮窗设置键（移植自 VexCove，默认关闭）
+#define DYYYEnableHighFPS @"DYYYEnableHighFPS"
+#define DYYYEnableFPSOverlay @"DYYYEnableFPSOverlay"
+
 #endif
