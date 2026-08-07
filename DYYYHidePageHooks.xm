@@ -2,8 +2,9 @@
 // 移植自 VexCove 的消息页/我的页元素隐藏：星光商城、我的页创作 AI 作品入口。
 // 关键约束：
 //  - 均为 Aweme 39.8 私有类（AWEIMMessageTabNavBarResourceSlotComponent*、
-//    AWEProfileHeaderGenericOperationComponent），仅在「标准版抖音」
-//    (com.ss.iphone.ugc.Aweme) 下挂载，极速版(lite)连尝试都不发生。
+//    AWEProfileHeaderGenericOperationComponent）。标准版与极速版都挂载：
+//    Logos %hook 对运行时不存的类会静默跳过，不崩。星光商城/创作AI作品
+//    入口两端 UI 都存在，故不按包名限制（极速版也能用这些开关）。
 //  - 两个隐藏 hook 均在调用点实时读取设置键（canShowInNaviBar / buildVirtualView:），
 //    切换开关后下次视图重建即生效，无需跨文件 apply 函数。
 //  - 用 Logos %hook + %group，缺失类静默跳过（Logos 安全网），不使用裸 swizzle。
@@ -81,9 +82,7 @@ static void DYYYHideChromeView(UIView *view) {
 %end // DYYYHidePageHooksGroup
 
 %ctor {
-    NSString *bid = NSBundle.mainBundle.bundleIdentifier;
-    // 仅标准版抖音挂载：极速版(lite)缺失上述私有类，连尝试 hook 都不发生
-    if ([bid isEqualToString:@"com.ss.iphone.ugc.Aweme"]) {
-        %init(DYYYHidePageHooksGroup);
-    }
+    // 标准版与极速版均挂载：Logos %hook 对运行时不存的类会静默跳过，不崩。
+    // 星光商城/创作AI作品入口两端 UI 都存在，故不再按包名限制。
+    %init(DYYYHidePageHooksGroup);
 }
