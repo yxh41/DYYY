@@ -1780,23 +1780,7 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"隐藏顶栏红点",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_eyeslash_outlined_16"},
-          @{
-              @"identifier" : @"DYYYHideMessageTabStarMall",
-              @"title" : @"隐藏消息页星光商城",
-              @"subTitle" : @"标准版抖音有效，极速版无需开启",
-              @"detail" : @"",
-              @"cellType" : @37,
-              @"imageName" : @"ic_eyeslash_outlined_16"
-          },
-          @{
-              @"identifier" : @"DYYYHideMineAICreation",
-              @"title" : @"隐藏我的页创作AI作品",
-              @"subTitle" : @"标准版抖音有效，极速版无需开启",
-              @"detail" : @"",
-              @"cellType" : @37,
-              @"imageName" : @"ic_eyeslash_outlined_16"
-          },
+            @"imageName" : @"ic_eyeslash_outlined_16"          },
           @{
               @"identifier" : @"DYYYHideCommentAIAnalysis",
               @"title" : @"隐藏评论区AI分析等扩展Tab",
@@ -2002,7 +1986,23 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"隐藏我的页发作品",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_eyeslash_outlined_16"}
+            @"imageName" : @"ic_eyeslash_outlined_16"},
+          @{
+              @"identifier" : @"DYYYHideMessageTabStarMall",
+              @"title" : @"隐藏消息页星光商城",
+              @"subTitle" : @"标准版抖音有效，极速版无需开启",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_eyeslash_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYHideMineAICreation",
+              @"title" : @"隐藏我的页创作AI作品",
+              @"subTitle" : @"标准版抖音有效，极速版无需开启",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_eyeslash_outlined_16"
+          }
       ];
       for (NSDictionary *dict in messageAndMineSettings) {
           AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict];
