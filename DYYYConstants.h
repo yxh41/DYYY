@@ -25,4 +25,9 @@
 #define DYYYEnableHighFPS @"DYYYEnableHighFPS"
 #define DYYYEnableFPSOverlay @"DYYYEnableFPSOverlay"
 
+// 消息页/我的页元素隐藏设置键（移植自 VexCove，默认关闭）
+// 注：头像加号(DYYYHideMineAvatarPlus) 本地已有等价实现，不在此重复。
+#define DYYYHideMessageTabStarMall @"DYYYHideMessageTabStarMall"
+#define DYYYHideMineAICreation @"DYYYHideMineAICreation"
+
 #endif
