@@ -11874,6 +11874,32 @@ static Class tabBarButtonClass = nil;
 
 %end
 
+%hook AFDPlayerAndInteractionService
+
+- (void)statisticsVideoViewedWithID:(NSString *)itemID scene:(NSString *)scene {
+    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+        return;
+    }
+
+    %orig;
+}
+
+- (void)statisticsVideoViewedWithID:(NSString *)itemID
+                           authorID:(NSString *)authorID
+                       followStatus:(long long)followStatus
+                     followerStatus:(long long)followerStatus
+                            isStory:(BOOL)isStory
+                  isRequestDirectly:(BOOL)isRequestDirectly
+                              scene:(NSString *)scene {
+    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+        return;
+    }
+
+    %orig;
+}
+
+%end
+
 %hook AWEVideoModel
 
 - (AWEURLModel *)playURL {
