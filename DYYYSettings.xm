@@ -1796,6 +1796,14 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"detail" : @"",
               @"cellType" : @37,
               @"imageName" : @"ic_eyeslash_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYHideCommentAIAnalysis",
+              @"title" : @"隐藏评论区AI分析等扩展Tab",
+              @"subTitle" : @"隐藏评论区 AI 解析/门店评价/商品评价等扩展标签，及视频流 AI 解析入口",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_eyeslash_outlined_16"
           }
       ];
 

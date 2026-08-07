@@ -28,6 +28,7 @@
 #import "DYYYFloatSpeedButton.h"
 #import "DYYYSettingViewController.h"
 #import "DYYYToast.h"
+#import "DYYYHideCommentAIAnalysisHooks.h"
 #import "DYYYUtils.h"
 
 static CGFloat gStartY = 0.0;
@@ -13582,5 +13583,8 @@ static Class tabBarButtonClass = nil;
                                                           }
                                                       }
                                                     }];
+
+        // 评论区 AI 解析 / 门店评价 / 商品评价等扩展 Tab 隐藏（runtime swizzling，类缺失静默跳过，极速版安全）
+        DYYYStartHideCommentAIAnalysisHooks();
+        }
     }
-}
