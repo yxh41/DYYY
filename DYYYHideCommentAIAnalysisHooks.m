@@ -361,8 +361,7 @@ static void DYYYCommentExtraTabSetNeedsUpdate(id self, SEL _cmd, BOOL needsUpdat
         return;
     }
 
-    NSValue *origValue = DYYYOriginalIMPValueForObject(gOrigCommentTabSetNeedsUpdateIMPs, self);
-    IMP orig = origValue ? (IMP)origValue.pointerValue : NULL;
+    IMP orig = DYYYOriginalIMPValueForObject(gOrigCommentTabSetNeedsUpdateIMPs, self);
     if (orig) {
         ((void (*)(id, SEL, BOOL, id))orig)(self, _cmd, needsUpdate, completion);
     }
