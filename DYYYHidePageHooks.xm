@@ -69,7 +69,8 @@ static void DYYYHideChromeView(UIView *view) {
     %orig;
     if (DYYYHideMineAICreationEnabled()) {
         // containerNode 为视图容器；KVC 取不到时安全跳过（buildVirtualView 已兜底返回 nil）
-        id node = [self valueForKey:@"containerNode"];
+        // 类为前向声明，需转 (id) 才能发 KVC 消息
+        id node = [(id)self valueForKey:@"containerNode"];
         if ([node isKindOfClass:[UIView class]]) {
             DYYYHideChromeView(node);
         }
