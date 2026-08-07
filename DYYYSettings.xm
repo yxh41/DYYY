@@ -19,6 +19,7 @@
 #import "DYYYConstants.h"
 #import "DYYYFloatClearButton.h"
 #import "DYYYFloatSpeedButton.h"
+#import "DYYYHighFPS.h"
 #import "DYYYSettingsHelper.h"
 #import "DYYYUtils.h"
 
@@ -1186,8 +1187,6 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
 
           else if ([item.identifier isEqualToString:@"DYYYEnableHighFPS"] || [item.identifier isEqualToString:@"DYYYEnableFPSOverlay"]) {
               // 高帧率/FPS 浮窗为运行时可切换功能，开关变化后立即应用
-              extern void DYYYApplyHighFPSSettingChange(BOOL enabled);
-              extern void DYYYApplyFPSOverlaySettingChange(void);
               void (^origBlock)(void) = item.switchChangedBlock;
               item.switchChangedBlock = ^{
                 if (origBlock) origBlock();

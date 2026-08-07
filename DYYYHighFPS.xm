@@ -13,6 +13,7 @@
 #import "DYYYConstants.h"
 #import "DYYYPreferences.h"
 #import "DYYYUtils.h"
+#import "DYYYHighFPS.h"
 
 #pragma mark - 设置键读取
 static BOOL DYYYHighFPSEnabled(void) {
