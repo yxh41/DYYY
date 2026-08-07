@@ -1209,6 +1209,12 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"detail" : @"",
             @"cellType" : @37,
             @"imageName" : @"ic_eyeslash_outlined_16"},
+          @{@"identifier" : @"DYYYEnableMiniProgramJumpingAds",
+            @"title" : @"跳过小程序激励视频广告",
+            @"subTitle" : @"小程序激励视频直接领取奖励并自动关闭（无需观看）",
+            @"detail" : @"",
+            @"cellType" : @37,
+            @"imageName" : @"ic_lightning_outlined_20"},
           @{@"identifier" : @"DYYYDisableFeedNowPlayingInfo",
             @"title" : kDYYYFeedNowPlayingSettingTitle,
             @"subTitle" : @"开启后禁止信息流视频播放信息显示在灵动岛",
@@ -2279,8 +2285,8 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           },
           @{
               @"identifier" : @"DYYYHideKeyboardAI",
-              @"title" : @"隐藏键盘 AI",
-              @"subTitle" : @"隐藏搜索下方的 AI 和语音搜索按钮",
+              @"title" : @"隐藏键盘 AI 与语音",
+              @"subTitle" : @"隐藏搜索键盘 AI 入口、语音搜索按钮及综合搜索 AI 浮钮（继续追问）",
               @"detail" : @"",
               @"cellType" : @37,
               @"imageName" : @"ic_eyeslash_outlined_16"

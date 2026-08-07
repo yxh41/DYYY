@@ -29,6 +29,8 @@
 #import "DYYYSettingViewController.h"
 #import "DYYYToast.h"
 #import "DYYYHideCommentAIAnalysisHooks.h"
+#import "DYYYMiniProgramRewardBypass.h"
+#import "DYYYSearchKeyboardVoiceHooks.h"
 #import "DYYYUtils.h"
 
 static CGFloat gStartY = 0.0;
@@ -3067,40 +3069,8 @@ static NSString *const kHideRecentUsersKey = @"DYYYHideSidebarRecentUsers";
 
 
 
-// 隐藏键盘 AI
-static __weak UIView *cachedHideView = nil;
-static void hideParentViewsSubviews(UIView *view) {
-    if (!view)
-        return;
-    UIView *parentView = [view superview];
-    if (!parentView)
-        return;
-    UIView *grandParentView = [parentView superview];
-    if (!grandParentView)
-        return;
-    UIView *greatGrandParentView = [grandParentView superview];
-    if (!greatGrandParentView)
-        return;
-    cachedHideView = greatGrandParentView;
-    for (UIView *subview in greatGrandParentView.subviews) {
-        subview.hidden = YES;
-    }
-}
-
-// 递归查找目标视图
-static void findTargetViewInView(UIView *view) {
-    if (cachedHideView)
-        return;
-    if ([view isKindOfClass:NSClassFromString(@"AWESearchKeyboardVoiceSearchEntranceView")]) {
-        hideParentViewsSubviews(view);
-        return;
-    }
-    for (UIView *subview in view.subviews) {
-        findTargetViewInView(subview);
-        if (cachedHideView)
-            break;
-    }
-}
+// 隐藏键盘 AI / 语音入口：原脆弱的视图树遍历方案已替换为 DYYYSearchKeyboardVoiceHooks
+// （class-based runtime swizzling，覆盖语音入口、旧版 AI 搜索元素、综合搜索 AI 浮钮等）。
 
 //
 //  DYYY - 自动拆分片段（已内联合并至 DYYY.xm）
@@ -13563,28 +13533,13 @@ static Class tabBarButtonClass = nil;
             %init(CommentBottomTipsVCGroup, AWECommentPanelListSwiftImpl_CommentBottomTipsContainerViewController = tipsVCClass);
         }
 
-        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         DYYYRemoveKeyboardObserver();
-        dyyyKeyboardWillShowToken = [center addObserverForName:UIKeyboardWillShowNotification
-                                                        object:nil
-                                                         queue:[NSOperationQueue mainQueue]
-                                                    usingBlock:^(NSNotification *notification) {
-                                                      if (DYYYGetBool(@"DYYYHideKeyboardAI")) {
-                                                          if (cachedHideView) {
-                                                              for (UIView *subview in cachedHideView.subviews) {
-                                                                  subview.hidden = YES;
-                                                              }
-                                                          } else {
-                                                              for (UIWindow *window in [UIApplication sharedApplication].windows) {
-                                                                  findTargetViewInView(window);
-                                                                  if (cachedHideView)
-                                                                      break;
-                                                              }
-                                                          }
-                                                      }
-                                                    }];
+        // 搜索键盘 AI / 语音入口隐藏（class-based runtime swizzling，类缺失静默跳过，极速版安全）
+        DYYYStartSearchKeyboardVoiceHooks();
 
         // 评论区 AI 解析 / 门店评价 / 商品评价等扩展 Tab 隐藏（runtime swizzling，类缺失静默跳过，极速版安全）
         DYYYStartHideCommentAIAnalysisHooks();
+        // 小程序激励视频奖励绕过（Hook BDARewardedVideoAdBaseController，类缺失静默跳过，极速版安全）
+        DYYYStartMiniProgramRewardBypassInstaller();
         }
     }
