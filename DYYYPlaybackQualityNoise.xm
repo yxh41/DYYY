@@ -8,10 +8,14 @@
 // 移植自 pxx917144686/DYYY 的 AWEPlayerPlayControlHandler 部分
 // 仅保留：分档清晰度按钮 + 音频降噪（不含下载用的 getDYYYSrcURLDownload 与 AWEVideoModel 最高画质 hook，本地均已存在）
 
-// AWEPlayerPlayControlHandler 在本仓库头文件中仅为前向声明(@class)，
-// 直接 [self xxx] / self.xxx 会报 "receiver type ... is a forward declaration"。
-// 这里补一个分类声明方法与属性，并用手写 associated object 存取器实现属性，
-// 避免依赖 %property（前向声明类下 %property 仍会被编译器视为不可见）。
+// AWEPlayerPlayControlHandler 在本仓库头文件中仅为前向声明(@class)，没有完整 @interface。
+// 因此不能让它直接依附分类，也不能用 %property（均会报 forward declaration）。
+// 做法：先补一个完整基类声明 @interface ... : NSObject @end（编译期虚构类型，
+//   运行期 Logos 按类名 hook 真实私有类，互不影响），再在分类中声明本文件扩展的
+//   方法与属性存取器。属性实际由下方手写 associated object 存取器(%new)实现。
+@interface AWEPlayerPlayControlHandler : NSObject
+@end
+
 @interface AWEPlayerPlayControlHandler (DYYYQualityNoise)
 - (void)parseAvailableQualities:(AWEURLModel *)urlModel;
 - (void)addQualityButton;
@@ -21,11 +25,16 @@
 - (void)setupNoiseFilter;
 - (void)addNoiseFilterButton;
 - (void)toggleNoiseFilter;
-@property (nonatomic, strong) UIButton *qualityButton;
-@property (nonatomic, strong) UIButton *noiseFilterButton;
-@property (nonatomic, strong) NSArray *availableQualities;
-@property (nonatomic, assign) NSInteger currentQualityIndex;
-@property (nonatomic, assign) BOOL noiseFilterEnabled;
+- (UIButton *)qualityButton;
+- (void)setQualityButton:(UIButton *)btn;
+- (UIButton *)noiseFilterButton;
+- (void)setNoiseFilterButton:(UIButton *)btn;
+- (NSArray *)availableQualities;
+- (void)setAvailableQualities:(NSArray *)arr;
+- (NSInteger)currentQualityIndex;
+- (void)setCurrentQualityIndex:(NSInteger)idx;
+- (BOOL)noiseFilterEnabled;
+- (void)setNoiseFilterEnabled:(BOOL)v;
 @end
 
 %hook AWEPlayerPlayControlHandler
