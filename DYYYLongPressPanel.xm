@@ -541,7 +541,7 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
             }
         } else if ([dataField isKindOfClass:[NSDictionary class]]) {
             NSDictionary *statsDict = nil;
-            if (dataField.count == 1) {
+            if ([dataField count] == 1) {
                 id firstVal = [dataField allValues].firstObject;
                 if ([firstVal isKindOfClass:[NSDictionary class]]) {
                     statsDict = firstVal;
