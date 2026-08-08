@@ -137,21 +137,40 @@ static AVPlayer *DYYYFindActivePlayer(void) {
     if (qualityEnabled && model && model.awemeType != 68) {
         AWEVideoModel *vm = model.video;
         NSMutableArray *urls = [NSMutableArray array];
-        if (vm.playURL.originURLList.count) [urls addObjectsFromArray:vm.playURL.originURLList];
-        if (vm.playLowBitURL.originURLList.count) [urls addObjectsFromArray:vm.playLowBitURL.originURLList];
-        // bitrateModels 元素类型头文件未声明，用 KVC 兜底尝试
-        for (id bm in vm.bitrateModels) {
-            @try {
-                id bmURL = [bm valueForKey:@"playURL"] ?: [bm valueForKey:@"url"];
-                if ([bmURL respondsToSelector:@selector(originURLList)] && [bmURL originURLList].count) {
-                    [urls addObjectsFromArray:[bmURL originURLList]];
-                }
-            } @catch (NSException *e) {}
+        // 全防御式取值：逐层 isKindOfClass 校验，避免头文件与真机二进制布局不符时
+        // 取到错类型对象 / 野指针导致 EXC_BAD_ACCESS（信号级，@try/@catch 抓不住）。
+        if ([vm isKindOfClass:[AWEVideoModel class]]) {
+            id playURL = vm.playURL;
+            if ([playURL isKindOfClass:[AWEURLModel class]] && [playURL originURLList].count) {
+                [urls addObjectsFromArray:[playURL originURLList]];
+            }
+            id lowBit = vm.playLowBitURL;
+            if ([lowBit isKindOfClass:[AWEURLModel class]] && [lowBit originURLList].count) {
+                [urls addObjectsFromArray:[lowBit originURLList]];
+            }
+            NSArray *bitrates = vm.bitrateModels;
+            for (id bm in bitrates ?: @[]) {
+                @try {
+                    id bmURL = [bm valueForKey:@"playURL"] ?: [bm valueForKey:@"url"];
+                    if ([bmURL isKindOfClass:[AWEURLModel class]] && [bmURL originURLList].count) {
+                        [urls addObjectsFromArray:[bmURL originURLList]];
+                    }
+                } @catch (NSException *e) {}
+            }
         }
         [self parseQualitiesFromURLs:urls];
         if (self.availableQualities.count > 0) {
             [self addQualityButton];
-            [self applyDefaultQualityPreference];
+            // 关键修复：默认清晰度切换会改动正在播放的 AVPlayer（replaceCurrentItem），
+            // 绝不能在 viewDidAppear 的 Appearance 事务里同步执行——会在内部 KVO/状态访问中
+            // 触发 EXC_BAD_ACCESS(0x10)。延迟到下一个 runloop，等 Appearance 提交完成后再切。
+            __weak typeof(self) wself = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(wself) sself = wself;
+                if (!sself) return;
+                @try { [sself applyDefaultQualityPreference]; }
+                @catch (NSException *e) {}
+            });
         }
     }
 
@@ -297,8 +316,8 @@ static AVPlayer *DYYYFindActivePlayer(void) {
     id pref = [DYYYPreferences objectForKey:@"DYYYDefaultQuality"];
     NSString *prefStr = pref ? [NSString stringWithFormat:@"%@", pref] : @"最高";
 
+    // 播放器默认即最高画质，无需切换——既符合预期，也避免无谓改动 AVPlayer 引发异常。
     if ([prefStr isEqualToString:@"最高"]) {
-        [self switchToQualityAtIndex:0];
         return;
     }
 
