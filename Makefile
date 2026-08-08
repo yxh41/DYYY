@@ -36,10 +36,10 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DYYY
 
-DYYY_FILES = DYYY.xm DYYYMiniProgramRewardBypass.m DYYYSearchKeyboardVoiceHooks.m DYYYHidePageHooks.xm DYYYHideCommentAIAnalysisHooks.m DYYYFloatClearButton.xm DYYYFloatSpeedButton.m DYYYSettings.xm DYYYABTestHook.xm DYYYLongPressPanel.xm DYYYSettingsHelper.m DYYYImagePickerDelegate.m DYYYBackupPickerDelegate.m DYYYSettingViewController.m DYYYBottomAlertView.m DYYYCustomInputView.m DYYYOptionsSelectionView.m DYYYIconOptionsDialogView.m DYYYAboutDialogView.m DYYYKeywordListView.m DYYYFilterSettingsView.m DYYYConfirmCloseView.m DYYYToast.m DYYYManager.m DYYYUtils.m DYYYPreferences.m CityManager.m AWMSafeDispatchTimer.m
+DYYY_FILES = DYYY.xm DYYYMiniProgramRewardBypass.m DYYYSearchKeyboardVoiceHooks.m DYYYHidePageHooks.xm DYYYHideCommentAIAnalysisHooks.m DYYYFloatClearButton.xm DYYYFloatSpeedButton.m DYYYSettings.xm DYYYABTestHook.xm DYYYLongPressPanel.xm DYYYSettingsHelper.m DYYYImagePickerDelegate.m DYYYBackupPickerDelegate.m DYYYSettingViewController.m DYYYBottomAlertView.m DYYYCustomInputView.m DYYYOptionsSelectionView.m DYYYIconOptionsDialogView.m DYYYAboutDialogView.m DYYYKeywordListView.m DYYYFilterSettingsView.m DYYYConfirmCloseView.m DYYYToast.m DYYYManager.m DYYYUtils.m DYYYPreferences.m CityManager.m AWMSafeDispatchTimer.m DYYYPipPlayer.m
 DYYY_CFLAGS = -fobjc-arc -w
 DYYY_LDFLAGS = -weak_framework AVFAudio
-DYYY_FRAMEWORKS = CoreAudio
+DYYY_FRAMEWORKS = CoreAudio AVFoundation
 CXXFLAGS += -std=c++11
 CCFLAGS += -std=c++11
 DYYY_LOGOS_DEFAULT_GENERATOR = internal

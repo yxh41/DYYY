@@ -8,6 +8,7 @@
 #import "DYYYManager.h"
 #import "DYYYToast.h"
 #import "DYYYUtils.h"
+#import "DYYYPipPlayer.h"
 
 %hook AWELongPressPanelViewGroupModel
 %property(nonatomic, assign) BOOL isDYYYCustomGroup;
@@ -114,10 +115,11 @@
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
+    BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
 
     // 检查是否有任何功能启用
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip;
 
     // 如果没有任何功能启用，仅使用官方按钮
     if (!hasAnyFeatureEnabled) {
@@ -691,6 +693,21 @@
         [viewModels addObject:timerCloseViewModel];
     }
 
+    // 画中画功能
+    if (enablePip) {
+        AWELongPressPanelBaseViewModel *pipViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        pipViewModel.awemeModel = self.awemeModel;
+        pipViewModel.actionType = 690;
+        pipViewModel.duxIconName = @"ic_rectangleonrectangleup_outlined_20";
+        pipViewModel.describeString = @"画中画";
+        pipViewModel.action = ^{
+          [[DYYYPipManager sharedManager] createPipWithAwemeModel:self.awemeModel];
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES completion:nil];
+        };
+        [viewModels addObject:pipViewModel];
+    }
+
     // 创建自定义组
     NSMutableArray *customGroups = [NSMutableArray array];
     NSInteger totalButtons = viewModels.count;
@@ -881,10 +898,11 @@
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
+    BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
 
     // 检查是否有任何功能启用
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip;
 
     if (!hasAnyFeatureEnabled) {
         return originalArray;
@@ -1459,6 +1477,21 @@
           [inputView show];
         };
         [viewModels addObject:timerCloseViewModel];
+    }
+
+    // 画中画功能
+    if (enablePip) {
+        AWELongPressPanelBaseViewModel *pipViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        pipViewModel.awemeModel = self.awemeModel;
+        pipViewModel.actionType = 690;
+        pipViewModel.duxIconName = @"ic_rectangleonrectangleup_outlined_20";
+        pipViewModel.describeString = @"画中画";
+        pipViewModel.action = ^{
+          [[DYYYPipManager sharedManager] createPipWithAwemeModel:self.awemeModel];
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES completion:nil];
+        };
+        [viewModels addObject:pipViewModel];
     }
 
     newGroupModel.groupArr = viewModels;

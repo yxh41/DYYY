@@ -2747,7 +2747,13 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"长按定时关闭抖音",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_c_alarm_outlined"}
+            @"imageName" : @"ic_c_alarm_outlined"},
+          @{@"identifier" : @"DYYYLongPressPip",
+            @"title" : @"长按面板画中画",
+            @"subTitle" : @"长按视频弹出面板后，可将该视频以小窗形式悬浮播放",
+            @"detail" : @"",
+            @"cellType" : @37,
+            @"imageName" : @"ic_rectangleonrectangleup_outlined_20"}
       ];
 
       for (NSDictionary *dict in longPressSettings) {
