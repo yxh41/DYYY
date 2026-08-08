@@ -164,11 +164,12 @@ static AVPlayer *DYYYFindActivePlayer(void) {
             // 关键修复：默认清晰度切换会改动正在播放的 AVPlayer（replaceCurrentItem），
             // 绝不能在 viewDidAppear 的 Appearance 事务里同步执行——会在内部 KVO/状态访问中
             // 触发 EXC_BAD_ACCESS(0x10)。延迟到下一个 runloop，等 Appearance 提交完成后再切。
-            __weak typeof(self) wself = self;
+            // 单例永不释放，block 直接捕获 self 不会形成循环引用（无需 weak/strong dance）。
+            __typeof__(self) __weak blockSelf = self;
             dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(wself) sself = wself;
-                if (!sself) return;
-                @try { [sself applyDefaultQualityPreference]; }
+                __typeof__(blockSelf) __strong strongSelf = blockSelf;
+                if (!strongSelf) return;
+                @try { [strongSelf applyDefaultQualityPreference]; }
                 @catch (NSException *e) {}
             });
         }
