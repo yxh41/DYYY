@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <AVFoundation/AVFoundation.h>
 #import "DYYYManager.h"
+#import "DYYYUtils.h"
 #import "AwemeHeaders.h"
 
 // 移植自 pxx917144686/DYYY 的 AWEPlayerPlayControlHandler 部分
@@ -215,7 +216,7 @@
     }
 
     NSString *qualityName = self.availableQualities[index][@"title"];
-    [DYYYManager showToast:[NSString stringWithFormat:@"已切换到%@清晰度", qualityName]];
+    [DYYYUtils showToast:[NSString stringWithFormat:@"已切换到%@清晰度", qualityName]];
 }
 
 #pragma mark - 音频降噪
@@ -281,10 +282,10 @@
             audioMix.inputParameters = @[inputParams];
             player.currentItem.audioMix = audioMix;
         }
-        [DYYYManager showToast:@"已启用噪音过滤"];
+        [DYYYUtils showToast:@"已启用噪音过滤"];
     } else {
         player.currentItem.audioMix = nil;
-        [DYYYManager showToast:@"已关闭噪音过滤"];
+        [DYYYUtils showToast:@"已关闭噪音过滤"];
     }
 
     [player seekToTime:currentTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
