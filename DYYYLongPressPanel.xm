@@ -87,6 +87,41 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
     return @"";
 }
 
+// 递归搜索 JSON 树，找包含 keyword 的 key 对应的值（C 函数，避免 block 递归崩溃）
+static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
+    if (!node || [node isKindOfClass:[NSNull class]]) return nil;
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)node;
+        for (NSString *k in [dict allKeys]) {
+            if ([k.lowercaseString containsString:keyword.lowercaseString]) {
+                id v = [dict objectForKey:k];
+                if (v && ![v isKindOfClass:[NSNull class]]) {
+                    NSString *s = [NSString stringWithFormat:@"%@", v];
+                    if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+                }
+            }
+        }
+        for (id v in [dict allValues]) {
+            NSString *r = DYYYSearchJsonValue(v, keyword);
+            if (r) return r;
+        }
+    } else if ([node isKindOfClass:[NSArray class]]) {
+        for (id v in (NSArray *)node) {
+            NSString *r = DYYYSearchJsonValue(v, keyword);
+            if (r) return r;
+        }
+    } else if ([node isKindOfClass:[NSString class]]) {
+        NSData *innerData = [(NSString *)node dataUsingEncoding:NSUTF8StringEncoding];
+        if (innerData) {
+            id innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:NSJSONReadingAllowFragments error:nil];
+            if (innerJson) {
+                return DYYYSearchJsonValue(innerJson, keyword);
+            }
+        }
+    }
+    return nil;
+}
+
 // MARK: - 作品数据卡片
 @interface DYYYWorkDataCardView : UIView
 + (void)showWithAwemeModel:(AWEAwemeModel *)model;
@@ -508,53 +543,16 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
         // 解析外层 JSON
         id outerJson = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:nil];
 
-        // 递归搜索：在整个 JSON 树里找包含指定 key 的值
-        NSString * (^searchKey)(id, NSString *) = ^NSString *(id node, NSString *targetKey) {
-            if (!node) return (NSString *)nil;
-            if ([node isKindOfClass:[NSDictionary class]]) {
-                // 先检查当前层有没有目标 key
-                for (NSString *k in [(NSDictionary *)node allKeys]) {
-                    if ([k.lowercaseString containsString:targetKey.lowercaseString]) {
-                        id v = [(NSDictionary *)node objectForKey:k];
-                        if (v && ![v isKindOfClass:[NSNull class]]) {
-                            NSString *s = [NSString stringWithFormat:@"%@", v];
-                            if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
-                        }
-                    }
-                }
-                // 递归搜索子节点
-                for (id v in [(NSDictionary *)node allValues]) {
-                    NSString *r = searchKey(v, targetKey);
-                    if (r) return r;
-                }
-            } else if ([node isKindOfClass:[NSArray class]]) {
-                for (id v in (NSArray *)node) {
-                    NSString *r = searchKey(v, targetKey);
-                    if (r) return r;
-                }
-            } else if ([node isKindOfClass:[NSString class]]) {
-                // 字符串可能是嵌套 JSON，尝试二次解析
-                NSData *innerData = [(NSString *)node dataUsingEncoding:NSUTF8StringEncoding];
-                if (innerData) {
-                    id innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:NSJSONReadingAllowFragments error:nil];
-                    if (innerJson && innerJson != node) {
-                        NSString *r = searchKey(innerJson, targetKey);
-                        if (r) return r;
-                    }
-                }
-            }
-            return (NSString *)nil;
-        };
-
         // 如果外层解析失败，尝试直接把整个 rawStr 当 JSON 解析
         if (!outerJson) {
             outerJson = rawStr;
         }
 
-        NSString *playCountStr = searchKey(outerJson, @"play_count");
-        NSString *downloadCountStr = searchKey(outerJson, @"download_count");
-        NSString *shareCountStr = searchKey(outerJson, @"share_count");
-        NSString *diggCountStr = searchKey(outerJson, @"digg_count");
+        // 递归搜索整个 JSON 树（用 C 函数，避免 block 递归崩溃）
+        NSString *playCountStr = DYYYSearchJsonValue(outerJson, @"play_count");
+        NSString *downloadCountStr = DYYYSearchJsonValue(outerJson, @"download_count");
+        NSString *shareCountStr = DYYYSearchJsonValue(outerJson, @"share_count");
+        NSString *diggCountStr = DYYYSearchJsonValue(outerJson, @"digg_count");
 
         if (playCountStr.length == 0 || [playCountStr isEqualToString:@"(null)"]) {
             // 找不到 play_count，显示原始响应前 80 字符方便调试
