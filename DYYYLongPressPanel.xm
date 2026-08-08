@@ -10,6 +10,113 @@
 #import "DYYYUtils.h"
 #import "DYYYPipPlayer.h"
 
+// MARK: - 获取作品数据辅助方法
+// 安全读取任意对象的属性（兼容本地头文件未声明的运行期字段，如 uid/secUid/playCount 等）。
+// 字段名与真机不符时抛出 KVC 异常，这里捕获后返回 nil，绝不崩溃。
+static id DYYYVideoInfoSafeValue(id obj, NSString *key) {
+    if (!obj || !key) return nil;
+    @try {
+        return [obj valueForKey:key];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
+// 取当前窗口最上层可见 VC（用于弹窗）；面板已 dismiss 后即为底层 feed/root。
+static UIViewController *DYYYVideoInfoTopVC(void) {
+    UIWindow *window = [%c(DYYYUtils) getActiveWindow];
+    UIViewController *vc = window.rootViewController;
+    while (vc && vc.presentedViewController) {
+        vc = vc.presentedViewController;
+    }
+    return vc;
+}
+
+// 从 AWEAwemeModel 读取本地 model 字段，组装作品数据卡片并弹出（含复制信息/保存头像）。
+static void DYYYShowWorkData(AWEAwemeModel *model) {
+    if (!model) return;
+    @try {
+        AWEUserModel *author = model.author;
+        NSString *nickname = author.nickname ?: @"未知";
+        NSString *douyinId = author.shortID ?: @"";
+        NSString *uid = DYYYVideoInfoSafeValue(author, @"uid") ?: @"";
+        NSString *secUid = DYYYVideoInfoSafeValue(author, @"secUid") ?: @"";
+        NSString *avatarURL = (author.avatarMedium && author.avatarMedium.originURLList.count > 0) ? author.avatarMedium.originURLList.firstObject : @"";
+
+        NSString *itemID = model.itemID ?: @"";
+        NSString *desc = model.descriptionString ?: @"";
+        NSString *region = model.ipAttribution ?: @"";
+
+        NSString *publishTime = @"";
+        NSNumber *createTimeNum = model.createTime;
+        if (createTimeNum && [createTimeNum doubleValue] > 0) {
+            NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTimeNum doubleValue]];
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+            publishTime = [fmt stringFromDate:date] ?: @"";
+        }
+
+        AWEAwemeStatisticsModel *stats = model.statistics;
+        NSNumber *playCount = DYYYVideoInfoSafeValue(stats, @"playCount") ?: @0;
+        NSNumber *diggCount = stats.diggCount ?: @0;
+        NSNumber *commentCount = DYYYVideoInfoSafeValue(stats, @"commentCount") ?: @0;
+        NSNumber *collectCount = DYYYVideoInfoSafeValue(stats, @"collectCount") ?: @0;
+        NSNumber *shareCount = DYYYVideoInfoSafeValue(stats, @"shareCount") ?: @0;
+        NSNumber *downloadCount = DYYYVideoInfoSafeValue(stats, @"downloadCount") ?: @0;
+
+        NSString *link = model.shareURL ?: [NSString stringWithFormat:@"https://www.douyin.com/video/%@", itemID];
+
+        NSDateFormatter *nowFmt = [[NSDateFormatter alloc] init];
+        nowFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+        NSString *fetchTime = [nowFmt stringFromDate:[NSDate date]] ?: @"";
+
+        NSMutableString *info = [NSMutableString string];
+        [info appendFormat:@"【作者信息】\n"];
+        [info appendFormat:@"昵称：%@\n", nickname];
+        [info appendFormat:@"抖音号：%@\n", douyinId];
+        [info appendFormat:@"UID：%@\n", uid];
+        [info appendFormat:@"secUID：%@\n", secUid];
+        [info appendFormat:@"\n【获取时间】\n%@\n", fetchTime];
+        [info appendFormat:@"\n【作品信息】\n"];
+        [info appendFormat:@"作品ID：%@\n", itemID];
+        [info appendFormat:@"文案：%@\n", desc];
+        [info appendFormat:@"发布属地：%@\n", region];
+        [info appendFormat:@"发布时间：%@\n", publishTime];
+        [info appendFormat:@"\n【统计数据】\n"];
+        [info appendFormat:@"播放量：%@\n", playCount];
+        [info appendFormat:@"点赞量：%@\n", diggCount];
+        [info appendFormat:@"评论量：%@\n", commentCount];
+        [info appendFormat:@"收藏量：%@\n", collectCount];
+        [info appendFormat:@"分享量：%@\n", shareCount];
+        [info appendFormat:@"下载量：%@\n", downloadCount];
+        [info appendFormat:@"\n【作品链接】\n%@\n", link];
+
+        NSString *copyText = [info copy];
+
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"作品数据" message:info preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"复制信息" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [[UIPasteboard generalPasteboard] setString:copyText];
+            [DYYYToast showSuccessToastWithMessage:@"作品数据已复制"];
+        }]];
+        if (avatarURL.length > 0) {
+            [alert addAction:[UIAlertAction actionWithTitle:@"保存头像" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                NSURL *url = [NSURL URLWithString:avatarURL];
+                if (url) {
+                    [DYYYManager downloadMedia:url mediaType:MediaTypeImage audio:nil completion:^(BOOL success){}];
+                }
+            }]];
+        }
+        [alert addAction:[UIAlertAction actionWithTitle:@"完成" style:UIAlertActionStyleCancel handler:nil]];
+
+        UIViewController *topVC = DYYYVideoInfoTopVC();
+        if (topVC) {
+            [topVC presentViewController:alert animated:YES completion:nil];
+        }
+    } @catch (NSException *e) {
+        [DYYYUtils showToast:@"获取作品数据失败"];
+    }
+}
+
 %hook AWELongPressPanelViewGroupModel
 %property(nonatomic, assign) BOOL isDYYYCustomGroup;
 %end
@@ -708,6 +815,24 @@
         [viewModels addObject:pipViewModel];
     }
 
+    // 获取作品数据功能
+    BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
+    if (enableWorkData) {
+        AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        workDataViewModel.awemeModel = self.awemeModel;
+        workDataViewModel.actionType = 691;
+        workDataViewModel.duxIconName = @"ic_chart_bar_outlined_20";
+        workDataViewModel.describeString = @"获取作品数据";
+        AWEAwemeModel *wdModel = self.awemeModel;
+        workDataViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                DYYYShowWorkData(wdModel);
+            }];
+        };
+        [viewModels addObject:workDataViewModel];
+    }
+
     // 创建自定义组
     NSMutableArray *customGroups = [NSMutableArray array];
     NSInteger totalButtons = viewModels.count;
@@ -899,10 +1024,11 @@
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
     BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
+    BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
 
     // 检查是否有任何功能启用
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWorkData;
 
     if (!hasAnyFeatureEnabled) {
         return originalArray;
@@ -1492,6 +1618,23 @@
           [panelManager dismissWithAnimation:YES completion:nil];
         };
         [viewModels addObject:pipViewModel];
+    }
+
+    // 获取作品数据功能
+    if (enableWorkData) {
+        AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        workDataViewModel.awemeModel = self.awemeModel;
+        workDataViewModel.actionType = 692;
+        workDataViewModel.duxIconName = @"ic_chart_bar_outlined_20";
+        workDataViewModel.describeString = @"获取作品数据";
+        AWEAwemeModel *wdModel = self.awemeModel;
+        workDataViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                DYYYShowWorkData(wdModel);
+            }];
+        };
+        [viewModels addObject:workDataViewModel];
     }
 
     newGroupModel.groupArr = viewModels;
