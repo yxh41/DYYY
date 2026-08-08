@@ -99,6 +99,7 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
     NSString *_videoURL;
     NSString *_workLink;
     NSString *_profileLink;
+    UILabel *_playCountLabel;
 
     NSString *_nickname;
     NSString *_douyinId;
@@ -358,7 +359,22 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
     // 统计数据
     y += 4;
     y = [self addSectionTitle:@"【统计数据】" in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"播放量" value:_playCount in:scroll atY:y width:contentW margin:margin];
+    // 播放量：特殊处理，本地可能为 0，需调 tikhub.io API 异步补值
+    {
+        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
+        lbl.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
+        lbl.font = [UIFont systemFontOfSize:14];
+        lbl.textColor = [UIColor blackColor];
+        lbl.numberOfLines = 0;
+        CGSize sz = [lbl.text boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:@{NSFontAttributeName: lbl.font}
+                                           context:nil].size;
+        lbl.frame = CGRectMake(margin, y, contentW, ceil(sz.height) + 4);
+        [scroll addSubview:lbl];
+        _playCountLabel = lbl;
+        y += CGRectGetHeight(lbl.frame) + 2;
+    }
     y = [self addRowWithKey:@"点赞量" value:_diggCount in:scroll atY:y width:contentW margin:margin];
     y = [self addRowWithKey:@"评论量" value:_commentCount in:scroll atY:y width:contentW margin:margin];
     y = [self addRowWithKey:@"收藏量" value:_collectCount in:scroll atY:y width:contentW margin:margin];
@@ -457,6 +473,84 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
     [window addSubview:self];
     self.alpha = 0;
     [UIView animateWithDuration:0.2 animations:^{ self.alpha = 1; }];
+    [self fetchPlayCountFromAPI];
+}
+
+- (void)fetchPlayCountFromAPI {
+    NSString *token = DYYYGetString(@"DYYYWorkDataAPIToken");
+    if (token.length == 0 || _itemID.length == 0) return;
+    NSString *urlString = [NSString stringWithFormat:@"https://api.tikhub.io/api/v1/douyin/app/v2/fetch_video_play_count?aweme_id=%@", _itemID];
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (_playCountLabel) {
+            _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API获取中...）", _playCount];
+        }
+    });
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    req.timeoutInterval = 10;
+
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error || !data) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败）", _playCount];
+            });
+            return;
+        }
+        NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![json isKindOfClass:[NSDictionary class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API格式错误）", _playCount];
+            });
+            return;
+        }
+        // 兼容多种返回结构：data.play_count / data.playCount / 顶层 play_count 等
+        id count = nil;
+        id dataDict = json[@"data"];
+        if ([dataDict isKindOfClass:[NSDictionary class]]) {
+            count = dataDict[@"play_count"] ?: dataDict[@"playCount"] ?: dataDict[@"play"];
+        }
+        if (!count) count = json[@"play_count"] ?: json[@"playCount"] ?: json[@"play"];
+        if (![count isKindOfClass:[NSNumber class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API未返回数值）", _playCount];
+            });
+            return;
+        }
+        NSString *newCount = [NSString stringWithFormat:@"%@", count];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            _playCount = newCount;
+            if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
+            [self refreshCopyText];
+        });
+    }];
+    [task resume];
+}
+
+- (void)refreshCopyText {
+    NSMutableString *info = [NSMutableString string];
+    [info appendFormat:@"作者：%@\n", _nickname];
+    [info appendFormat:@"抖音号：%@\n", _douyinId];
+    [info appendFormat:@"UID：%@\n", _uid];
+    [info appendFormat:@"secUID：%@\n", _secUid];
+    [info appendFormat:@"获取时间：%@\n", _fetchTime];
+    [info appendFormat:@"作品ID：%@\n", _itemID];
+    [info appendFormat:@"作品文案：%@\n", _desc];
+    [info appendFormat:@"发布属地：%@\n", _region];
+    [info appendFormat:@"发布时间：%@\n", _publishTime];
+    [info appendFormat:@"播放量：%@\n", _playCount];
+    [info appendFormat:@"点赞量：%@\n", _diggCount];
+    [info appendFormat:@"评论量：%@\n", _commentCount];
+    [info appendFormat:@"收藏量：%@\n", _collectCount];
+    [info appendFormat:@"分享量：%@\n", _shareCount];
+    [info appendFormat:@"下载量：%@\n", _downloadCount];
+    [info appendFormat:@"作品链接：%@\n", _workLink];
+    [info appendFormat:@"主页链接：%@\n", _profileLink];
+    _copyText = [info copy];
 }
 
 - (void)dismiss {
