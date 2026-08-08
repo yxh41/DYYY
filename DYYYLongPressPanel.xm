@@ -1138,7 +1138,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 691;
-        workDataViewModel.duxIconName = @"ic_info_outlined_20";
+        workDataViewModel.duxIconName = @"ic_chartline_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
@@ -1953,7 +1953,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 692;
-        workDataViewModel.duxIconName = @"ic_info_outlined_20";
+        workDataViewModel.duxIconName = @"ic_chartline_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
