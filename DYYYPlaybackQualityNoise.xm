@@ -139,20 +139,20 @@ static AVPlayer *DYYYFindActivePlayer(void) {
         NSMutableArray *urls = [NSMutableArray array];
         // 全防御式取值：逐层 isKindOfClass 校验，避免头文件与真机二进制布局不符时
         // 取到错类型对象 / 野指针导致 EXC_BAD_ACCESS（信号级，@try/@catch 抓不住）。
-        if ([vm isKindOfClass:[AWEVideoModel class]]) {
+        if ([vm isKindOfClass:NSClassFromString(@"AWEVideoModel")]) {
             id playURL = vm.playURL;
-            if ([playURL isKindOfClass:[AWEURLModel class]] && [playURL originURLList].count) {
+            if ([playURL isKindOfClass:NSClassFromString(@"AWEURLModel")] && [playURL originURLList].count) {
                 [urls addObjectsFromArray:[playURL originURLList]];
             }
             id lowBit = vm.playLowBitURL;
-            if ([lowBit isKindOfClass:[AWEURLModel class]] && [lowBit originURLList].count) {
+            if ([lowBit isKindOfClass:NSClassFromString(@"AWEURLModel")] && [lowBit originURLList].count) {
                 [urls addObjectsFromArray:[lowBit originURLList]];
             }
             NSArray *bitrates = vm.bitrateModels;
             for (id bm in bitrates ?: @[]) {
                 @try {
                     id bmURL = [bm valueForKey:@"playURL"] ?: [bm valueForKey:@"url"];
-                    if ([bmURL isKindOfClass:[AWEURLModel class]] && [bmURL originURLList].count) {
+                    if ([bmURL isKindOfClass:NSClassFromString(@"AWEURLModel")] && [bmURL originURLList].count) {
                         [urls addObjectsFromArray:[bmURL originURLList]];
                     }
                 } @catch (NSException *e) {}
