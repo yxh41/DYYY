@@ -479,7 +479,8 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
 - (void)fetchPlayCountFromAPI {
     NSString *token = DYYYGetString(@"DYYYWorkDataAPIToken");
     if (token.length == 0 || _itemID.length == 0) return;
-    NSString *urlString = [NSString stringWithFormat:@"https://api.tikhub.io/api/v1/douyin/app/v2/fetch_video_play_count?aweme_id=%@", _itemID];
+    // 正确端点：V3 fetch_video_statistics，参数 aweme_ids（逗号分隔），大陆用 api.tikhub.dev
+    NSString *urlString = [NSString stringWithFormat:@"https://api.tikhub.dev/api/v1/douyin/app/v3/fetch_video_statistics?aweme_ids=%@", _itemID];
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) return;
 
@@ -508,23 +509,74 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
             });
             return;
         }
-        // 兼容多种返回结构：data.play_count / data.playCount / 顶层 play_count 等
-        id count = nil;
-        id dataDict = json[@"data"];
-        if ([dataDict isKindOfClass:[NSDictionary class]]) {
-            count = dataDict[@"play_count"] ?: dataDict[@"playCount"] ?: dataDict[@"play"];
+        // data 字段是字符串类型（schema 声明 anyOf string/null），需要二次 JSON 解析
+        id dataField = json[@"data"];
+        NSString *playCountStr = nil;
+        NSString *downloadCountStr = nil;
+        NSString *shareCountStr = nil;
+        NSString *diggCountStr = nil;
+
+        if ([dataField isKindOfClass:[NSString class]]) {
+            // data 是 JSON 字符串，需要二次解析
+            NSData *innerData = [dataField dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:0 error:nil];
+            if ([innerJson isKindOfClass:[NSDictionary class]]) {
+                // 可能是 { "aweme_id": { "play_count": 123, ... } } 或直接 { "play_count": 123, ... }
+                NSDictionary *statsDict = nil;
+                if (innerJson.count == 1) {
+                    // 取第一个 value
+                    id firstVal = [innerJson allValues].firstObject;
+                    if ([firstVal isKindOfClass:[NSDictionary class]]) {
+                        statsDict = firstVal;
+                    } else {
+                        statsDict = innerJson;
+                    }
+                } else {
+                    statsDict = innerJson;
+                }
+                playCountStr = [NSString stringWithFormat:@"%@", statsDict[@"play_count"] ?: @""];
+                downloadCountStr = [NSString stringWithFormat:@"%@", statsDict[@"download_count"] ?: @""];
+                shareCountStr = [NSString stringWithFormat:@"%@", statsDict[@"share_count"] ?: @""];
+                diggCountStr = [NSString stringWithFormat:@"%@", statsDict[@"digg_count"] ?: @""];
+            }
+        } else if ([dataField isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *statsDict = nil;
+            if (dataField.count == 1) {
+                id firstVal = [dataField allValues].firstObject;
+                if ([firstVal isKindOfClass:[NSDictionary class]]) {
+                    statsDict = firstVal;
+                } else {
+                    statsDict = dataField;
+                }
+            } else {
+                statsDict = dataField;
+            }
+            playCountStr = [NSString stringWithFormat:@"%@", statsDict[@"play_count"] ?: @""];
+            downloadCountStr = [NSString stringWithFormat:@"%@", statsDict[@"download_count"] ?: @""];
+            shareCountStr = [NSString stringWithFormat:@"%@", statsDict[@"share_count"] ?: @""];
+            diggCountStr = [NSString stringWithFormat:@"%@", statsDict[@"digg_count"] ?: @""];
         }
-        if (!count) count = json[@"play_count"] ?: json[@"playCount"] ?: json[@"play"];
-        if (![count isKindOfClass:[NSNumber class]]) {
+
+        if (playCountStr.length == 0 || [playCountStr isEqualToString:@"(null)"]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API未返回数值）", _playCount];
             });
             return;
         }
-        NSString *newCount = [NSString stringWithFormat:@"%@", count];
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            _playCount = newCount;
+            _playCount = playCountStr;
             if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
+            // 也更新下载量/分享量/点赞量（API 返回了的话）
+            if (downloadCountStr.length > 0 && ![downloadCountStr isEqualToString:@"(null)"]) {
+                _downloadCount = downloadCountStr;
+            }
+            if (shareCountStr.length > 0 && ![shareCountStr isEqualToString:@"(null)"]) {
+                _shareCount = shareCountStr;
+            }
+            if (diggCountStr.length > 0 && ![diggCountStr isEqualToString:@"(null)"]) {
+                _diggCount = diggCountStr;
+            }
             [self refreshCopyText];
         });
     }];
@@ -1302,7 +1354,7 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 691;
-        workDataViewModel.duxIconName = @"ic_chartline_outlined_20";
+        workDataViewModel.duxIconName = @"ic_tag_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
@@ -1317,6 +1369,18 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
             AWELongPressPanelViewGroupModel *grp = originalArray[gi];
             if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
             NSArray *arr = grp.groupArr;
+            // 先检查是否已注入过（防止 dataArray 多次调用导致重复）
+            BOOL alreadyExists = NO;
+            for (id item in arr) {
+                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
+                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
+                    if ([vm.describeString containsString:@"获取作品数据"]) {
+                        alreadyExists = YES;
+                        break;
+                    }
+                }
+            }
+            if (alreadyExists) { injected = YES; break; }
             for (id item in arr) {
                 if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
                     AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
@@ -2136,7 +2200,7 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 692;
-        workDataViewModel.duxIconName = @"ic_chartline_outlined_20";
+        workDataViewModel.duxIconName = @"ic_tag_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
@@ -2151,6 +2215,18 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
             AWELongPressPanelViewGroupModel *grp = originalArray[gi];
             if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
             NSArray *arr = grp.groupArr;
+            // 先检查是否已注入过（防止 dataArray 多次调用导致重复）
+            BOOL alreadyExists = NO;
+            for (id item in arr) {
+                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
+                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
+                    if ([vm.describeString containsString:@"获取作品数据"]) {
+                        alreadyExists = YES;
+                        break;
+                    }
+                }
+            }
+            if (alreadyExists) { injected = YES; break; }
             for (id item in arr) {
                 if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
                     AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
