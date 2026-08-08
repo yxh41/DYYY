@@ -163,6 +163,9 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"收藏二次确认" key:@"DYYYCollectTips" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"默认直播画质" key:@"DYYYLiveQuality" type:DYYYSettingItemTypePicker],
             [DYYYSettingItem itemWithTitle:@"提高视频画质" key:@"DYYYEnableVideoHighestQuality" type:DYYYSettingItemTypeSwitch],
+            [DYYYSettingItem itemWithTitle:@"分档清晰度按钮" key:@"DYYYEnableQualitySelection" type:DYYYSettingItemTypeSwitch],
+            [DYYYSettingItem itemWithTitle:@"默认清晰度" key:@"DYYYDefaultQuality" type:DYYYSettingItemTypePicker],
+            [DYYYSettingItem itemWithTitle:@"音频降噪" key:@"DYYYEnableNoiseFilter" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"禁用直播PCDN功能" key:@"DYYYDisableLivePCDN" type:DYYYSettingItemTypeSwitch]
         ],
         @[
@@ -406,6 +409,8 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         return @[ @"蓝光帧彩", @"蓝光", @"超清", @"高清", @"标清", @"自动" ];
     } else if ([key isEqualToString:@"DYYYHDRMode"]) {
         return @[ @"关闭", @"全局屏蔽HDR效果", @"全局过滤HDR作品" ];
+    } else if ([key isEqualToString:@"DYYYDefaultQuality"]) {
+        return @[ @"最高", @"原画", @"1080P", @"720P", @"540P" ];
     }
     return @[];
 }
@@ -420,6 +425,8 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         return value ?: @"自动";
     } else if ([key isEqualToString:@"DYYYHDRMode"]) {
         return value ?: @"关闭";
+    } else if ([key isEqualToString:@"DYYYDefaultQuality"]) {
+        return value ?: @"最高";
     }
     return [NSString stringWithFormat:@"%@", value];
 }
@@ -431,6 +438,8 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         return @"自动";
     } else if ([key isEqualToString:@"DYYYHDRMode"]) {
         return @"关闭";
+    } else if ([key isEqualToString:@"DYYYDefaultQuality"]) {
+        return @"最高";
     }
     return nil;
 }
