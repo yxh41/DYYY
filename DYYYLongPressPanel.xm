@@ -1,4 +1,5 @@
 #import "AwemeHeaders.h"
+#import "CityManager.h"
 #import "DYYYPreferences.h"
 #import "DYYYBottomAlertView.h"
 #import "DYYYConfirmCloseView.h"
@@ -12,7 +13,6 @@
 
 // MARK: - 获取作品数据辅助方法
 // 安全读取任意对象的属性（兼容本地头文件未声明的运行期字段，如 uid/secUid/playCount 等）。
-// 字段名与真机不符时抛出 KVC 异常，这里捕获后返回 nil，绝不崩溃。
 static id DYYYVideoInfoSafeValue(id obj, NSString *key) {
     if (!obj || !key) return nil;
     @try {
@@ -22,100 +22,416 @@ static id DYYYVideoInfoSafeValue(id obj, NSString *key) {
     }
 }
 
-// 取当前窗口最上层可见 VC（用于弹窗）；面板已 dismiss 后即为底层 feed/root。
-static UIViewController *DYYYVideoInfoTopVC(void) {
-    UIWindow *window = [%c(DYYYUtils) getActiveWindow];
-    UIViewController *vc = window.rootViewController;
-    while (vc && vc.presentedViewController) {
-        vc = vc.presentedViewController;
+// 尝试多个 key，返回第一个非空字符串值（用于 uid/secUid 等字段名不确定的场景）。
+static NSString *DYYYVideoInfoStringForKeys(id obj, NSArray<NSString *> *keys) {
+    if (!obj || keys.count == 0) return @"";
+    for (NSString *key in keys) {
+        id val = DYYYVideoInfoSafeValue(obj, key);
+        if (val && ![val isKindOfClass:[NSNull class]]) {
+            NSString *s = [NSString stringWithFormat:@"%@", val];
+            if (s.length > 0 && ![s isEqualToString:@"(null)"]) {
+                return s;
+            }
+        }
     }
-    return vc;
+    return @"";
 }
 
-// 从 AWEAwemeModel 读取本地 model 字段，组装作品数据卡片并弹出（含复制信息/保存头像）。
-static void DYYYShowWorkData(AWEAwemeModel *model) {
+// 解析发布属地：优先 model.ipAttribution，其次 cityCode/region 用 CityManager 转地名。
+static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
+    if (!model) return @"";
+    NSString *ipAttribution = model.ipAttribution;
+    if (ipAttribution.length > 0) return ipAttribution;
+
+    NSString *cityCode = model.cityCode;
+    if (cityCode && cityCode.length > 0 && ![cityCode isEqualToString:@"0"] && [cityCode integerValue] != 0) {
+        NSString *city = [CityManager.sharedInstance getCityNameWithCode:cityCode];
+        if (city.length > 0) return city;
+    }
+
+    NSString *regionCode = DYYYVideoInfoStringForKeys(model, @[@"region"]);
+    if (regionCode.length > 0) {
+        NSString *country = [CityManager.sharedInstance getCountryNameWithCode:regionCode];
+        if (country.length > 0) return country;
+    }
+    return @"";
+}
+
+// MARK: - 作品数据卡片
+@interface DYYYWorkDataCardView : UIView
++ (void)showWithAwemeModel:(AWEAwemeModel *)model;
+@end
+
+@implementation DYYYWorkDataCardView {
+    AWEAwemeModel *_model;
+    NSString *_copyText;
+    NSString *_avatarURL;
+    NSString *_videoURL;
+    NSString *_workLink;
+
+    NSString *_nickname;
+    NSString *_douyinId;
+    NSString *_uid;
+    NSString *_secUid;
+    NSString *_region;
+    NSString *_itemID;
+    NSString *_desc;
+    NSString *_publishTime;
+    NSString *_fetchTime;
+    NSString *_playCount;
+    NSString *_diggCount;
+    NSString *_commentCount;
+    NSString *_collectCount;
+    NSString *_shareCount;
+    NSString *_downloadCount;
+}
+
++ (void)showWithAwemeModel:(AWEAwemeModel *)model {
     if (!model) return;
-    @try {
-        AWEUserModel *author = model.author;
-        NSString *nickname = author.nickname ?: @"未知";
-        NSString *douyinId = author.shortID ?: @"";
-        NSString *uid = DYYYVideoInfoSafeValue(author, @"uid") ?: @"";
-        NSString *secUid = DYYYVideoInfoSafeValue(author, @"secUid") ?: @"";
-        NSString *avatarURL = (author.avatarMedium && author.avatarMedium.originURLList.count > 0) ? author.avatarMedium.originURLList.firstObject : @"";
+    DYYYWorkDataCardView *view = [[self alloc] initWithAwemeModel:model];
+    [view show];
+}
 
-        NSString *itemID = model.itemID ?: @"";
-        NSString *desc = model.descriptionString ?: @"";
-        NSString *region = model.ipAttribution ?: @"";
+- (instancetype)initWithAwemeModel:(AWEAwemeModel *)model {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    self = [super initWithFrame:window.bounds];
+    if (self) {
+        _model = model;
+        [self extractData];
+        [self buildUI];
+    }
+    return self;
+}
 
-        NSString *publishTime = @"";
-        NSNumber *createTimeNum = model.createTime;
-        if (createTimeNum && [createTimeNum doubleValue] > 0) {
-            NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTimeNum doubleValue]];
-            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-            publishTime = [fmt stringFromDate:date] ?: @"";
+- (void)extractData {
+    AWEUserModel *author = _model.author;
+    _nickname = author.nickname ?: @"未知";
+    _douyinId = author.shortID ?: @"";
+    _uid = DYYYVideoInfoStringForKeys(author, @[@"uid", @"userID", @"uniqueId", @"userId"]);
+    _secUid = DYYYVideoInfoStringForKeys(author, @[@"secUid", @"secUID", @"sec_uid"]);
+    _avatarURL = (author.avatarMedium && author.avatarMedium.originURLList.count > 0) ? author.avatarMedium.originURLList.firstObject : @"";
+
+    _itemID = _model.itemID ?: @"";
+    _desc = _model.descriptionString ?: @"";
+    _region = DYYYVideoInfoResolveRegion(_model);
+
+    _publishTime = @"";
+    NSNumber *createTimeNum = _model.createTime;
+    if (createTimeNum && [createTimeNum doubleValue] > 0) {
+        NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTimeNum doubleValue]];
+        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+        _publishTime = [fmt stringFromDate:date] ?: @"";
+    }
+
+    AWEAwemeStatisticsModel *stats = _model.statistics;
+    _playCount = DYYYVideoInfoStringForKeys(stats, @[@"playCount", @"play_count"]);
+    if (_playCount.length == 0) _playCount = @"0";
+    _diggCount = [NSString stringWithFormat:@"%@", stats.diggCount ?: @0];
+    _commentCount = DYYYVideoInfoStringForKeys(stats, @[@"commentCount", @"comment_count"]);
+    if (_commentCount.length == 0) _commentCount = @"0";
+    _collectCount = DYYYVideoInfoStringForKeys(stats, @[@"collectCount", @"collect_count", @"favoriteCount"]);
+    if (_collectCount.length == 0) _collectCount = @"0";
+    _shareCount = DYYYVideoInfoStringForKeys(stats, @[@"shareCount", @"share_count"]);
+    if (_shareCount.length == 0) _shareCount = @"0";
+    _downloadCount = DYYYVideoInfoStringForKeys(stats, @[@"downloadCount", @"download_count"]);
+    if (_downloadCount.length == 0) _downloadCount = @"0";
+
+    _workLink = _model.shareURL ?: [NSString stringWithFormat:@"https://www.douyin.com/video/%@", _itemID];
+
+    AWEVideoModel *video = _model.video;
+    if (video && video.h264URL && video.h264URL.originURLList.count > 0) {
+        _videoURL = video.h264URL.originURLList.firstObject;
+    } else if (video && video.playURL && video.playURL.originURLList.count > 0) {
+        _videoURL = video.playURL.originURLList.firstObject;
+    }
+
+    NSDateFormatter *nowFmt = [[NSDateFormatter alloc] init];
+    nowFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    _fetchTime = [nowFmt stringFromDate:[NSDate date]] ?: @"";
+
+    NSMutableString *info = [NSMutableString string];
+    [info appendFormat:@"作者：%@\n", _nickname];
+    [info appendFormat:@"抖音号：%@\n", _douyinId];
+    [info appendFormat:@"UID：%@\n", _uid];
+    [info appendFormat:@"secUID：%@\n", _secUid];
+    [info appendFormat:@"获取时间：%@\n", _fetchTime];
+    [info appendFormat:@"作品ID：%@\n", _itemID];
+    [info appendFormat:@"作品文案：%@\n", _desc];
+    [info appendFormat:@"发布属地：%@\n", _region];
+    [info appendFormat:@"发布时间：%@\n", _publishTime];
+    [info appendFormat:@"播放量：%@\n", _playCount];
+    [info appendFormat:@"点赞量：%@\n", _diggCount];
+    [info appendFormat:@"评论量：%@\n", _commentCount];
+    [info appendFormat:@"收藏量：%@\n", _collectCount];
+    [info appendFormat:@"分享量：%@\n", _shareCount];
+    [info appendFormat:@"下载量：%@\n", _downloadCount];
+    [info appendFormat:@"作品链接：%@\n", _workLink];
+    _copyText = [info copy];
+}
+
+- (void)buildUI {
+    // 背景遮罩（点空白处关闭）
+    UIView *dimView = [[UIView alloc] initWithFrame:self.bounds];
+    dimView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    [dimView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismiss)]];
+    [self addSubview:dimView];
+
+    CGFloat cardW = MIN(self.bounds.size.width - 36, 340);
+    CGFloat cardH = MIN(self.bounds.size.height - 80, 540);
+    CGFloat cardX = (self.bounds.size.width - cardW) / 2;
+    CGFloat cardY = (self.bounds.size.height - cardH) / 2;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(cardX, cardY, cardW, cardH)];
+    card.backgroundColor = [UIColor whiteColor];
+    card.layer.cornerRadius = 18;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOffset = CGSizeMake(0, 6);
+    card.layer.shadowOpacity = 0.25;
+    card.layer.shadowRadius = 16;
+    [self addSubview:card];
+
+    CGFloat topH = 52;
+    CGFloat bottomH = 56;
+    CGFloat margin = 16;
+
+    // 顶部栏
+    UIView *topBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, topH)];
+    [card addSubview:topBar];
+
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeBtn.frame = CGRectMake(10, 8, 36, 36);
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont systemFontOfSize:22];
+    [closeBtn setTitleColor:[UIColor darkGrayColor] forState:UIControlStateNormal];
+    [closeBtn addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
+    [topBar addSubview:closeBtn];
+
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 11, cardW - 100, 30)];
+    titleLabel.text = @"作品数据";
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.font = [UIFont boldSystemFontOfSize:18];
+    titleLabel.textColor = [UIColor blackColor];
+    [topBar addSubview:titleLabel];
+
+    UIButton *copyTopBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    copyTopBtn.frame = CGRectMake(cardW - 78, 10, 68, 32);
+    copyTopBtn.layer.cornerRadius = 14;
+    copyTopBtn.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+    copyTopBtn.layer.borderColor = [UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1].CGColor;
+    [copyTopBtn setTitle:@"复制信息" forState:UIControlStateNormal];
+    [copyTopBtn setTitleColor:[UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1] forState:UIControlStateNormal];
+    copyTopBtn.titleLabel.font = [UIFont systemFontOfSize:13];
+    [copyTopBtn addTarget:self action:@selector(copyInfo:) forControlEvents:UIControlEventTouchUpInside];
+    [topBar addSubview:copyTopBtn];
+
+    // 底部栏
+    UIView *bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, cardH - bottomH, cardW, bottomH)];
+    [card addSubview:bottomBar];
+
+    NSArray *bottomTitles = @[@"下载原画", @"复制信息", @"保存头像"];
+    NSArray *bottomActions = @[NSStringFromSelector(@selector(downloadOriginal:)),
+                               NSStringFromSelector(@selector(copyInfo:)),
+                               NSStringFromSelector(@selector(saveAvatar:))];
+    CGFloat btnW = (cardW - margin * 2 - 16) / 3;
+    for (NSInteger i = 0; i < 3; i++) {
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        btn.frame = CGRectMake(margin + i * (btnW + 8), 8, btnW, 40);
+        btn.layer.cornerRadius = 8;
+        btn.titleLabel.font = [UIFont systemFontOfSize:14];
+        [btn setTitle:bottomTitles[i] forState:UIControlStateNormal];
+        if (i == 0) {
+            btn.backgroundColor = [UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1];
+            [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        } else {
+            btn.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1];
+            [btn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
         }
+        [btn addTarget:self action:NSSelectorFromString(bottomActions[i]) forControlEvents:UIControlEventTouchUpInside];
+        [bottomBar addSubview:btn];
+    }
 
-        AWEAwemeStatisticsModel *stats = model.statistics;
-        NSNumber *playCount = DYYYVideoInfoSafeValue(stats, @"playCount") ?: @0;
-        NSNumber *diggCount = stats.diggCount ?: @0;
-        NSNumber *commentCount = DYYYVideoInfoSafeValue(stats, @"commentCount") ?: @0;
-        NSNumber *collectCount = DYYYVideoInfoSafeValue(stats, @"collectCount") ?: @0;
-        NSNumber *shareCount = DYYYVideoInfoSafeValue(stats, @"shareCount") ?: @0;
-        NSNumber *downloadCount = DYYYVideoInfoSafeValue(stats, @"downloadCount") ?: @0;
+    // 内容滚动区
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, topH, cardW, cardH - topH - bottomH)];
+    scroll.alwaysBounceVertical = YES;
+    [card addSubview:scroll];
 
-        NSString *link = model.shareURL ?: [NSString stringWithFormat:@"https://www.douyin.com/video/%@", itemID];
+    CGFloat y = margin;
+    CGFloat contentW = cardW - margin * 2;
 
-        NSDateFormatter *nowFmt = [[NSDateFormatter alloc] init];
-        nowFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-        NSString *fetchTime = [nowFmt stringFromDate:[NSDate date]] ?: @"";
+    // 作者区（头像 + 信息）
+    UIImageView *avatar = [[UIImageView alloc] initWithFrame:CGRectMake(margin, y, 54, 54)];
+    avatar.layer.cornerRadius = 27;
+    avatar.clipsToBounds = YES;
+    avatar.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
+    avatar.contentMode = UIViewContentModeScaleAspectFill;
+    [scroll addSubview:avatar];
+    if (_avatarURL.length > 0) {
+        [self loadImageWithURL:_avatarURL intoImageView:avatar];
+    }
 
-        NSMutableString *info = [NSMutableString string];
-        [info appendFormat:@"【作者信息】\n"];
-        [info appendFormat:@"昵称：%@\n", nickname];
-        [info appendFormat:@"抖音号：%@\n", douyinId];
-        [info appendFormat:@"UID：%@\n", uid];
-        [info appendFormat:@"secUID：%@\n", secUid];
-        [info appendFormat:@"\n【获取时间】\n%@\n", fetchTime];
-        [info appendFormat:@"\n【作品信息】\n"];
-        [info appendFormat:@"作品ID：%@\n", itemID];
-        [info appendFormat:@"文案：%@\n", desc];
-        [info appendFormat:@"发布属地：%@\n", region];
-        [info appendFormat:@"发布时间：%@\n", publishTime];
-        [info appendFormat:@"\n【统计数据】\n"];
-        [info appendFormat:@"播放量：%@\n", playCount];
-        [info appendFormat:@"点赞量：%@\n", diggCount];
-        [info appendFormat:@"评论量：%@\n", commentCount];
-        [info appendFormat:@"收藏量：%@\n", collectCount];
-        [info appendFormat:@"分享量：%@\n", shareCount];
-        [info appendFormat:@"下载量：%@\n", downloadCount];
-        [info appendFormat:@"\n【作品链接】\n%@\n", link];
+    UILabel *nameLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 22)];
+    nameLabel.text = _nickname;
+    nameLabel.font = [UIFont boldSystemFontOfSize:17];
+    nameLabel.textColor = [UIColor blackColor];
+    [scroll addSubview:nameLabel];
 
-        NSString *copyText = [info copy];
+    y += 26;
+    UILabel *idLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 18)];
+    idLabel.text = [NSString stringWithFormat:@"抖音号：%@", _douyinId];
+    idLabel.font = [UIFont systemFontOfSize:13];
+    idLabel.textColor = [UIColor grayColor];
+    [scroll addSubview:idLabel];
 
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"作品数据" message:info preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"复制信息" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-            [[UIPasteboard generalPasteboard] setString:copyText];
-            [DYYYToast showSuccessToastWithMessage:@"作品数据已复制"];
-        }]];
-        if (avatarURL.length > 0) {
-            [alert addAction:[UIAlertAction actionWithTitle:@"保存头像" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-                NSURL *url = [NSURL URLWithString:avatarURL];
-                if (url) {
-                    [DYYYManager downloadMedia:url mediaType:MediaTypeImage audio:nil completion:^(BOOL success){}];
-                }
-            }]];
+    y += 22;
+    UILabel *uidLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 18)];
+    uidLabel.text = [NSString stringWithFormat:@"UID：%@", _uid];
+    uidLabel.font = [UIFont systemFontOfSize:12];
+    uidLabel.textColor = [UIColor grayColor];
+    uidLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [scroll addSubview:uidLabel];
+
+    y += 34;
+    [self addLineIn:scroll atY:y - 8 width:contentW margin:margin];
+
+    // 获取时间
+    UILabel *fetchLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 18)];
+    fetchLabel.text = [NSString stringWithFormat:@"获取时间：%@", _fetchTime];
+    fetchLabel.font = [UIFont systemFontOfSize:12];
+    fetchLabel.textColor = [UIColor grayColor];
+    [scroll addSubview:fetchLabel];
+    y += 26;
+
+    // 作品信息
+    y = [self addSectionTitle:@"【作品信息】" in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"作品ID" value:_itemID in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"作品文案" value:_desc in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"发布属地" value:_region in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"发布时间" value:_publishTime in:scroll atY:y width:contentW margin:margin];
+
+    // 统计数据
+    y += 4;
+    y = [self addSectionTitle:@"【统计数据】" in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"播放量" value:_playCount in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"点赞量" value:_diggCount in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"评论量" value:_commentCount in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"收藏量" value:_collectCount in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"分享量" value:_shareCount in:scroll atY:y width:contentW margin:margin];
+    y = [self addRowWithKey:@"下载量" value:_downloadCount in:scroll atY:y width:contentW margin:margin];
+
+    // 作品链接
+    y += 4;
+    y = [self addSectionTitle:@"【作品链接】" in:scroll atY:y width:contentW margin:margin];
+    UILabel *linkLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
+    linkLabel.text = _workLink;
+    linkLabel.font = [UIFont systemFontOfSize:12];
+    linkLabel.textColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:1];
+    linkLabel.numberOfLines = 0;
+    linkLabel.userInteractionEnabled = YES;
+    [linkLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyLink:)]];
+    CGSize linkSize = [_workLink boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
+                                              options:NSStringDrawingUsesLineFragmentOrigin
+                                           attributes:@{NSFontAttributeName: linkLabel.font}
+                                              context:nil].size;
+    linkLabel.frame = CGRectMake(margin, y, contentW, ceil(linkSize.height) + 4);
+    [scroll addSubview:linkLabel];
+    y += CGRectGetHeight(linkLabel.frame) + 10;
+
+    scroll.contentSize = CGSizeMake(cardW, y + margin);
+}
+
+- (CGFloat)addSectionTitle:(NSString *)title in:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 22)];
+    label.text = title;
+    label.font = [UIFont boldSystemFontOfSize:15];
+    label.textColor = [UIColor blackColor];
+    [container addSubview:label];
+    return y + 26;
+}
+
+- (CGFloat)addRowWithKey:(NSString *)key value:(NSString *)value in:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 0)];
+    label.text = [NSString stringWithFormat:@"%@：%@", key, value];
+    label.font = [UIFont systemFontOfSize:14];
+    label.textColor = [UIColor blackColor];
+    label.numberOfLines = 0;
+    CGSize size = [label.text boundingRectWithSize:CGSizeMake(w, CGFLOAT_MAX)
+                                             options:NSStringDrawingUsesLineFragmentOrigin
+                                          attributes:@{NSFontAttributeName: label.font}
+                                             context:nil].size;
+    label.frame = CGRectMake(margin, y, w, ceil(size.height) + 4);
+    [container addSubview:label];
+    return y + CGRectGetHeight(label.frame) + 2;
+}
+
+- (void)addLineIn:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
+    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(margin, y, w, 1.0 / [UIScreen mainScreen].scale)];
+    line.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
+    [container addSubview:line];
+}
+
+- (void)loadImageWithURL:(NSString *)urlString intoImageView:(UIImageView *)imageView {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) return;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
+                                                              completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            UIImage *img = [UIImage imageWithData:data];
+            if (img) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    imageView.image = img;
+                });
+            }
         }
-        [alert addAction:[UIAlertAction actionWithTitle:@"完成" style:UIAlertActionStyleCancel handler:nil]];
+    }];
+    [task resume];
+}
 
-        UIViewController *topVC = DYYYVideoInfoTopVC();
-        if (topVC) {
-            [topVC presentViewController:alert animated:YES completion:nil];
-        }
-    } @catch (NSException *e) {
-        [DYYYUtils showToast:@"获取作品数据失败"];
+- (void)show {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    [window addSubview:self];
+    self.alpha = 0;
+    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 1; }];
+}
+
+- (void)dismiss {
+    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 0; } completion:^(BOOL finished) {
+        [self removeFromSuperview];
+    }];
+}
+
+- (void)copyInfo:(id)sender {
+    [[UIPasteboard generalPasteboard] setString:_copyText];
+    [DYYYToast showSuccessToastWithMessage:@"作品数据已复制"];
+}
+
+- (void)copyLink:(UITapGestureRecognizer *)gesture {
+    [[UIPasteboard generalPasteboard] setString:_workLink];
+    [DYYYToast showSuccessToastWithMessage:@"作品链接已复制"];
+}
+
+- (void)saveAvatar:(id)sender {
+    if (_avatarURL.length == 0) {
+        [DYYYUtils showToast:@"没有头像地址"];
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:_avatarURL];
+    if (url) {
+        [DYYYManager downloadMedia:url mediaType:MediaTypeImage audio:nil completion:^(BOOL success){}];
     }
 }
+
+- (void)downloadOriginal:(id)sender {
+    if (_videoURL.length == 0) {
+        [DYYYUtils showToast:@"没有原画地址"];
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:_videoURL];
+    if (url) {
+        [DYYYManager downloadMedia:url mediaType:MediaTypeVideo audio:nil completion:^(BOOL success){}];
+    }
+}
+
+@end
 
 %hook AWELongPressPanelViewGroupModel
 %property(nonatomic, assign) BOOL isDYYYCustomGroup;
@@ -815,22 +1131,27 @@ static void DYYYShowWorkData(AWEAwemeModel *model) {
         [viewModels addObject:pipViewModel];
     }
 
-    // 获取作品数据功能
+    // 获取作品数据功能（单独一组，最终放在面板最底部）
+    AWELongPressPanelViewGroupModel *workDataGroupModel = nil;
     BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
     if (enableWorkData) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 691;
-        workDataViewModel.duxIconName = @"ic_chart_bar_outlined_20";
+        workDataViewModel.duxIconName = @"ic_info_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
             AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
             [panelManager dismissWithAnimation:YES completion:^{
-                DYYYShowWorkData(wdModel);
+                [DYYYWorkDataCardView showWithAwemeModel:wdModel];
             }];
         };
-        [viewModels addObject:workDataViewModel];
+        workDataGroupModel = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
+        workDataGroupModel.isDYYYCustomGroup = YES;
+        workDataGroupModel.groupType = 11;
+        workDataGroupModel.isModern = YES;
+        workDataGroupModel.groupArr = @[workDataViewModel];
     }
 
     // 创建自定义组
@@ -883,7 +1204,13 @@ static void DYYYShowWorkData(AWEAwemeModel *model) {
         [customGroups addObject:secondRowGroup];
     }
 
-    return [customGroups arrayByAddingObjectsFromArray:originalArray];
+    NSMutableArray *resultGroups = [NSMutableArray array];
+    [resultGroups addObjectsFromArray:customGroups];
+    [resultGroups addObjectsFromArray:originalArray];
+    if (workDataGroupModel) {
+        [resultGroups addObject:workDataGroupModel];
+    }
+    return [resultGroups copy];
 }
 %end
 
@@ -1620,33 +1947,39 @@ static void DYYYShowWorkData(AWEAwemeModel *model) {
         [viewModels addObject:pipViewModel];
     }
 
-    // 获取作品数据功能
+    // 获取作品数据功能（单独一组，放在面板最底部）
+    AWELongPressPanelViewGroupModel *workDataGroupModel = nil;
     if (enableWorkData) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
         workDataViewModel.actionType = 692;
-        workDataViewModel.duxIconName = @"ic_chart_bar_outlined_20";
+        workDataViewModel.duxIconName = @"ic_info_outlined_20";
         workDataViewModel.describeString = @"获取作品数据";
         AWEAwemeModel *wdModel = self.awemeModel;
         workDataViewModel.action = ^{
             AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
             [panelManager dismissWithAnimation:YES completion:^{
-                DYYYShowWorkData(wdModel);
+                [DYYYWorkDataCardView showWithAwemeModel:wdModel];
             }];
         };
-        [viewModels addObject:workDataViewModel];
+        workDataGroupModel = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
+        workDataGroupModel.isDYYYCustomGroup = YES;
+        workDataGroupModel.groupType = 0;
+        workDataGroupModel.groupArr = @[workDataViewModel];
     }
 
     newGroupModel.groupArr = viewModels;
 
-    // 返回自定义组+原始组的结果
-    if (originalArray.count > 0) {
-        NSMutableArray *resultArray = [originalArray mutableCopy];
-        [resultArray insertObject:newGroupModel atIndex:0];
-        return [resultArray copy];
-    } else {
-        return @[ newGroupModel ];
+    // 返回：原始组 + 自定义组（顶部） + 获取作品数据组（底部）
+    NSMutableArray *resultArray = [NSMutableArray array];
+    [resultArray addObjectsFromArray:originalArray];
+    if (viewModels.count > 0) {
+        [resultArray addObject:newGroupModel];
     }
+    if (workDataGroupModel) {
+        [resultArray addObject:workDataGroupModel];
+    }
+    return [resultArray copy];
 }
 %end
 
