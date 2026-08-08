@@ -498,68 +498,70 @@ static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error || !data) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败）", _playCount];
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败:%@）", _playCount, error.localizedDescription];
             });
             return;
         }
-        NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-        if (![json isKindOfClass:[NSDictionary class]]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API格式错误）", _playCount];
-            });
-            return;
-        }
-        // data 字段是字符串类型（schema 声明 anyOf string/null），需要二次 JSON 解析
-        id dataField = json[@"data"];
-        NSString *playCountStr = nil;
-        NSString *downloadCountStr = nil;
-        NSString *shareCountStr = nil;
-        NSString *diggCountStr = nil;
+        // 先把原始响应转成字符串，方便调试
+        NSString *rawStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 
-        if ([dataField isKindOfClass:[NSString class]]) {
-            // data 是 JSON 字符串，需要二次解析
-            NSData *innerData = [dataField dataUsingEncoding:NSUTF8StringEncoding];
-            NSDictionary *innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:0 error:nil];
-            if ([innerJson isKindOfClass:[NSDictionary class]]) {
-                // 可能是 { "aweme_id": { "play_count": 123, ... } } 或直接 { "play_count": 123, ... }
-                NSDictionary *statsDict = nil;
-                if (innerJson.count == 1) {
-                    // 取第一个 value
-                    id firstVal = [innerJson allValues].firstObject;
-                    if ([firstVal isKindOfClass:[NSDictionary class]]) {
-                        statsDict = firstVal;
-                    } else {
-                        statsDict = innerJson;
+        // 解析外层 JSON
+        id outerJson = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:nil];
+
+        // 递归搜索：在整个 JSON 树里找包含指定 key 的值
+        NSString * (^searchKey)(id, NSString *) = ^NSString *(id node, NSString *targetKey) {
+            if (!node) return (NSString *)nil;
+            if ([node isKindOfClass:[NSDictionary class]]) {
+                // 先检查当前层有没有目标 key
+                for (NSString *k in [(NSDictionary *)node allKeys]) {
+                    if ([k.lowercaseString containsString:targetKey.lowercaseString]) {
+                        id v = [(NSDictionary *)node objectForKey:k];
+                        if (v && ![v isKindOfClass:[NSNull class]]) {
+                            NSString *s = [NSString stringWithFormat:@"%@", v];
+                            if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+                        }
                     }
-                } else {
-                    statsDict = innerJson;
                 }
-                playCountStr = [NSString stringWithFormat:@"%@", statsDict[@"play_count"] ?: @""];
-                downloadCountStr = [NSString stringWithFormat:@"%@", statsDict[@"download_count"] ?: @""];
-                shareCountStr = [NSString stringWithFormat:@"%@", statsDict[@"share_count"] ?: @""];
-                diggCountStr = [NSString stringWithFormat:@"%@", statsDict[@"digg_count"] ?: @""];
-            }
-        } else if ([dataField isKindOfClass:[NSDictionary class]]) {
-            NSDictionary *statsDict = nil;
-            if ([dataField count] == 1) {
-                id firstVal = [dataField allValues].firstObject;
-                if ([firstVal isKindOfClass:[NSDictionary class]]) {
-                    statsDict = firstVal;
-                } else {
-                    statsDict = dataField;
+                // 递归搜索子节点
+                for (id v in [(NSDictionary *)node allValues]) {
+                    NSString *r = searchKey(v, targetKey);
+                    if (r) return r;
                 }
-            } else {
-                statsDict = dataField;
+            } else if ([node isKindOfClass:[NSArray class]]) {
+                for (id v in (NSArray *)node) {
+                    NSString *r = searchKey(v, targetKey);
+                    if (r) return r;
+                }
+            } else if ([node isKindOfClass:[NSString class]]) {
+                // 字符串可能是嵌套 JSON，尝试二次解析
+                NSData *innerData = [(NSString *)node dataUsingEncoding:NSUTF8StringEncoding];
+                if (innerData) {
+                    id innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:NSJSONReadingAllowFragments error:nil];
+                    if (innerJson && innerJson != node) {
+                        NSString *r = searchKey(innerJson, targetKey);
+                        if (r) return r;
+                    }
+                }
             }
-            playCountStr = [NSString stringWithFormat:@"%@", statsDict[@"play_count"] ?: @""];
-            downloadCountStr = [NSString stringWithFormat:@"%@", statsDict[@"download_count"] ?: @""];
-            shareCountStr = [NSString stringWithFormat:@"%@", statsDict[@"share_count"] ?: @""];
-            diggCountStr = [NSString stringWithFormat:@"%@", statsDict[@"digg_count"] ?: @""];
+            return (NSString *)nil;
+        };
+
+        // 如果外层解析失败，尝试直接把整个 rawStr 当 JSON 解析
+        if (!outerJson) {
+            outerJson = rawStr;
         }
+
+        NSString *playCountStr = searchKey(outerJson, @"play_count");
+        NSString *downloadCountStr = searchKey(outerJson, @"download_count");
+        NSString *shareCountStr = searchKey(outerJson, @"share_count");
+        NSString *diggCountStr = searchKey(outerJson, @"digg_count");
 
         if (playCountStr.length == 0 || [playCountStr isEqualToString:@"(null)"]) {
+            // 找不到 play_count，显示原始响应前 80 字符方便调试
+            NSString *preview = rawStr;
+            if (preview.length > 80) preview = [preview substringToIndex:80];
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API未返回数值）", _playCount];
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（未找到,响应:%@...）", _playCount, preview];
             });
             return;
         }
