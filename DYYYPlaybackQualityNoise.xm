@@ -7,13 +7,70 @@
 
 // 移植自 pxx917144686/DYYY 的 AWEPlayerPlayControlHandler 部分
 // 仅保留：分档清晰度按钮 + 音频降噪（不含下载用的 getDYYYSrcURLDownload 与 AWEVideoModel 最高画质 hook，本地均已存在）
+
+// AWEPlayerPlayControlHandler 在本仓库头文件中仅为前向声明(@class)，
+// 直接 [self xxx] / self.xxx 会报 "receiver type ... is a forward declaration"。
+// 这里补一个分类声明方法与属性，并用手写 associated object 存取器实现属性，
+// 避免依赖 %property（前向声明类下 %property 仍会被编译器视为不可见）。
+@interface AWEPlayerPlayControlHandler (DYYYQualityNoise)
+- (void)parseAvailableQualities:(AWEURLModel *)urlModel;
+- (void)addQualityButton;
+- (void)applyDefaultQualityPreference;
+- (void)showQualityOptions;
+- (void)switchToQuality:(NSInteger)index;
+- (void)setupNoiseFilter;
+- (void)addNoiseFilterButton;
+- (void)toggleNoiseFilter;
+@property (nonatomic, strong) UIButton *qualityButton;
+@property (nonatomic, strong) UIButton *noiseFilterButton;
+@property (nonatomic, strong) NSArray *availableQualities;
+@property (nonatomic, assign) NSInteger currentQualityIndex;
+@property (nonatomic, assign) BOOL noiseFilterEnabled;
+@end
+
 %hook AWEPlayerPlayControlHandler
 
-%property (nonatomic, strong) UIButton *qualityButton;
-%property (nonatomic, strong) UIButton *noiseFilterButton;
-%property (nonatomic, strong) NSArray *availableQualities;
-%property (nonatomic, assign) NSInteger currentQualityIndex;
-%property (nonatomic, assign) BOOL noiseFilterEnabled;
+#pragma mark - 关联对象属性存取器(替代 %property，前向声明类下更稳妥)
+%new
+- (UIButton *)qualityButton {
+    return objc_getAssociatedObject(self, @selector(qualityButton));
+}
+%new
+- (void)setQualityButton:(UIButton *)btn {
+    objc_setAssociatedObject(self, @selector(qualityButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+%new
+- (UIButton *)noiseFilterButton {
+    return objc_getAssociatedObject(self, @selector(noiseFilterButton));
+}
+%new
+- (void)setNoiseFilterButton:(UIButton *)btn {
+    objc_setAssociatedObject(self, @selector(noiseFilterButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+%new
+- (NSArray *)availableQualities {
+    return objc_getAssociatedObject(self, @selector(availableQualities));
+}
+%new
+- (void)setAvailableQualities:(NSArray *)arr {
+    objc_setAssociatedObject(self, @selector(availableQualities), arr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+%new
+- (NSInteger)currentQualityIndex {
+    return [objc_getAssociatedObject(self, @selector(currentQualityIndex)) integerValue];
+}
+%new
+- (void)setCurrentQualityIndex:(NSInteger)idx {
+    objc_setAssociatedObject(self, @selector(currentQualityIndex), @(idx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+%new
+- (BOOL)noiseFilterEnabled {
+    return [objc_getAssociatedObject(self, @selector(noiseFilterEnabled)) boolValue];
+}
+%new
+- (void)setNoiseFilterEnabled:(BOOL)v {
+    objc_setAssociatedObject(self, @selector(noiseFilterEnabled), @(v), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 #pragma mark - 分档清晰度
 
