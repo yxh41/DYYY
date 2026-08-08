@@ -1,106 +1,145 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <AVFoundation/AVFoundation.h>
-#import "DYYYManager.h"
 #import "DYYYUtils.h"
 #import "AwemeHeaders.h"
 
 // 移植自 pxx917144686/DYYY 的 AWEPlayerPlayControlHandler 部分
-// 仅保留：分档清晰度按钮 + 音频降噪（不含下载用的 getDYYYSrcURLDownload 与 AWEVideoModel 最高画质 hook，本地均已存在）
+// 仅保留：分档清晰度按钮 + 音频降噪（下载用的 getDYYYSrcURLDownload 与 AWEVideoModel 最高画质 hook 本地均已存在）
+//
+// 关键修正：原版 hook 的 AWEPlayerPlayControlHandler 在当前抖音版本中可能不存在/被改名，
+// 导致整个 %hook 被 Logos 静默跳过、按钮永不被创建。此处改挂到本仓库已验证存在且
+// 正在工作的 AWEPlayInteractionViewController（双击菜单/倍速按钮均 hook 它）。
+// 该类的基类声明见 AwemeHeaders.h:359（完整 @interface），故此处仅加分类声明 %new 方法，
+// 不补基类声明（避免与已有完整 @interface 冲突）。
 
-// AWEPlayerPlayControlHandler 在本仓库头文件中仅为前向声明(@class)，没有完整 @interface。
-// 因此不能让它直接依附分类，也不能用 %property（均会报 forward declaration）。
-// 做法：先补一个完整基类声明 @interface ... : NSObject @end（编译期虚构类型，
-//   运行期 Logos 按类名 hook 真实私有类，互不影响），再在分类中声明本文件扩展的
-//   方法与属性存取器。属性实际由下方手写 associated object 存取器(%new)实现。
-@interface AWEPlayerPlayControlHandler : NSObject
+@interface AWEPlayInteractionViewController (DYYYQualityNoise)
+- (void)dyyySetupQualityAndNoise;
+- (void)dyyyAddQualityButton;
+- (void)dyyyAddNoiseFilterButton;
+- (void)dyyyParseAvailableQualities:(AWEURLModel *)urlModel;
+- (void)dyyyApplyDefaultQualityPreference;
+- (void)dyyyShowQualityOptions;
+- (void)dyyySwitchToQuality:(NSInteger)index;
+- (void)dyyyToggleNoiseFilter;
+- (UIButton *)dyyyQualityButton;
+- (void)setDyyyQualityButton:(UIButton *)btn;
+- (UIButton *)dyyyNoiseFilterButton;
+- (void)setDyyyNoiseFilterButton:(UIButton *)btn;
+- (NSArray *)dyyyAvailableQualities;
+- (void)setDyyyAvailableQualities:(NSArray *)arr;
+- (NSInteger)dyyyCurrentQualityIndex;
+- (void)setDyyyCurrentQualityIndex:(NSInteger)idx;
+- (BOOL)dyyyNoiseFilterEnabled;
+- (void)setDyyyNoiseFilterEnabled:(BOOL)v;
 @end
 
-@interface AWEPlayerPlayControlHandler (DYYYQualityNoise)
-- (void)parseAvailableQualities:(AWEURLModel *)urlModel;
-- (void)addQualityButton;
-- (void)applyDefaultQualityPreference;
-- (void)showQualityOptions;
-- (void)switchToQuality:(NSInteger)index;
-- (void)setupNoiseFilter;
-- (void)addNoiseFilterButton;
-- (void)toggleNoiseFilter;
-- (UIButton *)qualityButton;
-- (void)setQualityButton:(UIButton *)btn;
-- (UIButton *)noiseFilterButton;
-- (void)setNoiseFilterButton:(UIButton *)btn;
-- (NSArray *)availableQualities;
-- (void)setAvailableQualities:(NSArray *)arr;
-- (NSInteger)currentQualityIndex;
-- (void)setCurrentQualityIndex:(NSInteger)idx;
-- (BOOL)noiseFilterEnabled;
-- (void)setNoiseFilterEnabled:(BOOL)v;
-@end
+// 通用：从 keyWindow 找正在播放的 AVPlayer（反向扫描 AVPlayerLayer.player）。
+// 不依赖任何抖音私有播放器类名，规避"类名不存在/被混淆"的坑。
+static AVPlayer *DYYYFindActivePlayer(void) {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    if (!window) return nil;
+    __block AVPlayer *result = nil;
+    void (^scan)(UIView *) = ^(UIView *view) {
+        if (result) return;
+        if ([view.layer isKindOfClass:[AVPlayerLayer class]]) {
+            AVPlayerLayer *playerLayer = (AVPlayerLayer *)view.layer;
+            if (playerLayer.player) {
+                result = playerLayer.player;
+                return;
+            }
+        }
+        for (UIView *sub in view.subviews) {
+            scan(sub);
+        }
+    };
+    scan(window);
+    return result;
+}
 
-%hook AWEPlayerPlayControlHandler
+%hook AWEPlayInteractionViewController
 
-#pragma mark - 关联对象属性存取器(替代 %property，前向声明类下更稳妥)
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (DYYYGetBool(@"DYYYEnableQualitySelection") || DYYYGetBool(@"DYYYEnableNoiseFilter")) {
+        [self dyyySetupQualityAndNoise];
+    }
+}
+
+#pragma mark - 关联对象属性存取器（替代 %property，前向声明类下更稳妥；完整类下同样安全）
+
 %new
-- (UIButton *)qualityButton {
-    return objc_getAssociatedObject(self, @selector(qualityButton));
+- (UIButton *)dyyyQualityButton {
+    return objc_getAssociatedObject(self, @selector(dyyyQualityButton));
 }
 %new
-- (void)setQualityButton:(UIButton *)btn {
-    objc_setAssociatedObject(self, @selector(qualityButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+- (void)setDyyyQualityButton:(UIButton *)btn {
+    objc_setAssociatedObject(self, @selector(dyyyQualityButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 %new
-- (UIButton *)noiseFilterButton {
-    return objc_getAssociatedObject(self, @selector(noiseFilterButton));
+- (UIButton *)dyyyNoiseFilterButton {
+    return objc_getAssociatedObject(self, @selector(dyyyNoiseFilterButton));
 }
 %new
-- (void)setNoiseFilterButton:(UIButton *)btn {
-    objc_setAssociatedObject(self, @selector(noiseFilterButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+- (void)setDyyyNoiseFilterButton:(UIButton *)btn {
+    objc_setAssociatedObject(self, @selector(dyyyNoiseFilterButton), btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 %new
-- (NSArray *)availableQualities {
-    return objc_getAssociatedObject(self, @selector(availableQualities));
+- (NSArray *)dyyyAvailableQualities {
+    return objc_getAssociatedObject(self, @selector(dyyyAvailableQualities));
 }
 %new
-- (void)setAvailableQualities:(NSArray *)arr {
-    objc_setAssociatedObject(self, @selector(availableQualities), arr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+- (void)setDyyyAvailableQualities:(NSArray *)arr {
+    objc_setAssociatedObject(self, @selector(dyyyAvailableQualities), arr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 %new
-- (NSInteger)currentQualityIndex {
-    return [objc_getAssociatedObject(self, @selector(currentQualityIndex)) integerValue];
+- (NSInteger)dyyyCurrentQualityIndex {
+    return [objc_getAssociatedObject(self, @selector(dyyyCurrentQualityIndex)) integerValue];
 }
 %new
-- (void)setCurrentQualityIndex:(NSInteger)idx {
-    objc_setAssociatedObject(self, @selector(currentQualityIndex), @(idx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+- (void)setDyyyCurrentQualityIndex:(NSInteger)idx {
+    objc_setAssociatedObject(self, @selector(dyyyCurrentQualityIndex), @(idx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 %new
-- (BOOL)noiseFilterEnabled {
-    return [objc_getAssociatedObject(self, @selector(noiseFilterEnabled)) boolValue];
+- (BOOL)dyyyNoiseFilterEnabled {
+    return [objc_getAssociatedObject(self, @selector(dyyyNoiseFilterEnabled)) boolValue];
 }
 %new
-- (void)setNoiseFilterEnabled:(BOOL)v {
-    objc_setAssociatedObject(self, @selector(noiseFilterEnabled), @(v), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+- (void)setDyyyNoiseFilterEnabled:(BOOL)v {
+    objc_setAssociatedObject(self, @selector(dyyyNoiseFilterEnabled), @(v), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+#pragma mark - 入口
+
+%new
+- (void)dyyySetupQualityAndNoise {
+    if (DYYYGetBool(@"DYYYEnableQualitySelection")) {
+        AWEAwemeModel *awemeModel = nil;
+        @try {
+            awemeModel = [self performSelector:@selector(awemeModel)];
+        } @catch (NSException *exception) {
+            awemeModel = nil;
+        }
+        // 仅视频内容显示清晰度按钮（图片 68 无 videoURLModel）
+        if (awemeModel && awemeModel.awemeType != 68) {
+            AWEVideoModel *videoModel = awemeModel.video;
+            AWEURLModel *urlModel = [videoModel valueForKey:@"videoURLModel"];
+            if (urlModel && urlModel.originURLList && urlModel.originURLList.count > 0) {
+                [self dyyyParseAvailableQualities:urlModel];
+                [self dyyyAddQualityButton];
+                [self dyyyApplyDefaultQualityPreference];
+            }
+        }
+    }
+    if (DYYYGetBool(@"DYYYEnableNoiseFilter")) {
+        [self dyyyAddNoiseFilterButton];
+    }
 }
 
 #pragma mark - 分档清晰度
 
-- (void)setupAVPlayerItem:(AVPlayerItem *)item {
-    %orig;
-
-    if (!DYYYGetBool(@"DYYYEnableQualitySelection")) return;
-
-    id videoModel = [self valueForKey:@"videoModel"];
-    if (!videoModel) return;
-
-    AWEURLModel *urlModel = [videoModel valueForKey:@"videoURLModel"];
-    if (!urlModel || !urlModel.originURLList || urlModel.originURLList.count == 0) return;
-
-    [self parseAvailableQualities:urlModel];
-    [self addQualityButton];
-    [self applyDefaultQualityPreference];
-}
-
 %new
-- (void)parseAvailableQualities:(AWEURLModel *)urlModel {
+- (void)dyyyParseAvailableQualities:(AWEURLModel *)urlModel {
     NSMutableArray *qualities = [NSMutableArray array];
     NSArray *urls = urlModel.originURLList;
 
@@ -131,103 +170,98 @@
     if (qualities.count == 0 && urls.count > 0) {
         [qualities addObject:@{@"title": @"默认", @"url": urls.firstObject, @"type": @"default"}];
     }
-    self.availableQualities = qualities;
-    self.currentQualityIndex = 0;
+    [self setDyyyAvailableQualities:qualities];
+    [self setDyyyCurrentQualityIndex:0];
 }
 
 %new
-- (void)addQualityButton {
-    UIViewController *parentVC = nil;
-    id currentResponder = self;
-    while ((currentResponder = [currentResponder nextResponder])) {
-        if ([currentResponder isKindOfClass:[UIViewController class]]) {
-            parentVC = (UIViewController *)currentResponder;
-            break;
-        }
-    }
-    if (!parentVC || !parentVC.view) return;
+- (void)dyyyAddQualityButton {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    if (!window) return;
 
-    if (self.qualityButton) {
-        [self.qualityButton removeFromSuperview];
-        self.qualityButton = nil;
-    }
+    // 去重：每次 viewDidAppear 先移除旧按钮
+    UIView *existing = [window viewWithTag:9877];
+    if (existing) [existing removeFromSuperview];
 
     UIButton *qualityButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    qualityButton.frame = CGRectMake(parentVC.view.frame.size.width - 90, 210, 70, 30);
+    CGFloat screenW = window.bounds.size.width;
+    qualityButton.frame = CGRectMake(screenW - 90, 210, 70, 30);
     qualityButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.6];
     qualityButton.layer.cornerRadius = 15;
 
     NSString *qualityText = @"清晰度";
-    if (self.availableQualities.count > 0 && self.currentQualityIndex < self.availableQualities.count) {
-        qualityText = self.availableQualities[self.currentQualityIndex][@"title"];
+    if (self.dyyyAvailableQualities.count > 0 &&
+        self.dyyyCurrentQualityIndex < (NSInteger)self.dyyyAvailableQualities.count) {
+        qualityText = self.dyyyAvailableQualities[self.dyyyCurrentQualityIndex][@"title"];
     }
     [qualityButton setTitle:qualityText forState:UIControlStateNormal];
     [qualityButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     qualityButton.titleLabel.font = [UIFont systemFontOfSize:13];
-    [qualityButton addTarget:self action:@selector(showQualityOptions) forControlEvents:UIControlEventTouchUpInside];
+    [qualityButton addTarget:self
+                      action:@selector(dyyyShowQualityOptions)
+            forControlEvents:UIControlEventTouchUpInside];
     qualityButton.tag = 9877;
 
-    [parentVC.view addSubview:qualityButton];
-    self.qualityButton = qualityButton;
+    [window addSubview:qualityButton];
+    [window bringSubviewToFront:qualityButton];
+    [self setDyyyQualityButton:qualityButton];
 }
 
 %new
-- (void)applyDefaultQualityPreference {
-    if (self.availableQualities.count == 0) return;
+- (void)dyyyApplyDefaultQualityPreference {
+    if (self.dyyyAvailableQualities.count == 0) return;
 
     id pref = [DYYYPreferences objectForKey:@"DYYYDefaultQuality"];
     NSString *prefStr = pref ? [NSString stringWithFormat:@"%@", pref] : @"最高";
 
     if ([prefStr isEqualToString:@"最高"]) {
-        [self switchToQuality:0];
+        [self dyyySwitchToQuality:0];
         return;
     }
 
     NSDictionary *typeMap = @{@"原画": @"original", @"1080P": @"1080p", @"720P": @"720p", @"540P": @"540p"};
     NSString *targetType = typeMap[prefStr];
     if (!targetType) {
-        [self switchToQuality:0];
+        [self dyyySwitchToQuality:0];
         return;
     }
-    for (int i = 0; i < self.availableQualities.count; i++) {
-        if ([self.availableQualities[i][@"type"] isEqualToString:targetType]) {
-            [self switchToQuality:i];
+    for (int i = 0; i < (int)self.dyyyAvailableQualities.count; i++) {
+        if ([self.dyyyAvailableQualities[i][@"type"] isEqualToString:targetType]) {
+            [self dyyySwitchToQuality:i];
             return;
         }
     }
-    [self switchToQuality:0];
+    [self dyyySwitchToQuality:0];
 }
 
 %new
-- (void)showQualityOptions {
-    if (!self.availableQualities || self.availableQualities.count == 0) return;
+- (void)dyyyShowQualityOptions {
+    if (!self.dyyyAvailableQualities || self.dyyyAvailableQualities.count == 0) return;
 
-    UIViewController *parentVC = nil;
-    id currentResponder = self;
-    while ((currentResponder = [currentResponder nextResponder])) {
-        if ([currentResponder isKindOfClass:[UIViewController class]]) {
-            parentVC = (UIViewController *)currentResponder;
-            break;
-        }
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    if (!window) return;
+    UIViewController *rootVC = window.rootViewController;
+    while (rootVC.presentedViewController) {
+        rootVC = rootVC.presentedViewController;
     }
-    if (!parentVC) return;
+    if (!rootVC) return;
 
     UIAlertController *alertController = [UIAlertController
                                          alertControllerWithTitle:@"选择清晰度"
                                          message:nil
                                          preferredStyle:UIAlertControllerStyleActionSheet];
 
-    for (int i = 0; i < self.availableQualities.count; i++) {
-        NSDictionary *quality = self.availableQualities[i];
+    for (int i = 0; i < (int)self.dyyyAvailableQualities.count; i++) {
+        NSDictionary *quality = self.dyyyAvailableQualities[i];
         NSString *title = quality[@"title"];
-        if (i == self.currentQualityIndex) {
+        if (i == self.dyyyCurrentQualityIndex) {
             title = [NSString stringWithFormat:@"✓ %@", title];
         }
         UIAlertAction *action = [UIAlertAction
                                  actionWithTitle:title
                                  style:UIAlertActionStyleDefault
                                  handler:^(UIAlertAction * _Nonnull action) {
-            [self switchToQuality:i];
+            [self dyyySwitchToQuality:i];
         }];
         [alertController addAction:action];
     }
@@ -239,28 +273,27 @@
     [alertController addAction:cancelAction];
 
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        alertController.popoverPresentationController.sourceView = self.qualityButton;
-        alertController.popoverPresentationController.sourceRect = self.qualityButton.bounds;
+        alertController.popoverPresentationController.sourceView = self.dyyyQualityButton;
+        alertController.popoverPresentationController.sourceRect = self.dyyyQualityButton.bounds;
     }
 
-    [parentVC presentViewController:alertController animated:YES completion:nil];
+    [rootVC presentViewController:alertController animated:YES completion:nil];
 }
 
 %new
-- (void)switchToQuality:(NSInteger)index {
-    if (index < 0 || index >= self.availableQualities.count) return;
+- (void)dyyySwitchToQuality:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.dyyyAvailableQualities.count) return;
 
-    id playerObject = [self valueForKey:@"player"];
-    if (!playerObject || ![playerObject isKindOfClass:[AVPlayer class]]) return;
+    AVPlayer *player = DYYYFindActivePlayer();
+    if (!player) return;
 
-    AVPlayer *player = (AVPlayer *)playerObject;
     AVPlayerItem *currentItem = player.currentItem;
     if (!currentItem) return;
 
     CMTime currentTime = currentItem.currentTime;
     BOOL wasPlaying = player.rate > 0;
 
-    NSString *urlString = self.availableQualities[index][@"url"];
+    NSString *urlString = self.dyyyAvailableQualities[index][@"url"];
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) return;
 
@@ -274,62 +307,46 @@
         [player play];
     }
 
-    self.currentQualityIndex = index;
+    [self setDyyyCurrentQualityIndex:index];
 
-    if (self.qualityButton) {
-        NSString *qualityText = self.availableQualities[index][@"title"];
-        [self.qualityButton setTitle:qualityText forState:UIControlStateNormal];
+    if (self.dyyyQualityButton) {
+        NSString *qualityText = self.dyyyAvailableQualities[index][@"title"];
+        [self.dyyyQualityButton setTitle:qualityText forState:UIControlStateNormal];
     }
 
-    NSString *qualityName = self.availableQualities[index][@"title"];
+    NSString *qualityName = self.dyyyAvailableQualities[index][@"title"];
     [DYYYUtils showToast:[NSString stringWithFormat:@"已切换到%@清晰度", qualityName]];
 }
 
 #pragma mark - 音频降噪
 
-- (void)play {
-    %orig;
-    if (DYYYGetBool(@"DYYYEnableNoiseFilter")) {
-        [self setupNoiseFilter];
-    }
-}
-
 %new
-- (void)setupNoiseFilter {
-    if (self.noiseFilterEnabled) return;
-    [self addNoiseFilterButton];
-    self.noiseFilterEnabled = YES;
-}
+- (void)dyyyAddNoiseFilterButton {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    if (!window) return;
 
-%new
-- (void)addNoiseFilterButton {
-    UIViewController *parentVC = nil;
-    id currentResponder = self;
-    while ((currentResponder = [currentResponder nextResponder])) {
-        if ([currentResponder isKindOfClass:[UIViewController class]]) {
-            parentVC = (UIViewController *)currentResponder;
-            break;
-        }
-    }
-    if (!parentVC || !parentVC.view) return;
-    if ([parentVC.view viewWithTag:9876]) return;
+    if ([window viewWithTag:9876]) return;
 
     UIButton *filterButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    filterButton.frame = CGRectMake(parentVC.view.frame.size.width - 90, 160, 70, 30);
+    CGFloat screenW = window.bounds.size.width;
+    filterButton.frame = CGRectMake(screenW - 90, 160, 70, 30);
     filterButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.6];
     filterButton.layer.cornerRadius = 15;
     [filterButton setTitle:@"降噪" forState:UIControlStateNormal];
     [filterButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     filterButton.titleLabel.font = [UIFont systemFontOfSize:13];
-    [filterButton addTarget:self action:@selector(toggleNoiseFilter) forControlEvents:UIControlEventTouchUpInside];
+    [filterButton addTarget:self
+                     action:@selector(dyyyToggleNoiseFilter)
+           forControlEvents:UIControlEventTouchUpInside];
     filterButton.tag = 9876;
 
-    [parentVC.view addSubview:filterButton];
+    [window addSubview:filterButton];
+    [window bringSubviewToFront:filterButton];
 }
 
 %new
-- (void)toggleNoiseFilter {
-    AVPlayer *player = [self valueForKey:@"player"];
+- (void)dyyyToggleNoiseFilter {
+    AVPlayer *player = DYYYFindActivePlayer();
     if (!player) return;
 
     BOOL isActive = ![[DYYYPreferences objectForKey:@"DYYYNoiseFilterActive"] boolValue];
