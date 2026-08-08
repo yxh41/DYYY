@@ -1,4 +1,5 @@
 #import "AwemeHeaders.h"
+#import <objc/runtime.h>
 #import "CityManager.h"
 #import "DYYYPreferences.h"
 #import "DYYYBottomAlertView.h"
@@ -57,6 +58,35 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     return @"";
 }
 
+// 运行期遍历对象属性，按关键词匹配取值（兜底方案，用于头文件未声明的统计字段如 playCount/downloadCount）
+static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
+    if (!obj || !keyword) return @"";
+    Class cls = [obj class];
+    while (cls && cls != [NSObject class]) {
+        unsigned int count = 0;
+        objc_property_t *props = class_copyPropertyList(cls, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            const char *name = property_getName(props[i]);
+            NSString *propName = [NSString stringWithUTF8String:name];
+            if ([propName.lowercaseString containsString:keyword.lowercaseString]) {
+                @try {
+                    id val = [obj valueForKey:propName];
+                    if (val && ![val isKindOfClass:[NSNull class]]) {
+                        NSString *s = [NSString stringWithFormat:@"%@", val];
+                        if (s.length > 0 && ![s isEqualToString:@"(null)"]) {
+                            free(props);
+                            return s;
+                        }
+                    }
+                } @catch (NSException *e) {}
+            }
+        }
+        free(props);
+        cls = class_getSuperclass(cls);
+    }
+    return @"";
+}
+
 // MARK: - 作品数据卡片
 @interface DYYYWorkDataCardView : UIView
 + (void)showWithAwemeModel:(AWEAwemeModel *)model;
@@ -68,6 +98,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     NSString *_avatarURL;
     NSString *_videoURL;
     NSString *_workLink;
+    NSString *_profileLink;
 
     NSString *_nickname;
     NSString *_douyinId;
@@ -125,19 +156,34 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     }
 
     AWEAwemeStatisticsModel *stats = _model.statistics;
+    // 播放量：先试 KVC 多 key，再运行期扫描含 "play" 的属性
     _playCount = DYYYVideoInfoStringForKeys(stats, @[@"playCount", @"play_count"]);
+    if (_playCount.length == 0) _playCount = DYYYVideoInfoScanProperty(stats, @"play");
     if (_playCount.length == 0) _playCount = @"0";
     _diggCount = [NSString stringWithFormat:@"%@", stats.diggCount ?: @0];
     _commentCount = DYYYVideoInfoStringForKeys(stats, @[@"commentCount", @"comment_count"]);
+    if (_commentCount.length == 0) _commentCount = DYYYVideoInfoScanProperty(stats, @"comment");
     if (_commentCount.length == 0) _commentCount = @"0";
     _collectCount = DYYYVideoInfoStringForKeys(stats, @[@"collectCount", @"collect_count", @"favoriteCount"]);
+    if (_collectCount.length == 0) _collectCount = DYYYVideoInfoScanProperty(stats, @"collect");
     if (_collectCount.length == 0) _collectCount = @"0";
     _shareCount = DYYYVideoInfoStringForKeys(stats, @[@"shareCount", @"share_count"]);
+    if (_shareCount.length == 0) _shareCount = DYYYVideoInfoScanProperty(stats, @"share");
     if (_shareCount.length == 0) _shareCount = @"0";
     _downloadCount = DYYYVideoInfoStringForKeys(stats, @[@"downloadCount", @"download_count"]);
+    if (_downloadCount.length == 0) _downloadCount = DYYYVideoInfoScanProperty(stats, @"download");
     if (_downloadCount.length == 0) _downloadCount = @"0";
 
-    _workLink = _model.shareURL ?: [NSString stringWithFormat:@"https://www.douyin.com/video/%@", _itemID];
+    // 作品链接：用短格式，不用 shareURL（太长）
+    _workLink = [NSString stringWithFormat:@"https://www.douyin.com/video/%@", _itemID];
+    // 主页链接
+    if (_secUid.length > 0) {
+        _profileLink = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", _secUid];
+    } else if (_uid.length > 0) {
+        _profileLink = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", _uid];
+    } else {
+        _profileLink = @"";
+    }
 
     AWEVideoModel *video = _model.video;
     if (video && video.h264URL && video.h264URL.originURLList.count > 0) {
@@ -167,6 +213,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     [info appendFormat:@"分享量：%@\n", _shareCount];
     [info appendFormat:@"下载量：%@\n", _downloadCount];
     [info appendFormat:@"作品链接：%@\n", _workLink];
+    [info appendFormat:@"主页链接：%@\n", _profileLink];
     _copyText = [info copy];
 }
 
@@ -336,6 +383,25 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     [scroll addSubview:linkLabel];
     y += CGRectGetHeight(linkLabel.frame) + 10;
 
+    // 主页链接
+    if (_profileLink.length > 0) {
+        y = [self addSectionTitle:@"【主页链接】" in:scroll atY:y width:contentW margin:margin];
+        UILabel *profileLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
+        profileLabel.text = _profileLink;
+        profileLabel.font = [UIFont systemFontOfSize:12];
+        profileLabel.textColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:1];
+        profileLabel.numberOfLines = 0;
+        profileLabel.userInteractionEnabled = YES;
+        [profileLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyProfileLink:)]];
+        CGSize profileSize = [_profileLink boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
+                                                       options:NSStringDrawingUsesLineFragmentOrigin
+                                                    attributes:@{NSFontAttributeName: profileLabel.font}
+                                                       context:nil].size;
+        profileLabel.frame = CGRectMake(margin, y, contentW, ceil(profileSize.height) + 4);
+        [scroll addSubview:profileLabel];
+        y += CGRectGetHeight(profileLabel.frame) + 10;
+    }
+
     scroll.contentSize = CGSizeMake(cardW, y + margin);
 }
 
@@ -407,6 +473,11 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
 - (void)copyLink:(UITapGestureRecognizer *)gesture {
     [[UIPasteboard generalPasteboard] setString:_workLink];
     [DYYYToast showSuccessToastWithMessage:@"作品链接已复制"];
+}
+
+- (void)copyProfileLink:(UITapGestureRecognizer *)gesture {
+    [[UIPasteboard generalPasteboard] setString:_profileLink];
+    [DYYYToast showSuccessToastWithMessage:@"主页链接已复制"];
 }
 
 - (void)saveAvatar:(id)sender {
@@ -1131,8 +1202,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
         [viewModels addObject:pipViewModel];
     }
 
-    // 获取作品数据功能（单独一组，最终放在面板最底部）
-    AWELongPressPanelViewGroupModel *workDataGroupModel = nil;
+    // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
     BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
     if (enableWorkData) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
@@ -1147,11 +1217,34 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
                 [DYYYWorkDataCardView showWithAwemeModel:wdModel];
             }];
         };
-        workDataGroupModel = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
-        workDataGroupModel.isDYYYCustomGroup = YES;
-        workDataGroupModel.groupType = 11;
-        workDataGroupModel.isModern = YES;
-        workDataGroupModel.groupArr = @[workDataViewModel];
+        // 遍历原始组，找到"听抖音"所在组，在该组末尾插入
+        BOOL injected = NO;
+        for (NSInteger gi = 0; gi < (NSInteger)originalArray.count && !injected; gi++) {
+            AWELongPressPanelViewGroupModel *grp = originalArray[gi];
+            if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
+            NSArray *arr = grp.groupArr;
+            for (id item in arr) {
+                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
+                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
+                    if ([vm.describeString containsString:@"听抖音"] || [vm.describeString containsString:@"听音乐"]) {
+                        NSMutableArray *mutArr = [arr mutableCopy];
+                        [mutArr addObject:workDataViewModel];
+                        grp.groupArr = [mutArr copy];
+                        injected = YES;
+                        break;
+                    }
+                }
+            }
+        }
+        // 如果没找到听抖音组，插入到最后一个原始组
+        if (!injected && originalArray.count > 0) {
+            AWELongPressPanelViewGroupModel *lastGrp = originalArray.lastObject;
+            if ([lastGrp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) {
+                NSMutableArray *mutArr = [lastGrp.groupArr mutableCopy];
+                [mutArr addObject:workDataViewModel];
+                lastGrp.groupArr = [mutArr copy];
+            }
+        }
     }
 
     // 创建自定义组
@@ -1207,9 +1300,6 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
     NSMutableArray *resultGroups = [NSMutableArray array];
     [resultGroups addObjectsFromArray:customGroups];
     [resultGroups addObjectsFromArray:originalArray];
-    if (workDataGroupModel) {
-        [resultGroups addObject:workDataGroupModel];
-    }
     return [resultGroups copy];
 }
 %end
@@ -1947,8 +2037,7 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
         [viewModels addObject:pipViewModel];
     }
 
-    // 获取作品数据功能（单独一组，放在面板最底部）
-    AWELongPressPanelViewGroupModel *workDataGroupModel = nil;
+    // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
     if (enableWorkData) {
         AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         workDataViewModel.awemeModel = self.awemeModel;
@@ -1962,22 +2051,43 @@ static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
                 [DYYYWorkDataCardView showWithAwemeModel:wdModel];
             }];
         };
-        workDataGroupModel = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
-        workDataGroupModel.isDYYYCustomGroup = YES;
-        workDataGroupModel.groupType = 0;
-        workDataGroupModel.groupArr = @[workDataViewModel];
+        // 遍历原始组，找到"听抖音"所在组，在该组末尾插入
+        BOOL injected = NO;
+        for (NSInteger gi = 0; gi < (NSInteger)originalArray.count && !injected; gi++) {
+            AWELongPressPanelViewGroupModel *grp = originalArray[gi];
+            if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
+            NSArray *arr = grp.groupArr;
+            for (id item in arr) {
+                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
+                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
+                    if ([vm.describeString containsString:@"听抖音"] || [vm.describeString containsString:@"听音乐"]) {
+                        NSMutableArray *mutArr = [arr mutableCopy];
+                        [mutArr addObject:workDataViewModel];
+                        grp.groupArr = [mutArr copy];
+                        injected = YES;
+                        break;
+                    }
+                }
+            }
+        }
+        // 如果没找到听抖音组，插入到最后一个原始组
+        if (!injected && originalArray.count > 0) {
+            AWELongPressPanelViewGroupModel *lastGrp = originalArray.lastObject;
+            if ([lastGrp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) {
+                NSMutableArray *mutArr = [lastGrp.groupArr mutableCopy];
+                [mutArr addObject:workDataViewModel];
+                lastGrp.groupArr = [mutArr copy];
+            }
+        }
     }
 
     newGroupModel.groupArr = viewModels;
 
-    // 返回：原始组 + 自定义组（顶部） + 获取作品数据组（底部）
+    // 返回：原始组（含获取作品数据） + 自定义组（顶部）
     NSMutableArray *resultArray = [NSMutableArray array];
     [resultArray addObjectsFromArray:originalArray];
     if (viewModels.count > 0) {
         [resultArray addObject:newGroupModel];
-    }
-    if (workDataGroupModel) {
-        [resultArray addObject:workDataGroupModel];
     }
     return [resultArray copy];
 }
