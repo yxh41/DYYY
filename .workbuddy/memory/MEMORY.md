@@ -24,6 +24,14 @@
 - `AWEPlayInteractionViewController` 的视频模型属性是 **`model`**（`@property AWEAwemeModel *model`，line 361），**不是** `awemeModel`（该类无此属性，误用会 unrecognized selector，易在 @try@catch 里被吞掉导致"按钮不出现"）。
 - `AWEVideoModel`（`line 66-76`）**没有** `videoURLModel`；播放 URL 取自 `playURL` / `playLowBitURL`（都是 `AWEURLModel`，含 `originURLList`），多档清晰度在 `bitrateModels`（NSArray，元素类型头文件未声明，用 KVC 兜底取 `playURL`/`url`）。
 - `AWEURLModel`（`line 56-64`）只有 `originURLList`/`URLKey`/`URI`/`getDYYYSrcURLDownload`，**没有** `urlList`；`URLModel` 基类（line 48-50）才有 `originURLList`。
+- **`AWEAwemeStatisticsModel`（`line 87-89`）头文件只声明了 `diggCount`**；评论/收藏/分享/播放/下载量（`commentCount`/`collectCount`/`shareCount`/`playCount`/`downloadCount`）头文件**未声明**，但运行期真机二进制里存在。读取一律用 `valueForKey:` + `@try/@catch`，字段名与真机不符也只返回 nil/0、不崩。
+- **`AWEUserModel`（`line 105-110`）头文件只声明 `nickname`/`shortID`/`signature`/`avatarMedium`**；`uid`/`secUid` 头文件未声明，运行期存在，同样用 `valueForKey:` + try/catch 安全读。
+- **pxx 的「获取作品数据」= 读取本地 `AWEAwemeModel` 字段格式化展示（真数据，非伪造）**，区别于 `DYYYSocialStats`（改 display 的造假）。截图"播放量0/下载量0"正是服务器下发但 UI 不展示的本地字段。本地已用 `DYYYLongPressPanel.xm` 的 `DYYYShowWorkData()` 实现（commit `d618db5`）。
+
+## 长按面板结构事实（DYYYLongPressPanel.xm）
+- 现代面板 `AWEModernLongPressPanelTableViewController` 与经典面板 `AWELongPressPanelTableViewController` 的 `dataArray` **都用同一模式**：`AWELongPressPanelBaseViewModel` 设 `.awemeModel`/`.actionType`/`.duxIconName`/`.describeString`/`.action`(block)，塞进 `viewModels` 数组，再包成 `AWELongPressPanelViewGroupModel`（`isDYYYCustomGroup=YES`）拼回 `originalArray`。新增自定义按钮照此即可。
+- 经典面板有早退判断 `if (!hasAnyFeatureEnabled) return originalArray;`——新加功能必须把开关并入 `hasAnyFeatureEnabled` 的 OR，否则按钮被跳过。
+- **长按面板按钮的 action 若需 present 弹窗，务必在面板 `dismissWithAnimation:completion:` 的 completion 里再 present**（且 present 到 `getActiveWindow` 的 rootViewController 往上找的顶层 VC），否则弹窗会随面板一起被 dismiss 掉。
 
 ## 链接铁律：宿主 App 私有类不能用 `[Xxx class]` 字面
 - **在 tweak 里引用抖音 App 的私有类（如 `AWEURLModel`/`AWEVideoModel`），绝不能用 `[Xxx class]` 这种字面取类对象写法**——它会生成对 `_OBJC_CLASS_$_Xxx` 的链接符号，而该类只在宿主 App 二进制里运行期存在，tweak 的链接阶段找不到 → `Undefined symbols for architecture arm64(e)`。commit `f97f6b2` 踩中并修复。
