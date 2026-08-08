@@ -746,10 +746,8 @@
 // 获取视频ID
 - (NSString *)getAwemeId {
     if (self.awemeModel) {
-        if ([self.awemeModel respondsToSelector:@selector(awemeId)]) {
-            return [self.awemeModel awemeId];
-        } else if ([self.awemeModel respondsToSelector:@selector(awemeID)]) {
-            return [self.awemeModel awemeID];
+        if ([self.awemeModel respondsToSelector:@selector(itemID)]) {
+            return [self.awemeModel itemID];
         }
     }
     return nil;
@@ -790,10 +788,8 @@
     AWEAwemeModel *awemeModel = notification.userInfo[@"awemeModel"];
     NSString *awemeId = nil;
 
-    if ([awemeModel respondsToSelector:@selector(awemeId)]) {
-        awemeId = [awemeModel awemeId];
-    } else if ([awemeModel respondsToSelector:@selector(awemeID)]) {
-        awemeId = [awemeModel awemeID];
+    if ([awemeModel respondsToSelector:@selector(itemID)]) {
+        awemeId = [awemeModel itemID];
     }
 
     if (!awemeId || !awemeModel) {
@@ -829,10 +825,8 @@
                 currentModel = nil;
             }
             NSString *currentVideoId = nil;
-            if ([currentModel respondsToSelector:@selector(awemeId)]) {
-                currentVideoId = [currentModel awemeId];
-            } else if ([currentModel respondsToSelector:@selector(awemeID)]) {
-                currentVideoId = [currentModel awemeID];
+            if ([currentModel respondsToSelector:@selector(itemID)]) {
+                currentVideoId = [currentModel itemID];
             }
 
             // 比较视频ID，只有不同才切换
@@ -884,10 +878,8 @@
         NSString *currentPipId = [existingPip getAwemeId];
         NSString *newVideoId = nil;
 
-        if ([awemeModel respondsToSelector:@selector(awemeId)]) {
-            newVideoId = [awemeModel awemeId];
-        } else if ([awemeModel respondsToSelector:@selector(awemeID)]) {
-            newVideoId = [awemeModel awemeID];
+        if ([awemeModel respondsToSelector:@selector(itemID)]) {
+            newVideoId = [awemeModel itemID];
         }
 
         // 如果是不同的视频，更新小窗内容
