@@ -531,9 +531,15 @@ static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
     req.timeoutInterval = 10;
 
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        // 先取 HTTP 状态码
+        NSInteger statusCode = 0;
+        if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+            statusCode = [(NSHTTPURLResponse *)response statusCode];
+        }
+
         if (error || !data) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败:%@）", _playCount, error.localizedDescription];
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败:%@）", _playCount, error.localizedDescription ?: @"未知"];
             });
             return;
         }
@@ -555,11 +561,33 @@ static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
         NSString *diggCountStr = DYYYSearchJsonValue(outerJson, @"digg_count");
 
         if (playCountStr.length == 0 || [playCountStr isEqualToString:@"(null)"]) {
-            // 找不到 play_count，显示原始响应前 80 字符方便调试
-            NSString *preview = rawStr;
-            if (preview.length > 80) preview = [preview substringToIndex:80];
+            // 找不到 play_count —— 区分 HTTP 错误 vs 字段缺失
+            NSString *errCode = DYYYSearchJsonValue(outerJson, @"code");
+            NSString *errMsg = DYYYSearchJsonValue(outerJson, @"message") ?: DYYYSearchJsonValue(outerJson, @"message_zh");
+            NSString *hint;
+            if (statusCode == 429) {
+                hint = @"请求过快被限流";
+            } else if (statusCode == 402) {
+                hint = @"API余额不足";
+            } else if (statusCode == 401 || statusCode == 403) {
+                hint = @"Token无效或权限不足";
+            } else if (statusCode == 404) {
+                hint = @"数据未找到";
+            } else if (statusCode >= 400 && statusCode < 500) {
+                hint = [NSString stringWithFormat:@"HTTP %ld", (long)statusCode];
+            } else if (statusCode >= 500) {
+                hint = @"API服务异常";
+            } else if (errCode.length > 0) {
+                hint = [NSString stringWithFormat:@"code=%@", errCode];
+            } else {
+                hint = @"未找到数值";
+            }
+            if (errMsg.length > 0 && errMsg.length < 50) {
+                hint = [hint stringByAppendingFormat:@" (%@)", errMsg];
+            }
+
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（未找到,响应:%@...）", _playCount, preview];
+                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（%@）", _playCount, hint];
             });
             return;
         }
