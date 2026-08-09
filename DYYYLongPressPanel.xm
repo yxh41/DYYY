@@ -511,9 +511,37 @@ static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
     [self fetchPlayCountFromAPI];
 }
 
+// 播放量 API 缓存：aweme_id → @{@"value":NSString, @"time":NSDate}，5 分钟内不重复请求
+static NSMutableDictionary *DYYYPlayCountCache = nil;
+
 - (void)fetchPlayCountFromAPI {
     NSString *token = DYYYGetString(@"DYYYWorkDataAPIToken");
     if (token.length == 0 || _itemID.length == 0) return;
+
+    // 检查缓存：5 分钟内同一个视频不重复请求
+    @synchronized(self) {
+        if (!DYYYPlayCountCache) DYYYPlayCountCache = [NSMutableDictionary dictionary];
+        NSDictionary *cached = DYYYPlayCountCache[_itemID];
+        if (cached) {
+            NSTimeInterval age = -[cached[@"time"] timeIntervalSinceNow];
+            if (age < 300) { // 5 分钟
+                NSString *cachedPlay = cached[@"play"];
+                NSString *cachedDigg = cached[@"digg"];
+                NSString *cachedDownload = cached[@"download"];
+                NSString *cachedShare = cached[@"share"];
+                if (cachedPlay.length > 0) {
+                    _playCount = cachedPlay;
+                    if (cachedDigg.length > 0) _diggCount = cachedDigg;
+                    if (cachedDownload.length > 0) _downloadCount = cachedDownload;
+                    if (cachedShare.length > 0) _shareCount = cachedShare;
+                    if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
+                    [self refreshCopyText];
+                    return; // 用缓存，不发请求
+                }
+            }
+        }
+    }
+
     // 正确端点：V3 fetch_video_statistics，参数 aweme_ids（逗号分隔），大陆用 api.tikhub.dev
     NSString *urlString = [NSString stringWithFormat:@"https://api.tikhub.dev/api/v1/douyin/app/v3/fetch_video_statistics?aweme_ids=%@", _itemID];
     NSURL *url = [NSURL URLWithString:urlString];
@@ -604,6 +632,16 @@ static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
             }
             if (diggCountStr.length > 0 && ![diggCountStr isEqualToString:@"(null)"]) {
                 _diggCount = diggCountStr;
+            }
+            // 写入缓存，5 分钟内同视频不再重复请求
+            @synchronized(self) {
+                DYYYPlayCountCache[_itemID] = @{
+                    @"play": _playCount ?: @"",
+                    @"digg": _diggCount ?: @"",
+                    @"download": _downloadCount ?: @"",
+                    @"share": _shareCount ?: @"",
+                    @"time": [NSDate date]
+                };
             }
             [self refreshCopyText];
         });
