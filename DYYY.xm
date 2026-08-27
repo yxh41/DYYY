@@ -8067,7 +8067,7 @@ static UIView *DYYYPostDateHostView(UIView *cell) {
     return cell;
 }
 
-static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL showDiag) {
+static void DYYYUpdatePostDateLabelForCellCore(UICollectionViewCell *cell) {
     if (!cell) return;
     UILabel *dateLabel = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
     if (!DYYYGetBool(@"DYYYShowPostDate")) {
@@ -8081,13 +8081,11 @@ static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL 
     NSString *modelToken = model ? [NSString stringWithFormat:@"%p", model] : nil;
     NSArray *cached = modelToken ? objc_getAssociatedObject(cell, &kDYYYPostDateCacheKey) : nil;
     NSNumber *createTime = nil;
-    id aweme = nil;
     BOOL cacheHit = (modelToken && cached.count == 2 && [cached[0] isEqualToString:modelToken]);
     if (cacheHit) {
         createTime = [cached[1] isKindOfClass:[NSNumber class]] ? cached[1] : nil;
-        aweme = createTime ? (id)@1 : nil;  // 仅用于诊断分支判定，不再触碰真实对象
     } else {
-        aweme = DYYYFindAwemeModelInGraph(model, 0);
+        id aweme = DYYYFindAwemeModelInGraph(model, 0);
         if (!aweme) aweme = DYYYFindAwemeModelInGraph(cell, 0);
         createTime = aweme ? DYYYNormalizeTimestamp(DYYYNumberValue(aweme, @"createTime")) : nil;
         if (!createTime) createTime = DYYYExtractTimeRecursive(model, 0);
@@ -8100,6 +8098,12 @@ static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL 
         }
     }
 
+    // 取不到时间就静默隐藏（不再显示诊断色块）；此时也没必要新建 label
+    if (!(createTime && [createTime doubleValue] > 0)) {
+        if (dateLabel) dateLabel.hidden = YES;
+        return;
+    }
+
     UIView *host = DYYYPostDateHostView(cell);
     if (!dateLabel) {
         dateLabel = [[UILabel alloc] init];
@@ -8110,6 +8114,7 @@ static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL 
         dateLabel.layer.cornerRadius = 3;
         dateLabel.clipsToBounds = YES;
         dateLabel.adjustsFontSizeToFitWidth = NO;
+        dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
         objc_setAssociatedObject(cell, &kDYYYPostDateLabelKey, dateLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (dateLabel.superview != host) [host addSubview:dateLabel];
@@ -8118,21 +8123,9 @@ static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL 
     CGFloat contentW = host.bounds.size.width;
     if (contentW <= 0) { dateLabel.hidden = YES; return; }
 
-    if (createTime && [createTime doubleValue] > 0) {
-        NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTime doubleValue]];
-        dateLabel.text = [DYYYPostDateFormatter() stringFromDate:date];
-        dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
-        dateLabel.hidden = NO;
-    } else if (showDiag) {
-        // 诊断：区分"图里没有 AWEAwemeModel"与"有 model 但读不到 createTime"
-        NSString *diag = aweme ? @"noCreateTime" : @"noAweme";
-        dateLabel.text = diag;
-        dateLabel.backgroundColor = [UIColor redColor];
-        dateLabel.hidden = NO;
-    } else {
-        dateLabel.hidden = YES;
-        return;
-    }
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTime doubleValue]];
+    dateLabel.text = [DYYYPostDateFormatter() stringFromDate:date];
+    dateLabel.hidden = NO;
     [dateLabel sizeToFit];
     CGRect frame = dateLabel.frame;
     frame.origin.x = contentW - frame.size.width - 4;
@@ -8169,14 +8162,14 @@ static void DYYYSwizzlePostDateLayout(Class cls) {
         __block IMP origImp = NULL;
         IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
             if (origImp) ((void (*)(id, SEL))origImp)(me, sel);
-            DYYYUpdatePostDateLabelForCellDiag((UICollectionViewCell *)me, NO);
+            DYYYUpdatePostDateLabelForCellCore((UICollectionViewCell *)me);
         });
         origImp = method_setImplementation(m, newImp);
     } else {
         IMP superImp = class_getMethodImplementation(class_getSuperclass(cls), sel);
         IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
             if (superImp) ((void (*)(id, SEL))superImp)(me, sel);
-            DYYYUpdatePostDateLabelForCellDiag((UICollectionViewCell *)me, NO);
+            DYYYUpdatePostDateLabelForCellCore((UICollectionViewCell *)me);
         });
         class_addMethod(cls, sel, newImp, "v16@0:8");
     }
@@ -8227,7 +8220,7 @@ static void DYYYInstallDynamicPostDateHooks(void) {
 
 static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     DYYYInstallDynamicPostDateHooks();
-    DYYYUpdatePostDateLabelForCellDiag(cell, YES);
+    DYYYUpdatePostDateLabelForCellCore(cell);
 }
 
 %hook AWEProfileMixItemCollectionViewCell
