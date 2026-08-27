@@ -7816,6 +7816,7 @@ static NSNumber *DYYYNumberValue(id obj, NSString *key) {
     @try { if ([obj respondsToSelector:sel]) v = [obj performSelector:sel]; } @catch (__unused NSException *e) {}
     if (!v) @try { v = [obj valueForKey:key]; } @catch (__unused NSException *e) {}
     if ([v isKindOfClass:[NSNumber class]]) return v;
+    if ([v isKindOfClass:[NSDate class]]) return @([(NSDate *)v timeIntervalSince1970]);
     if ([v isKindOfClass:[NSString class]]) {
         double d = [(NSString *)v doubleValue];
         if (d > 0) return @(d);
@@ -7829,6 +7830,35 @@ static NSMutableDictionary<NSString *, NSString *> *DYYYPostDateKeyCache(void) {
     static dispatch_once_t t;
     dispatch_once(&t, ^{ c = [NSMutableDictionary dictionary]; });
     return c;
+}
+
+// 诊断辅助：在 obj 自身及对象属性图里找出"名字像时间"的属性名，用于暴露真实字段名
+static NSString *DYYYFindTimeLikePropName(id obj) {
+    if (!obj) return nil;
+    unsigned int count = 0;
+    objc_property_t *props = class_copyPropertyList([obj class], &count);
+    NSString *found = nil;
+    if (props) {
+        for (unsigned int i = 0; i < count; i++) {
+            NSString *name = @(property_getName(props[i]));
+            if (DYYYNameLooksLikeTime(name)) { found = name; break; }
+        }
+        if (!found) {
+            for (unsigned int i = 0; i < count; i++) {
+                NSString *name = @(property_getName(props[i]));
+                id v = nil;
+                @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
+                if (!v || v == obj) continue;
+                if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]] ||
+                    [v isKindOfClass:[UIView class]] || [v isKindOfClass:[NSArray class]] ||
+                    [v isKindOfClass:[NSDictionary class]] || [v isKindOfClass:[NSDate class]]) continue;
+                NSString *n = DYYYFindTimeLikePropName(v);
+                if (n) { found = n; break; }
+            }
+        }
+        free(props);
+    }
+    return found;
 }
 
 // 自发现式取发布时间：运行时枚举属性（含所有对象属性深度递归），匹配 time/create/date/publish/shoot 类名称。
@@ -7932,9 +7962,11 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
         dateLabel.hidden = NO;
     } else {
-        // 诊断：hook 已命中但全图未找到发布时间字段 -> 红底显示 model 类名，便于定位真实类型/字段
-        NSString *cls = model ? NSStringFromClass([model class]) : @"noModel";
-        dateLabel.text = cls.length > 12 ? [cls substringFromIndex:cls.length - 12] : cls;
+        // 诊断：红底显示图中疑似时间字段名(若存在)或 noTimeField，用于精确定位真实字段
+        NSString *tn = DYYYFindTimeLikePropName(model);
+        if (!tn) tn = DYYYFindTimeLikePropName(cell);
+        NSString *diag = tn ?: @"noTimeField";
+        dateLabel.text = diag.length > 12 ? [diag substringFromIndex:diag.length - 12] : diag;
         dateLabel.backgroundColor = [UIColor redColor];
         dateLabel.hidden = NO;
     }
