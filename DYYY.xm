@@ -7779,14 +7779,18 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     if (!cell) return nil;
     id model = nil;
     @try {
-        if ([cell respondsToSelector:@selector(model)]) {
-            model = [cell performSelector:@selector(model)];
-        }
-        if (!model && [cell respondsToSelector:@selector(awemeModel)]) {
-            model = [cell performSelector:@selector(awemeModel)];
+        // 优先按已知 selector 取，再退回 KVC；覆盖抖音跨版本可能改名的属性
+        NSArray<NSString *> *candidateKeys = @[@"awemeModel", @"model", @"data", @"viewModel",
+                                               @"item", @"itemModel", @"cellModel", @"workModel",
+                                               @"aweme", @"cardModel"];
+        for (NSString *key in candidateKeys) {
+            SEL sel = NSSelectorFromString(key);
+            if ([cell respondsToSelector:sel]) {
+                @try { model = [cell performSelector:sel]; } @catch (__unused NSException *e) { model = nil; }
+                if (model) break;
+            }
         }
         if (!model) {
-            NSArray<NSString *> *candidateKeys = @[@"model", @"awemeModel", @"data", @"viewModel", @"item", @"itemModel"];
             for (NSString *key in candidateKeys) {
                 @try { model = [cell valueForKey:key]; } @catch (__unused NSException *e) {}
                 if (model) break;
@@ -7810,16 +7814,14 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         if ([model respondsToSelector:@selector(createTime)]) {
             createTime = [model performSelector:@selector(createTime)];
         }
-        if (!createTime) {
-            createTime = [model valueForKey:@"createTime"];
-        }
+        if (!createTime) createTime = [model valueForKey:@"createTime"];
+        if (!createTime) createTime = [model valueForKey:@"publishTime"];
     } @catch (__unused NSException *e) {}
 
     if (!dateLabel) {
         dateLabel = [[UILabel alloc] init];
         dateLabel.font = [UIFont systemFontOfSize:9];
         dateLabel.textColor = [UIColor whiteColor];
-        dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
         dateLabel.textAlignment = NSTextAlignmentCenter;
         dateLabel.numberOfLines = 1;
         dateLabel.layer.cornerRadius = 3;
@@ -7829,25 +7831,27 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         [cell.contentView addSubview:dateLabel];
     }
 
+    CGFloat contentW = cell.contentView.bounds.size.width;
+    if (contentW <= 0) { dateLabel.hidden = YES; return; }
+
     if (createTime && [createTime doubleValue] > 0) {
         NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTime doubleValue]];
         dateLabel.text = [DYYYPostDateFormatter() stringFromDate:date];
-        [dateLabel sizeToFit];
-        CGRect frame = dateLabel.frame;
-        CGFloat contentW = cell.contentView.bounds.size.width;
-        if (contentW > 0) {
-            frame.origin.x = contentW - frame.size.width - 4;
-            frame.origin.y = 4;
-            frame.size.width += 6;
-            frame.size.height += 2;
-            dateLabel.frame = frame;
-            dateLabel.hidden = NO;
-        } else {
-            dateLabel.hidden = YES;
-        }
+        dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+        dateLabel.hidden = NO;
     } else {
-        dateLabel.hidden = YES;
+        // 诊断：hook 已命中但取不到发布时间 -> 红色「?」，用于区分"没命中类"与"取不到字段"
+        dateLabel.text = @"?";
+        dateLabel.backgroundColor = [UIColor redColor];
+        dateLabel.hidden = NO;
     }
+    [dateLabel sizeToFit];
+    CGRect frame = dateLabel.frame;
+    frame.origin.x = contentW - frame.size.width - 4;
+    frame.origin.y = 4;
+    frame.size.width += 6;
+    frame.size.height += 2;
+    dateLabel.frame = frame;
 }
 
 %hook AWEProfileMixItemCollectionViewCell
