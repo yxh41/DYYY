@@ -7796,7 +7796,7 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     return model;
 }
 
-static void DYYYUpdatePostDateLabelForCell(UIView *cell) {
+static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     if (!cell) return;
     UILabel *dateLabel = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
     if (!DYYYGetBool(@"DYYYShowPostDate")) {
