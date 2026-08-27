@@ -7613,6 +7613,95 @@ static NSHashTable *processedParentViews = nil;
 
 %end
 
+// MARK: - 主页作品缩略图发布日期显示
+static const char kDYYYPostDateLabelKey;
+
+static NSDateFormatter *DYYYPostDateFormatter(void) {
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"yyyy.MM.dd HH:mm:ss";
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+    });
+    return formatter;
+}
+
+static id DYYYAwemeModelFromProfileCell(id cell) {
+    if (!cell) return nil;
+    id model = nil;
+    @try {
+        if ([cell respondsToSelector:@selector(model)]) {
+            model = [cell performSelector:@selector(model)];
+        }
+        if (!model && [cell respondsToSelector:@selector(awemeModel)]) {
+            model = [cell performSelector:@selector(awemeModel)];
+        }
+        if (!model) {
+            NSArray<NSString *> *candidateKeys = @[@"model", @"awemeModel", @"data", @"viewModel", @"item", @"itemModel"];
+            for (NSString *key in candidateKeys) {
+                @try { model = [cell valueForKey:key]; } @catch (__unused NSException *e) {}
+                if (model) break;
+            }
+        }
+    } @catch (__unused NSException *e) {}
+    return model;
+}
+
+static void DYYYUpdatePostDateLabelForCell(UIView *cell) {
+    if (!cell) return;
+    UILabel *dateLabel = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
+    if (!DYYYGetBool(@"DYYYShowPostDate")) {
+        if (dateLabel) dateLabel.hidden = YES;
+        return;
+    }
+
+    id model = DYYYAwemeModelFromProfileCell(cell);
+    NSNumber *createTime = nil;
+    @try {
+        if ([model respondsToSelector:@selector(createTime)]) {
+            createTime = [model performSelector:@selector(createTime)];
+        }
+        if (!createTime) {
+            createTime = [model valueForKey:@"createTime"];
+        }
+    } @catch (__unused NSException *e) {}
+
+    if (!dateLabel) {
+        dateLabel = [[UILabel alloc] init];
+        dateLabel.font = [UIFont systemFontOfSize:9];
+        dateLabel.textColor = [UIColor whiteColor];
+        dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+        dateLabel.textAlignment = NSTextAlignmentCenter;
+        dateLabel.numberOfLines = 1;
+        dateLabel.layer.cornerRadius = 3;
+        dateLabel.clipsToBounds = YES;
+        dateLabel.adjustsFontSizeToFitWidth = NO;
+        objc_setAssociatedObject(cell, &kDYYYPostDateLabelKey, dateLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [cell.contentView addSubview:dateLabel];
+    }
+
+    if (createTime && [createTime doubleValue] > 0) {
+        NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTime doubleValue]];
+        dateLabel.text = [DYYYPostDateFormatter() stringFromDate:date];
+        [dateLabel sizeToFit];
+        CGRect frame = dateLabel.frame;
+        CGFloat contentW = cell.contentView.bounds.size.width;
+        if (contentW > 0) {
+            frame.origin.x = contentW - frame.size.width - 4;
+            frame.origin.y = 4;
+            frame.size.width += 6;
+            frame.size.height += 2;
+            dateLabel.frame = frame;
+            dateLabel.hidden = NO;
+        } else {
+            dateLabel.hidden = YES;
+        }
+    } else {
+        dateLabel.hidden = YES;
+    }
+}
+
 // 隐藏自己无公开作品的视图
 %hook AWEProfileMixItemCollectionViewCell
 - (void)layoutSubviews {
@@ -7623,6 +7712,14 @@ static NSHashTable *processedParentViews = nil;
             return;
         }
     }
+    DYYYUpdatePostDateLabelForCell(self);
+}
+%end
+
+%hook AWEUserWorkCollectionViewComponentCell
+- (void)layoutSubviews {
+    %orig;
+    DYYYUpdatePostDateLabelForCell(self);
 }
 %end
 
