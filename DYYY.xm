@@ -7800,6 +7800,27 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     return model;
 }
 
+// 从 model（可能是包装对象）递归取出发布时间：优先本层字段，本层无则深入嵌套的 awemeModel
+static NSNumber *DYYYCreateTimeFromObject(id obj) {
+    if (!obj) return nil;
+    NSArray<NSString *> *fields = @[@"createTime", @"publishTime", @"createTimeInterval", @"shootTime", @"postTime"];
+    for (NSString *f in fields) {
+        NSNumber *t = nil;
+        SEL sel = NSSelectorFromString(f);
+        @try { if ([obj respondsToSelector:sel]) t = [obj performSelector:sel]; } @catch (__unused NSException *e) { t = nil; }
+        if (!t) @try { t = [obj valueForKey:f]; } @catch (__unused NSException *e) {}
+        if (t && [t doubleValue] > 0) return t;
+        // 包装对象：真实 aweme 常嵌套在 awemeModel 内，递归一层
+        if ([f isEqualToString:@"createTime"]) {
+            id nested = nil;
+            @try { if ([obj respondsToSelector:@selector(awemeModel)]) nested = [obj performSelector:@selector(awemeModel)]; } @catch (__unused NSException *e) {}
+            if (!nested) @try { nested = [obj valueForKey:@"awemeModel"]; } @catch (__unused NSException *e) {}
+            if (nested) { NSNumber *nt = DYYYCreateTimeFromObject(nested); if (nt) return nt; }
+        }
+    }
+    return nil;
+}
+
 static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     if (!cell) return;
     UILabel *dateLabel = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
@@ -7809,14 +7830,7 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     }
 
     id model = DYYYAwemeModelFromProfileCell(cell);
-    NSNumber *createTime = nil;
-    @try {
-        if ([model respondsToSelector:@selector(createTime)]) {
-            createTime = [model performSelector:@selector(createTime)];
-        }
-        if (!createTime) createTime = [model valueForKey:@"createTime"];
-        if (!createTime) createTime = [model valueForKey:@"publishTime"];
-    } @catch (__unused NSException *e) {}
+    NSNumber *createTime = DYYYCreateTimeFromObject(model);
 
     if (!dateLabel) {
         dateLabel = [[UILabel alloc] init];
