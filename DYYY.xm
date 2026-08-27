@@ -7762,7 +7762,7 @@ static NSHashTable *processedParentViews = nil;
 %end
 
 // MARK: - 主页作品缩略图发布日期显示
-static const char kDYYYPostDateLabelKey;
+static char kDYYYPostDateLabelKey;
 
 static NSDateFormatter *DYYYPostDateFormatter(void) {
     static NSDateFormatter *formatter = nil;
