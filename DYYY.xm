@@ -7763,6 +7763,7 @@ static NSHashTable *processedParentViews = nil;
 
 // MARK: - 主页作品缩略图发布日期显示
 static char kDYYYPostDateLabelKey;
+static char kDYYYPostDateCacheKey;  // 缓存 @[model指针字符串, 时间戳] 避免每次 layoutSubviews 重扫对象图
 
 static NSDateFormatter *DYYYPostDateFormatter(void) {
     static NSDateFormatter *formatter = nil;
@@ -7800,13 +7801,24 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     return model;
 }
 
+// 只认 time/date/timestamp，避免 createRequestQueue 之类被 "reate"/"ate" 误判为时间字段
 static BOOL DYYYNameLooksLikeTime(NSString *name) {
-    if ([name rangeOfString:@"ime" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // time
-    if ([name rangeOfString:@"reate" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES; // create
-    if ([name rangeOfString:@"ate" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;    // date
-    if ([name rangeOfString:@"ublish" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES; // publish
-    if ([name rangeOfString:@"hoot" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // shoot
+    if (name.length == 0) return NO;
+    if ([name rangeOfString:@"time" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    if ([name rangeOfString:@"date" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
     return NO;
+}
+
+// 归一化时间戳：兼容毫秒/微秒，并用合理区间过滤掉计数器、ID 等垃圾数值
+static NSNumber *DYYYNormalizeTimestamp(NSNumber *raw) {
+    if (![raw isKindOfClass:[NSNumber class]]) return nil;
+    double d = [raw doubleValue];
+    if (d <= 0) return nil;
+    while (d > 1.0e11) d /= 1000.0;  // 毫秒/微秒 -> 秒
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (d < 946684800.0) return nil;      // 早于 2000-01-01 视为无效
+    if (d > now + 86400.0 * 3) return nil;  // 明显的未来时间视为无效
+    return @(d);
 }
 
 static NSNumber *DYYYNumberValue(id obj, NSString *key) {
@@ -7832,103 +7844,230 @@ static NSMutableDictionary<NSString *, NSString *> *DYYYPostDateKeyCache(void) {
     return c;
 }
 
-// 诊断辅助：在 obj 自身及对象属性图里找出"名字像时间"的属性名，用于暴露真实字段名
-static NSString *DYYYFindTimeLikePropName(id obj) {
-    if (!obj) return nil;
-    unsigned int count = 0;
-    objc_property_t *props = class_copyPropertyList([obj class], &count);
-    NSString *found = nil;
-    if (props) {
-        for (unsigned int i = 0; i < count; i++) {
-            NSString *name = @(property_getName(props[i]));
-            if (DYYYNameLooksLikeTime(name)) { found = name; break; }
-        }
-        if (!found) {
-            for (unsigned int i = 0; i < count; i++) {
-                NSString *name = @(property_getName(props[i]));
-                id v = nil;
-                @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
-                if (!v || v == obj) continue;
-                if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]] ||
-                    [v isKindOfClass:[UIView class]] || [v isKindOfClass:[NSArray class]] ||
-                    [v isKindOfClass:[NSDictionary class]] || [v isKindOfClass:[NSDate class]]) continue;
-                NSString *n = DYYYFindTimeLikePropName(v);
-                if (n) { found = n; break; }
-            }
-        }
-        free(props);
+// KVC 只安全读对象与标量：结构体、裸指针、数组、联合、位域一律跳过，
+// 否则 valueForKey: 可能直接崩而不是抛异常。
+static BOOL DYYYTypeEncodingIsSafe(const char *enc) {
+    if (!enc || !enc[0]) return NO;
+    char c = enc[0];
+    if (c == 'r') c = enc[1];  // const 修饰
+    switch (c) {
+        case '@': case 'c': case 'C': case 's': case 'S': case 'i': case 'I':
+        case 'l': case 'L': case 'q': case 'Q': case 'f': case 'd': case 'B':
+            return YES;
+        default:
+            return NO;
     }
-    return found;
 }
 
-// 自发现式取发布时间：运行时枚举属性（含所有对象属性深度递归），匹配 time/create/date/publish/shoot 类名称。
-// 不依赖固定字段名与固定嵌套层级，规避抖音把 aweme 藏在任意命名的包装对象（如 XxxCellViewModel）内。
-static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
-    if (!obj || depth > 4) return nil;
+// 收集一个类的全部可读成员名：属性 + 实例变量（去掉前导下划线），并沿继承链上溯。
+// class_copyPropertyList 只返回本类自身声明的属性，抖音的 model 大量字段在父类或纯 ivar 上，
+// 只枚举本类属性会整片漏掉（这是前几版取不到 createTime 的根因）。
+static NSArray<NSString *> *DYYYAllMemberNames(id obj) {
+    if (!obj) return @[];
+    NSMutableOrderedSet<NSString *> *names = [NSMutableOrderedSet orderedSet];
+    Class cls = [obj class];
+    while (cls && cls != [NSObject class]) {
+        NSString *cn = NSStringFromClass(cls);
+        if ([cn hasPrefix:@"UI"] || [cn hasPrefix:@"CA"] || [cn hasPrefix:@"NS"]) break;
+        unsigned int pc = 0;
+        objc_property_t *props = class_copyPropertyList(cls, &pc);
+        if (props) {
+            for (unsigned int i = 0; i < pc; i++) {
+                const char *attrs = property_getAttributes(props[i]);
+                // attrs 形如 "T@\"NSString\",C,N,V_name"，T 后即类型编码
+                if (attrs && attrs[0] == 'T' && DYYYTypeEncodingIsSafe(attrs + 1)) {
+                    [names addObject:@(property_getName(props[i]))];
+                }
+            }
+            free(props);
+        }
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        if (ivars) {
+            for (unsigned int i = 0; i < ic; i++) {
+                if (!DYYYTypeEncodingIsSafe(ivar_getTypeEncoding(ivars[i]))) continue;
+                NSString *n = @(ivar_getName(ivars[i]));
+                if ([n hasPrefix:@"_"]) n = [n substringFromIndex:1];
+                if (n.length) [names addObject:n];
+            }
+            free(ivars);
+        }
+        cls = class_getSuperclass(cls);
+    }
+    return [names array];
+}
+
+// 自发现式取发布时间：命中 AWEAwemeModel 直接读 createTime；否则沿属性+ivar 图深度递归，
+// 名字含 time/date 的成员做时间戳合法性校验后采用。规避 CellViewModel 之类包装对象。
+// visited/budget 防环 + 限流，避免顺着 delegate 把整个 App 对象图走一遍。
+static NSNumber *DYYYExtractTimeRecursive2(id obj, int depth, NSMutableSet *visited, int *budget) {
+    if (!obj || depth > 6 || !budget || *budget <= 0) return nil;
+    if ([obj isKindOfClass:[NSNumber class]] || [obj isKindOfClass:[NSString class]]) return nil;
+
+    NSValue *ptr = [NSValue valueWithPointer:(__bridge const void *)obj];
+    if ([visited containsObject:ptr]) return nil;
+    [visited addObject:ptr];
+    (*budget)--;
+
     if ([obj isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dict = (NSDictionary *)obj;
         for (NSString *k in dict.allKeys) {
-            if (DYYYNameLooksLikeTime(k)) {
-                NSNumber *t = DYYYNumberValue(dict, k);
+            if ([k isKindOfClass:[NSString class]] && DYYYNameLooksLikeTime(k)) {
+                NSNumber *t = DYYYNormalizeTimestamp(DYYYNumberValue(dict, k));
                 if (t) return t;
             }
         }
         for (id v in dict.allValues) {
-            NSNumber *t = DYYYExtractTimeRecursive(v, depth + 1);
+            NSNumber *t = DYYYExtractTimeRecursive2(v, depth + 1, visited, budget);
             if (t) return t;
         }
         return nil;
     }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            NSNumber *t = DYYYExtractTimeRecursive2(e, depth + 1, visited, budget);
+            if (t) return t;
+        }
+        return nil;
+    }
+
+    // 0) 命中真正的 AWEAwemeModel：直接读官方字段，最可靠
+    Class awemeCls = NSClassFromString(@"AWEAwemeModel");
+    if (awemeCls && [obj isKindOfClass:awemeCls]) {
+        NSNumber *t = DYYYNormalizeTimestamp(DYYYNumberValue(obj, @"createTime"));
+        if (t) return t;
+    }
+
     NSString *clsName = NSStringFromClass([obj class]);
     NSString *cachedKey = DYYYPostDateKeyCache()[clsName];
     if (cachedKey) {
-        NSNumber *t = DYYYNumberValue(obj, cachedKey);
+        NSNumber *t = DYYYNormalizeTimestamp(DYYYNumberValue(obj, cachedKey));
         if (t) return t;
     }
     // 1) 已知字段名优先
     NSArray<NSString *> *known = @[@"createTime", @"publishTime", @"createTimeInterval", @"shootTime", @"postTime", @"createTimeMillis"];
     for (NSString *f in known) {
-        NSNumber *t = DYYYNumberValue(obj, f);
+        NSNumber *t = DYYYNormalizeTimestamp(DYYYNumberValue(obj, f));
         if (t) { DYYYPostDateKeyCache()[clsName] = f; return t; }
     }
-    // 2) 枚举本对象属性：先匹配时间类名称，再递归进入所有对象属性（排除 UIKit 视图与基础类型）
-    unsigned int count = 0;
-    objc_property_t *props = class_copyPropertyList([obj class], &count);
-    if (props) {
-        for (unsigned int i = 0; i < count; i++) {
-            NSString *name = @(property_getName(props[i]));
-            if (DYYYNameLooksLikeTime(name)) {
-                NSNumber *t = DYYYNumberValue(obj, name);
-                if (t) { DYYYPostDateKeyCache()[clsName] = name; free(props); return t; }
-            }
+    // 2) 枚举本对象全部成员（属性 + ivar + 继承链）：先取时间名成员，再递归进入对象成员
+    NSArray<NSString *> *members = DYYYAllMemberNames(obj);
+    for (NSString *name in members) {
+        if (!DYYYNameLooksLikeTime(name)) continue;
+        NSNumber *t = DYYYNormalizeTimestamp(DYYYNumberValue(obj, name));
+        if (t) { DYYYPostDateKeyCache()[clsName] = name; return t; }
+    }
+    for (NSString *name in members) {
+        if (DYYYNameLooksLikeTime(name)) continue;
+        if ([name hasSuffix:@"elegate"] || [name hasSuffix:@"uperview"] ||
+            [name hasSuffix:@"esponder"] || [name hasSuffix:@"ontroller"] ||
+            [name hasSuffix:@"indow"] || [name hasSuffix:@"arget"]) continue;
+        id v = nil;
+        @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
+        if (!v || v == obj) continue;
+        if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) continue;
+        if ([v isKindOfClass:[CALayer class]] ||
+            [v isKindOfClass:[UIColor class]] || [v isKindOfClass:[UIImage class]] ||
+            [v isKindOfClass:[NSData class]] || [v isKindOfClass:[NSDate class]] ||
+            [v isKindOfClass:[NSSet class]] || [v isKindOfClass:[NSValue class]]) continue;
+        NSNumber *t = DYYYExtractTimeRecursive2(v, depth + 1, visited, budget);
+        if (t) return t;
+    }
+    if ([obj isKindOfClass:[UIView class]]) {
+        for (UIView *sub in [(UIView *)obj subviews]) {
+            NSNumber *t = DYYYExtractTimeRecursive2(sub, depth + 1, visited, budget);
+            if (t) return t;
         }
-        for (unsigned int i = 0; i < count; i++) {
-            NSString *name = @(property_getName(props[i]));
-            if (DYYYNameLooksLikeTime(name)) continue;
-            id v = nil;
-            @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
-            if (!v || v == obj) continue;
-            if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) continue;
-            if ([v isKindOfClass:[UIView class]] || [v isKindOfClass:[CALayer class]] ||
-                [v isKindOfClass:[UIColor class]] || [v isKindOfClass:[UIImage class]] ||
-                [v isKindOfClass:[NSData class]] || [v isKindOfClass:[NSDate class]] ||
-                [v isKindOfClass:[NSSet class]]) continue;
-            if ([v isKindOfClass:[NSArray class]]) {
-                for (id e in (NSArray *)v) {
-                    NSNumber *t = DYYYExtractTimeRecursive(e, depth + 1);
-                    if (t) { free(props); return t; }
-                }
-            } else {
-                NSNumber *t = DYYYExtractTimeRecursive(v, depth + 1);
-                if (t) { free(props); return t; }
-            }
-        }
-        free(props);
     }
     return nil;
 }
 
-static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
+static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
+    if (!obj) return nil;
+    int budget = 2000;  // 结果按 cell+model 指针缓存，单次预算可放宽
+    return DYYYExtractTimeRecursive2(obj, depth, [NSMutableSet set], &budget);
+}
+
+
+static BOOL DYYYIsAwemeModelObject(id obj) {
+    if (!obj) return NO;
+    Class awemeCls = NSClassFromString(@"AWEAwemeModel");
+    if (awemeCls && [obj isKindOfClass:awemeCls]) return YES;
+    // 跨版本兜底：类名含 AwemeModel 且能读到合法 createTime
+    NSString *cn = NSStringFromClass([obj class]);
+    if ([cn rangeOfString:@"AwemeModel"].location != NSNotFound) {
+        if (DYYYNormalizeTimestamp(DYYYNumberValue(obj, @"createTime"))) return YES;
+    }
+    return NO;
+}
+
+// 在对象图里按类查找真正的 AWEAwemeModel（比猜属性名可靠：类名跨版本比属性名稳定得多）
+// budget 限制访问节点数，防止 delegate/父链把遍历放大成性能灾难
+static id DYYYFindAwemeModelInGraph2(id obj, int depth, NSMutableSet *visited, int *budget) {
+    if (!obj || depth > 6 || !budget || *budget <= 0) return nil;
+    if (DYYYIsAwemeModelObject(obj)) return obj;
+
+    if ([obj isKindOfClass:[NSNumber class]] || [obj isKindOfClass:[NSString class]] ||
+        [obj isKindOfClass:[NSDate class]] || [obj isKindOfClass:[NSData class]] ||
+        [obj isKindOfClass:[UIColor class]] || [obj isKindOfClass:[UIImage class]] ||
+        [obj isKindOfClass:[CALayer class]] || [obj isKindOfClass:[NSValue class]]) return nil;
+
+    NSValue *ptr = [NSValue valueWithPointer:(__bridge const void *)obj];
+    if ([visited containsObject:ptr]) return nil;
+    [visited addObject:ptr];
+    (*budget)--;
+
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            id r = DYYYFindAwemeModelInGraph2(e, depth + 1, visited, budget);
+            if (r) return r;
+        }
+        return nil;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id v in ((NSDictionary *)obj).allValues) {
+            id r = DYYYFindAwemeModelInGraph2(v, depth + 1, visited, budget);
+            if (r) return r;
+        }
+        return nil;
+    }
+    for (NSString *name in DYYYAllMemberNames(obj)) {
+        // 跳过会把遍历引向整个 App 对象图的反向引用
+        if ([name hasSuffix:@"elegate"] || [name hasSuffix:@"uperview"] ||
+            [name hasSuffix:@"esponder"] || [name hasSuffix:@"ontroller"] ||
+            [name hasSuffix:@"indow"] || [name hasSuffix:@"arget"]) continue;
+        id v = nil;
+        @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
+        if (!v || v == obj) continue;
+        id r = DYYYFindAwemeModelInGraph2(v, depth + 1, visited, budget);
+        if (r) return r;
+    }
+    // 显式下钻子视图：抖音把 viewModel 挂在 cell 的子视图上时，仅靠自身成员名枚举取不到
+    if ([obj isKindOfClass:[UIView class]]) {
+        for (UIView *sub in [(UIView *)obj subviews]) {
+            id r = DYYYFindAwemeModelInGraph2(sub, depth + 1, visited, budget);
+            if (r) return r;
+        }
+    }
+    return nil;
+}
+
+static id DYYYFindAwemeModelInGraph(id obj, int depth) {
+    if (!obj) return nil;
+    int budget = 2000;  // 结果按 cell+model 指针缓存，单次预算可放宽
+    return DYYYFindAwemeModelInGraph2(obj, depth, [NSMutableSet set], &budget);
+}
+
+// 宿主视图：真实 cell 类跨版本可能不是 UICollectionViewCell（无 contentView），退回自身避免崩溃
+static UIView *DYYYPostDateHostView(UIView *cell) {
+    if ([cell respondsToSelector:@selector(contentView)]) {
+        UIView *cv = [(UICollectionViewCell *)cell contentView];
+        if ([cv isKindOfClass:[UIView class]]) return cv;
+    }
+    return cell;
+}
+
+static void DYYYUpdatePostDateLabelForCellDiag(UICollectionViewCell *cell, BOOL showDiag) {
     if (!cell) return;
     UILabel *dateLabel = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
     if (!DYYYGetBool(@"DYYYShowPostDate")) {
@@ -7936,10 +8075,32 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         return;
     }
 
+    // 优先按类命中 AWEAwemeModel 读官方 createTime，再退回自发现递归。
+    // layoutSubviews 调用极频繁，按 model 指针缓存结果，cell 复用换 model 时自动失效。
     id model = DYYYAwemeModelFromProfileCell(cell);
-    NSNumber *createTime = DYYYExtractTimeRecursive(model, 0);
-    if (!createTime) createTime = DYYYExtractTimeRecursive(cell, 0);
+    NSString *modelToken = model ? [NSString stringWithFormat:@"%p", model] : nil;
+    NSArray *cached = modelToken ? objc_getAssociatedObject(cell, &kDYYYPostDateCacheKey) : nil;
+    NSNumber *createTime = nil;
+    id aweme = nil;
+    BOOL cacheHit = (modelToken && cached.count == 2 && [cached[0] isEqualToString:modelToken]);
+    if (cacheHit) {
+        createTime = [cached[1] isKindOfClass:[NSNumber class]] ? cached[1] : nil;
+        aweme = createTime ? (id)@1 : nil;  // 仅用于诊断分支判定，不再触碰真实对象
+    } else {
+        aweme = DYYYFindAwemeModelInGraph(model, 0);
+        if (!aweme) aweme = DYYYFindAwemeModelInGraph(cell, 0);
+        createTime = aweme ? DYYYNormalizeTimestamp(DYYYNumberValue(aweme, @"createTime")) : nil;
+        if (!createTime) createTime = DYYYExtractTimeRecursive(model, 0);
+        if (!createTime) createTime = DYYYExtractTimeRecursive(cell, 0);
+        // model 为 nil 时不缓存：无法区分 cell 复用前后的不同作品，缓存会写错日期
+        if (modelToken) {
+            objc_setAssociatedObject(cell, &kDYYYPostDateCacheKey,
+                                     @[modelToken, createTime ?: (id)[NSNull null]],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
 
+    UIView *host = DYYYPostDateHostView(cell);
     if (!dateLabel) {
         dateLabel = [[UILabel alloc] init];
         dateLabel.font = [UIFont systemFontOfSize:9];
@@ -7950,10 +8111,11 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         dateLabel.clipsToBounds = YES;
         dateLabel.adjustsFontSizeToFitWidth = NO;
         objc_setAssociatedObject(cell, &kDYYYPostDateLabelKey, dateLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [cell.contentView addSubview:dateLabel];
     }
+    if (dateLabel.superview != host) [host addSubview:dateLabel];
+    [host bringSubviewToFront:dateLabel];
 
-    CGFloat contentW = cell.contentView.bounds.size.width;
+    CGFloat contentW = host.bounds.size.width;
     if (contentW <= 0) { dateLabel.hidden = YES; return; }
 
     if (createTime && [createTime doubleValue] > 0) {
@@ -7961,14 +8123,15 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         dateLabel.text = [DYYYPostDateFormatter() stringFromDate:date];
         dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
         dateLabel.hidden = NO;
-    } else {
-        // 诊断：红底显示图中疑似时间字段名(若存在)或 noTimeField，用于精确定位真实字段
-        NSString *tn = DYYYFindTimeLikePropName(model);
-        if (!tn) tn = DYYYFindTimeLikePropName(cell);
-        NSString *diag = tn ?: @"noTimeField";
-        dateLabel.text = diag.length > 12 ? [diag substringFromIndex:diag.length - 12] : diag;
+    } else if (showDiag) {
+        // 诊断：区分"图里没有 AWEAwemeModel"与"有 model 但读不到 createTime"
+        NSString *diag = aweme ? @"noCreateTime" : @"noAweme";
+        dateLabel.text = diag;
         dateLabel.backgroundColor = [UIColor redColor];
         dateLabel.hidden = NO;
+    } else {
+        dateLabel.hidden = YES;
+        return;
     }
     [dateLabel sizeToFit];
     CGRect frame = dateLabel.frame;
@@ -7977,6 +8140,94 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     frame.size.width += 6;
     frame.size.height += 2;
     dateLabel.frame = frame;
+}
+
+#pragma mark - 运行时动态挂钩：覆盖跨版本改名的主页作品 cell 类
+
+// 抖音跨版本会改 cell 类名，写死 %hook 的类一旦不存在，Logos 会静默跳过（功能无声失效，
+// 这正是此前 6 版都"没效果"的高概率原因）。这里运行时枚举所有类，凡名字像
+// "个人主页作品网格 cell" 的都 swizzle layoutSubviews，兜住类名漂移。
+static BOOL DYYYClassImplementsSelector(Class cls, SEL sel) {
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(cls, &n);
+    BOOL found = NO;
+    if (ms) {
+        for (unsigned int i = 0; i < n; i++) {
+            if (method_getName(ms[i]) == sel) { found = YES; break; }
+        }
+        free(ms);
+    }
+    return found;
+}
+
+static void DYYYSwizzlePostDateLayout(Class cls) {
+    if (!cls) return;
+    SEL sel = @selector(layoutSubviews);
+    if (DYYYClassImplementsSelector(cls, sel)) {
+        Method m = class_getInstanceMethod(cls, sel);
+        if (!m) return;
+        __block IMP origImp = NULL;
+        IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
+            if (origImp) ((void (*)(id, SEL))origImp)(me, sel);
+            DYYYUpdatePostDateLabelForCellDiag((UICollectionViewCell *)me, NO);
+        });
+        origImp = method_setImplementation(m, newImp);
+    } else {
+        IMP superImp = class_getMethodImplementation(class_getSuperclass(cls), sel);
+        IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
+            if (superImp) ((void (*)(id, SEL))superImp)(me, sel);
+            DYYYUpdatePostDateLabelForCellDiag((UICollectionViewCell *)me, NO);
+        });
+        class_addMethod(cls, sel, newImp, "v16@0:8");
+    }
+}
+
+// 允许多次调用：已挂过的类记进 swizzled 集合，避免重复叠加。
+// 不用 dispatch_once 一次了事，因为部分 cell 类随业务框架懒加载，启动时还未注册。
+static void DYYYInstallDynamicPostDateHooks(void) {
+    static NSMutableSet *swizzled = nil;
+    static NSUInteger scanCount = 0;
+    if (!swizzled) swizzled = [NSMutableSet set];
+    if (scanCount > 8) return;  // 限制扫描次数，避免长期开销
+    scanCount++;
+    // 已由 Logos 静态 hook 覆盖，避免重复叠加
+    NSSet *skip = [NSSet setWithArray:@[@"AWEProfileMixItemCollectionViewCell",
+                                        @"AWEUserWorkCollectionViewComponentCell"]];
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    if (!classes) return;
+    NSUInteger hooked = 0;
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        const char *cn = class_getName(cls);
+        if (!cn) continue;
+        NSString *name = @(cn);
+        if (![name hasPrefix:@"AWE"]) continue;
+        if (![name hasSuffix:@"Cell"]) continue;
+        if ([skip containsObject:name] || [swizzled containsObject:name]) continue;
+        // 用 UIView 而非 UICollectionViewCell 判定：部分抖音 cell 类实际继承自 UIView
+        if (![cls isSubclassOfClass:[UIView class]]) continue;
+        // 只认个人主页作品网格相关命名，避免误伤评论/消息等其它列表
+        BOOL looksProfileWork =
+            ([name containsString:@"Profile"] &&
+             ([name containsString:@"Item"] || [name containsString:@"Work"] ||
+              [name containsString:@"Post"] || [name containsString:@"Mix"])) ||
+            [name containsString:@"UserWork"] || [name containsString:@"AwemeGrid"];
+        if (!looksProfileWork) continue;
+        DYYYSwizzlePostDateLayout(cls);
+        [swizzled addObject:name];
+        hooked++;
+    }
+    free(classes);
+    if (hooked > 0) {
+        NSLog(@"[DYYY] PostDate 本轮动态挂钩 cell 类数量: %lu (累计 %lu)",
+              (unsigned long)hooked, (unsigned long)swizzled.count);
+    }
+}
+
+static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
+    DYYYInstallDynamicPostDateHooks();
+    DYYYUpdatePostDateLabelForCellDiag(cell, YES);
 }
 
 %hook AWEProfileMixItemCollectionViewCell
@@ -13687,6 +13938,14 @@ static Class tabBarButtonClass = nil;
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
+
+    // 作品日期显示：静态 %hook 的 cell 类可能因抖音改名而不存在（Logos 会静默跳过），
+    // 这里在启动时按类名特征运行时补挂，保证功能不因类名漂移而无声失效。
+    if (DYYYGetBool(@"DYYYShowPostDate")) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            DYYYInstallDynamicPostDateHooks();
+        });
+    }
 
     Class interactionBaseLabelClass = objc_getClass("AWECommentSwiftBizUI.CommentInteractionBaseLabel");
     if (interactionBaseLabelClass) {
