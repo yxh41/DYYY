@@ -7800,23 +7800,99 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     return model;
 }
 
-// 从 model（可能是包装对象）递归取出发布时间：优先本层字段，本层无则深入嵌套的 awemeModel
-static NSNumber *DYYYCreateTimeFromObject(id obj) {
-    if (!obj) return nil;
-    NSArray<NSString *> *fields = @[@"createTime", @"publishTime", @"createTimeInterval", @"shootTime", @"postTime"];
-    for (NSString *f in fields) {
-        NSNumber *t = nil;
-        SEL sel = NSSelectorFromString(f);
-        @try { if ([obj respondsToSelector:sel]) t = [obj performSelector:sel]; } @catch (__unused NSException *e) { t = nil; }
-        if (!t) @try { t = [obj valueForKey:f]; } @catch (__unused NSException *e) {}
-        if (t && [t doubleValue] > 0) return t;
-        // 包装对象：真实 aweme 常嵌套在 awemeModel 内，递归一层
-        if ([f isEqualToString:@"createTime"]) {
-            id nested = nil;
-            @try { if ([obj respondsToSelector:@selector(awemeModel)]) nested = [obj performSelector:@selector(awemeModel)]; } @catch (__unused NSException *e) {}
-            if (!nested) @try { nested = [obj valueForKey:@"awemeModel"]; } @catch (__unused NSException *e) {}
-            if (nested) { NSNumber *nt = DYYYCreateTimeFromObject(nested); if (nt) return nt; }
+static BOOL DYYYNameLooksLikeTime(NSString *name) {
+    if ([name rangeOfString:@"ime" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // time
+    if ([name rangeOfString:@"reate" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES; // create
+    if ([name rangeOfString:@"ate" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;    // date
+    if ([name rangeOfString:@"ublish" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES; // publish
+    if ([name rangeOfString:@"hoot" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // shoot
+    return NO;
+}
+
+static BOOL DYYYNameLooksLikeModel(NSString *name) {
+    if ([name rangeOfString:@"odel" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // model
+    if ([name rangeOfString:@"weme" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // aweme
+    if ([name rangeOfString:@"ork" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;     // work
+    if ([name rangeOfString:@"ata" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;    // data
+    return NO;
+}
+
+static NSNumber *DYYYNumberValue(id obj, NSString *key) {
+    if (!obj || !key) return nil;
+    id v = nil;
+    SEL sel = NSSelectorFromString(key);
+    @try { if ([obj respondsToSelector:sel]) v = [obj performSelector:sel]; } @catch (__unused NSException *e) {}
+    if (!v) @try { v = [obj valueForKey:key]; } @catch (__unused NSException *e) {}
+    if ([v isKindOfClass:[NSNumber class]]) return v;
+    if ([v isKindOfClass:[NSString class]]) {
+        double d = [(NSString *)v doubleValue];
+        if (d > 0) return @(d);
+    }
+    return nil;
+}
+
+// 按类缓存已发现的字段名，避免每次 layoutSubviews 都枚举属性
+static NSMutableDictionary<NSString *, NSString *> *DYYYPostDateKeyCache(void) {
+    static NSMutableDictionary *c;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ c = [NSMutableDictionary dictionary]; });
+    return c;
+}
+
+// 自发现式取发布时间：不依赖固定字段名，运行时枚举属性/字典键，匹配 time/create/date/publish/shoot 类名称
+static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
+    if (!obj || depth > 3) return nil;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)obj;
+        for (NSString *k in dict.allKeys) {
+            if (DYYYNameLooksLikeTime(k)) {
+                NSNumber *t = DYYYNumberValue(dict, k);
+                if (t) return t;
+            }
         }
+        for (id v in dict.allValues) {
+            NSNumber *t = DYYYExtractTimeRecursive(v, depth + 1);
+            if (t) return t;
+        }
+        return nil;
+    }
+    // 快速路径：同类上次发现的字段名
+    NSString *clsName = NSStringFromClass([obj class]);
+    NSString *cachedKey = DYYYPostDateKeyCache()[clsName];
+    if (cachedKey) {
+        NSNumber *t = DYYYNumberValue(obj, cachedKey);
+        if (t) return t;
+    }
+    // 1) 已知字段名优先
+    NSArray<NSString *> *known = @[@"createTime", @"publishTime", @"createTimeInterval", @"shootTime", @"postTime", @"createTimeMillis"];
+    for (NSString *f in known) {
+        NSNumber *t = DYYYNumberValue(obj, f);
+        if (t) { DYYYPostDateKeyCache()[clsName] = f; return t; }
+    }
+    // 2) 枚举本对象属性，匹配时间类名称
+    unsigned int count = 0;
+    objc_property_t *props = class_copyPropertyList([obj class], &count);
+    if (props) {
+        for (unsigned int i = 0; i < count; i++) {
+            NSString *name = @(property_getName(props[i]));
+            if (DYYYNameLooksLikeTime(name)) {
+                NSNumber *t = DYYYNumberValue(obj, name);
+                if (t) { DYYYPostDateKeyCache()[clsName] = name; free(props); return t; }
+            }
+        }
+        // 3) 递归进入 model/aweme/work/data/view 类属性
+        for (unsigned int i = 0; i < count; i++) {
+            NSString *name = @(property_getName(props[i]));
+            if (DYYYNameLooksLikeModel(name)) {
+                id nested = nil;
+                @try { nested = [obj valueForKey:name]; } @catch (__unused NSException *e) {}
+                if (nested && nested != obj) {
+                    NSNumber *t = DYYYExtractTimeRecursive(nested, depth + 1);
+                    if (t) { free(props); return t; }
+                }
+            }
+        }
+        free(props);
     }
     return nil;
 }
@@ -7830,7 +7906,8 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
     }
 
     id model = DYYYAwemeModelFromProfileCell(cell);
-    NSNumber *createTime = DYYYCreateTimeFromObject(model);
+    NSNumber *createTime = DYYYExtractTimeRecursive(model, 0);
+    if (!createTime) createTime = DYYYExtractTimeRecursive(cell, 0);
 
     if (!dateLabel) {
         dateLabel = [[UILabel alloc] init];
@@ -7854,8 +7931,9 @@ static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
         dateLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
         dateLabel.hidden = NO;
     } else {
-        // 诊断：hook 已命中但取不到发布时间 -> 红色「?」，用于区分"没命中类"与"取不到字段"
-        dateLabel.text = @"?";
+        // 诊断：hook 已命中但全图未找到发布时间字段 -> 红底显示 model 类名，便于定位真实类型/字段
+        NSString *cls = model ? NSStringFromClass([model class]) : @"noModel";
+        dateLabel.text = cls.length > 12 ? [cls substringFromIndex:cls.length - 12] : cls;
         dateLabel.backgroundColor = [UIColor redColor];
         dateLabel.hidden = NO;
     }
