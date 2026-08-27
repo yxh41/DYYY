@@ -7809,14 +7809,6 @@ static BOOL DYYYNameLooksLikeTime(NSString *name) {
     return NO;
 }
 
-static BOOL DYYYNameLooksLikeModel(NSString *name) {
-    if ([name rangeOfString:@"odel" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // model
-    if ([name rangeOfString:@"weme" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;   // aweme
-    if ([name rangeOfString:@"ork" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;     // work
-    if ([name rangeOfString:@"ata" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;    // data
-    return NO;
-}
-
 static NSNumber *DYYYNumberValue(id obj, NSString *key) {
     if (!obj || !key) return nil;
     id v = nil;
@@ -7839,9 +7831,10 @@ static NSMutableDictionary<NSString *, NSString *> *DYYYPostDateKeyCache(void) {
     return c;
 }
 
-// 自发现式取发布时间：不依赖固定字段名，运行时枚举属性/字典键，匹配 time/create/date/publish/shoot 类名称
+// 自发现式取发布时间：运行时枚举属性（含所有对象属性深度递归），匹配 time/create/date/publish/shoot 类名称。
+// 不依赖固定字段名与固定嵌套层级，规避抖音把 aweme 藏在任意命名的包装对象（如 XxxCellViewModel）内。
 static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
-    if (!obj || depth > 3) return nil;
+    if (!obj || depth > 4) return nil;
     if ([obj isKindOfClass:[NSDictionary class]]) {
         NSDictionary *dict = (NSDictionary *)obj;
         for (NSString *k in dict.allKeys) {
@@ -7856,7 +7849,6 @@ static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
         }
         return nil;
     }
-    // 快速路径：同类上次发现的字段名
     NSString *clsName = NSStringFromClass([obj class]);
     NSString *cachedKey = DYYYPostDateKeyCache()[clsName];
     if (cachedKey) {
@@ -7869,7 +7861,7 @@ static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
         NSNumber *t = DYYYNumberValue(obj, f);
         if (t) { DYYYPostDateKeyCache()[clsName] = f; return t; }
     }
-    // 2) 枚举本对象属性，匹配时间类名称
+    // 2) 枚举本对象属性：先匹配时间类名称，再递归进入所有对象属性（排除 UIKit 视图与基础类型）
     unsigned int count = 0;
     objc_property_t *props = class_copyPropertyList([obj class], &count);
     if (props) {
@@ -7880,16 +7872,25 @@ static NSNumber *DYYYExtractTimeRecursive(id obj, int depth) {
                 if (t) { DYYYPostDateKeyCache()[clsName] = name; free(props); return t; }
             }
         }
-        // 3) 递归进入 model/aweme/work/data/view 类属性
         for (unsigned int i = 0; i < count; i++) {
             NSString *name = @(property_getName(props[i]));
-            if (DYYYNameLooksLikeModel(name)) {
-                id nested = nil;
-                @try { nested = [obj valueForKey:name]; } @catch (__unused NSException *e) {}
-                if (nested && nested != obj) {
-                    NSNumber *t = DYYYExtractTimeRecursive(nested, depth + 1);
+            if (DYYYNameLooksLikeTime(name)) continue;
+            id v = nil;
+            @try { v = [obj valueForKey:name]; } @catch (__unused NSException *e) { continue; }
+            if (!v || v == obj) continue;
+            if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) continue;
+            if ([v isKindOfClass:[UIView class]] || [v isKindOfClass:[CALayer class]] ||
+                [v isKindOfClass:[UIColor class]] || [v isKindOfClass:[UIImage class]] ||
+                [v isKindOfClass:[NSData class]] || [v isKindOfClass:[NSDate class]] ||
+                [v isKindOfClass:[NSSet class]]) continue;
+            if ([v isKindOfClass:[NSArray class]]) {
+                for (id e in (NSArray *)v) {
+                    NSNumber *t = DYYYExtractTimeRecursive(e, depth + 1);
                     if (t) { free(props); return t; }
                 }
+            } else {
+                NSNumber *t = DYYYExtractTimeRecursive(v, depth + 1);
+                if (t) { free(props); return t; }
             }
         }
         free(props);
