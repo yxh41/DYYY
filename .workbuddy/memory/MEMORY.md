@@ -20,6 +20,18 @@
 - **浮窗按钮一律挂 `[DYYYUtils getActiveWindow]`（keyWindow），不要用"从 self 响应链找 VC 再 add 到 parentVC.view"。** 后者在不确定类/不确定响应链下常取不到 VC，按钮加了也挂不上去。本仓库倍速浮窗按钮（`DYYYEnsureFloatSpeedButton`）即挂 keyWindow，是已验证可靠模式。
 - **浮窗按钮的 `target` 用「单例控制器」而非当前 VC/self。** 抖音切换/复用视频时 VC 可能被释放，但按钮还挂在 keyWindow 上，点按发消息给已释放对象 → `EXC_BAD_ACCESS` 闪退（`@try@catch` 抓不住）。单例（如 `DYYYPlaybackQualityNoiseController shared`）永不释放，状态存单例、每次点击实时扫 keyWindow 拿当前 player，是浮窗按钮通用可靠模式（commit `1d4868d` 验证）。
 
+## 运行时反射取私有 model 字段（铁律，v6 postdate 踩坑总结）
+- **`class_copyPropertyList` 只返回本类自身声明的属性**——不含父类属性、不含纯 ivar。抖音私有 model 大量字段恰在这两处。必须三件套：`class_copyPropertyList` + `class_copyIvarList`（ivar 名去前导 `_`）+ 沿 `class_getSuperclass` 上溯（遇 `UI`/`CA`/`NS` 前缀基类停）。范式见 `DYYY.xm` 的 `DYYYAllMemberNames`。
+- **KVC 不是万能安全**：对结构体 / 裸指针 / C 数组 / 联合 / 位域类型的成员调 `valueForKey:` 会**直接崩**（信号级，`@try/@catch` 抓不住）。反射遍历前必须按 type encoding 白名单过滤，只放 `@` 与标量（`c C s S i I l L q Q f d B`，注意跳过前导 `r` const 修饰）。属性侧读 `property_getAttributes` 的 `T` 段，ivar 侧读 `ivar_getTypeEncoding`。范式见 `DYYYTypeEncodingIsSafe`。
+- **对象图递归必须带 `visited` + `budget`**：抖音 UI 对象通过 delegate/superview/controller 互指成环，不设防会走遍整个 App 对象图（卡死/栈溢出）。`visited` 用 `[NSValue valueWithPointer:]` 存指针；成员名以 `elegate`/`uperview`/`esponder`/`ontroller`/`indow`/`arget` 结尾的一律跳过。
+- **找目标 model 用「类名」而非「属性名」**：属性名跨版本改得比类名勤。想拿 `AWEAwemeModel` 就 `objc_copyClassList`/`isKindOfClass:NSClassFromString(@"AWEAwemeModel")` 在对象图里搜，比猜 `awemeModel`/`model`/`itemModel` 靠谱。个人主页 cell 的 model 常是 `XxxCellViewModel` 包装，真 model 嵌在任意命名的成员里。
+- **字段名模糊匹配会制造假阳性**：用 "reate"/"ate" 匹配时间字段会把 `createRequestQueue` 命中。匹配要窄（只认 `time`/`date`），并对取到的数值做**语义校验**：毫秒/微秒归一（>1e11 反复 /1000）+ 区间校验（2000-01-01 ~ 今日+3天），过滤计数器/ID 类垃圾。范式见 `DYYYNormalizeTimestamp`。
+- **静态 `%hook` 一个可能不存在的类 = 静默失效**（Logos 不报错，纯运行期消失）。稳妥做法是双保险：静态 hook 已验证存在的类 + 运行时 `objc_copyClassList` 按类名特征枚举补挂（`imp_implementationWithBlock` + `method_setImplementation`；本类未实现该方法时用 `class_getMethodImplementation(superclass)` 兜底再 `class_addMethod`）。范式见 `DYYYInstallDynamicPostDateHooks` / `DYYYSwizzlePostDateLayout`。
+- **动态挂钩到的类不一定是 `UICollectionViewCell`**（部分抖音 cell 类直接继承 UIView，无 `contentView`）。取宿主视图前先 `respondsToSelector:@selector(contentView)`，否则退回自身。
+- **反射结果要缓存**：`layoutSubviews` 调用极频繁，按 `(cell, model 指针)` 存关联对象；model 为 nil 时**不要缓存**（无法区分 cell 复用前后的不同数据，会显示错值）。
+- **移植功能前先确认源仓库真有这功能**：`pxx917144686/DYYY` 只有播放页时间戳（`%hook AWEPlayInteractionTimestampElement` 的 `-timestampLabel`，读 `[self.model valueForKey:@"createTime"]`，开关 `DYYYShowDateTime`），**没有**主页缩略图角标日期。用 `curl -sSL https://raw.githubusercontent.com/<owner>/<repo>/main/<file>` 即可免认证拉公开源码核实，早查省 5 轮盲猜。
+- **读私有 model 字段一律用 `valueForKey:`，绝不用 `performSelector:` 读"返回类型未知"的动态字段名**（`NSSelectorFromString(key)` 取到的）。`performSelector:` 返回 `id`，遇到返回标量（`double`/`NSInteger`/`NSTimeInterval` 等）的 getter 会把标量当指针返回，随后 ARC 的 `objc_retainAutoreleasedReturnValue` 对该野指针 retain → `EXC_BAD_ACCESS`（信号级，`@try@catch` 抓不住）。`valueForKey:` 自动把标量包装成 NSNumber，安全且覆盖更全（getter + ivar 兜底）。滑进对方主页「有几率闪退」（崩溃值 `0x20`）即此根因，已修复于 `DYYYNumberValue` / `DYYYAwemeModelFromProfileCell`。
+
 ## 头文件字段事实（AwemeHeaders.h 易错点）
 - `AWEPlayInteractionViewController` 的视频模型属性是 **`model`**（`@property AWEAwemeModel *model`，line 361），**不是** `awemeModel`（该类无此属性，误用会 unrecognized selector，易在 @try@catch 里被吞掉导致"按钮不出现"）。
 - `AWEVideoModel`（`line 66-76`）**没有** `videoURLModel`；播放 URL 取自 `playURL` / `playLowBitURL`（都是 `AWEURLModel`，含 `originURLList`），多档清晰度在 `bitrateModels`（NSArray，元素类型头文件未声明，用 KVC 兜底取 `playURL`/`url`）。

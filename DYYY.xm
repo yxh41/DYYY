@@ -7780,22 +7780,17 @@ static id DYYYAwemeModelFromProfileCell(id cell) {
     if (!cell) return nil;
     id model = nil;
     @try {
-        // 优先按已知 selector 取，再退回 KVC；覆盖抖音跨版本可能改名的属性
+        // 一律走 valueForKey: 取模型：既能命中 getter 又能兜底 ivar，且把标量包装成 NSNumber。
+        // 绝不能用 performSelector: 读返回类型未知的字段——若方法返回标量/结构体，performSelector:
+        // 会把标量当指针返回，随后 retain 野指针直接 EXC_BAD_ACCESS（滑进对方主页闪退的根因）。
         NSArray<NSString *> *candidateKeys = @[@"awemeModel", @"model", @"data", @"viewModel",
                                                @"item", @"itemModel", @"cellModel", @"workModel",
                                                @"aweme", @"cardModel"];
         for (NSString *key in candidateKeys) {
-            SEL sel = NSSelectorFromString(key);
-            if ([cell respondsToSelector:sel]) {
-                @try { model = [cell performSelector:sel]; } @catch (__unused NSException *e) { model = nil; }
-                if (model) break;
-            }
-        }
-        if (!model) {
-            for (NSString *key in candidateKeys) {
-                @try { model = [cell valueForKey:key]; } @catch (__unused NSException *e) {}
-                if (model) break;
-            }
+            @try { model = [cell valueForKey:key]; } @catch (__unused NSException *e) { model = nil; }
+            if (model && ![model isKindOfClass:[NSNumber class]] &&
+                ![model isKindOfClass:[NSString class]] && ![model isKindOfClass:[NSValue class]]) break;
+            model = nil;
         }
     } @catch (__unused NSException *e) {}
     return model;
@@ -7824,9 +7819,10 @@ static NSNumber *DYYYNormalizeTimestamp(NSNumber *raw) {
 static NSNumber *DYYYNumberValue(id obj, NSString *key) {
     if (!obj || !key) return nil;
     id v = nil;
-    SEL sel = NSSelectorFromString(key);
-    @try { if ([obj respondsToSelector:sel]) v = [obj performSelector:sel]; } @catch (__unused NSException *e) {}
-    if (!v) @try { v = [obj valueForKey:key]; } @catch (__unused NSException *e) {}
+    // 只用 valueForKey: 读字段：它对标量会自动包装成 NSNumber，安全。
+    // 之前先走 performSelector:，遇到返回标量（如 NSTimeInterval/double）的字段时会把标量当
+    // 指针返回，随后 retain 野指针直接 EXC_BAD_ACCESS（滑进对方主页闪退的直接根因）。
+    @try { v = [obj valueForKey:key]; } @catch (__unused NSException *e) {}
     if ([v isKindOfClass:[NSNumber class]]) return v;
     if ([v isKindOfClass:[NSDate class]]) return @([(NSDate *)v timeIntervalSince1970]);
     if ([v isKindOfClass:[NSString class]]) {
