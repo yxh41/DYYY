@@ -11931,6 +11931,45 @@ static NSMutableSet *DYYYChapterProbeDumpedModels(void) {
     return s;
 }
 
+// 扫描 AWEAwemeModel 上与广告/电商/营销/章节相关的字段，判断 iOS 端是否存在「营销章节」数据。
+// 用关键字匹配而非全量 dump：AWEAwemeModel 字段极多，全量会把日志撑爆且无法阅读。
+// 关键词刻意避开裸 "ad"（会误命中 load/read/download），改用前缀与更长的特征串。
+static void DYYYProbeAdFields(id model, NSMutableString *log) {
+    if (!model) return;
+    NSArray<NSString *> *all = DYYYAllMemberNames(model);
+    NSMutableArray<NSString *> *hits = [NSMutableArray array];
+    for (NSString *nm in all) {
+        NSString *low = [nm lowercaseString];
+        BOOL hit = [low hasPrefix:@"ad"] ||
+                   [low containsString:@"rawad"] || [low containsString:@"hardad"] ||
+                   [low containsString:@"adinfo"] || [low containsString:@"adtype"] ||
+                   [low containsString:@"ecom"] || [low containsString:@"market"] ||
+                   [low containsString:@"promot"] || [low containsString:@"chapter"] ||
+                   [low containsString:@"skip"] || [low containsString:@"brand"] ||
+                   [low containsString:@"goods"] || [low containsString:@"product"] ||
+                   [low containsString:@"shop"] || [low containsString:@"sponsor"];
+        if (hit) [hits addObject:nm];
+    }
+    [log appendFormat:@"  [adfields] candidates=%lu\n", (unsigned long)hits.count];
+    NSUInteger limit = MIN(hits.count, (NSUInteger)60);  // 限流，避免日志爆炸
+    for (NSUInteger i = 0; i < limit; i++) {
+        NSString *nm = hits[i];
+        id ov = nil;
+        @try { ov = [model valueForKey:nm]; } @catch (__unused NSException *e) { continue; }
+        NSString *vs;
+        if (!ov) vs = @"(null)";
+        else if ([ov isKindOfClass:[NSString class]]) {
+            NSString *s = (NSString *)ov;
+            vs = s.length > 120 ? [[s substringToIndex:120] stringByAppendingString:@"…"] : s;
+        }
+        else if ([ov isKindOfClass:[NSNumber class]]) vs = [ov description];
+        else if ([ov isKindOfClass:[NSArray class]]) vs = [NSString stringWithFormat:@"(array[%lu])", (unsigned long)[ov count]];
+        else if ([ov isKindOfClass:[NSDictionary class]]) vs = [NSString stringWithFormat:@"(dict[%lu])", (unsigned long)[ov count]];
+        else vs = [NSString stringWithFormat:@"(%@)", NSStringFromClass([ov class])];
+        [log appendFormat:@"  [adfields] %@ = %@\n", nm, vs];
+    }
+}
+
 static void DYYYProbeChapterList(NSArray *chapters, id model) {
     if (!chapters || chapters.count == 0) return;
     // 按 model 指针去重，避免同一条视频反复 dump
@@ -11952,6 +11991,7 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
             [log appendFormat:@"  [model] %@ = %@\n", mk, ms];
         }
     }
+    DYYYProbeAdFields(model, log);
 
     NSUInteger n = chapters.count;
     for (NSUInteger i = 0; i < n; i++) {
