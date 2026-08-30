@@ -11941,19 +11941,59 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
     NSMutableString *log = [NSMutableString string];
     [log appendFormat:@"\n========== [DYYY][chapter] model=%@ chapters=%lu ==========\n",
         NSStringFromClass([model class]), (unsigned long)chapters.count];
-    for (NSUInteger i = 0; i < chapters.count; i++) {
+
+    // 视频级广告标记，便于判断整条视频是否广告
+    for (NSString *mk in @[@"isAds", @"isHardAd", @"isHardAdModel", @"duration", @"awemeType"]) {
+        id mv = nil;
+        @try { mv = [model valueForKey:mk]; } @catch (__unused NSException *e) {}
+        if (mv) {
+            NSString *ms = ([mv isKindOfClass:[NSString class]] || [mv isKindOfClass:[NSNumber class]])
+                ? [mv description] : NSStringFromClass([mv class]);
+            [log appendFormat:@"  [model] %@ = %@\n", mk, ms];
+        }
+    }
+
+    NSUInteger n = chapters.count;
+    for (NSUInteger i = 0; i < n; i++) {
         id ch = chapters[i];
-        [log appendFormat:@"--- chapter[%lu] class=%@ ---\n", (unsigned long)i, NSStringFromClass([ch class])];
+        NSNumber *ts = nil;
+        @try { ts = [ch valueForKey:@"timestamp"]; } @catch (__unused NSException *e) {}
+        NSNumber *nextTs = nil;
+        if (i + 1 < n) {
+            @try { nextTs = [chapters[i + 1] valueForKey:@"timestamp"]; } @catch (__unused NSException *e) {}
+        }
+        // endTime 全为 null，章节区间只能靠下一章起点推算
+        [log appendFormat:@"--- chapter[%lu] class=%@ range=[%@ ms, %@) ---\n",
+            (unsigned long)i, NSStringFromClass([ch class]), ts ?: @"?", nextTs ?: @"END"];
         // DYYYAllMemberNames 已按 type encoding 过滤，只含对象/标量字段，valueForKey: 安全
         NSArray<NSString *> *names = DYYYAllMemberNames(ch);
         for (NSString *nm in names) {
+            if ([nm isEqualToString:@"debugDescription"]) continue;  // 与 description 重复，纯噪音
             id ov = nil;
             @try { ov = [ch valueForKey:nm]; } @catch (__unused NSException *e) { continue; }
             if (!ov) { [log appendFormat:@"  %@ = (null)\n", nm]; continue; }
             if ([ov isKindOfClass:[NSString class]]) [log appendFormat:@"  %@ = \"%@\"\n", nm, ov];
             else if ([ov isKindOfClass:[NSNumber class]]) [log appendFormat:@"  %@ = %@\n", nm, ov];
-            else if ([ov isKindOfClass:[NSArray class]]) [log appendFormat:@"  %@ = (array[%lu])\n", nm, (unsigned long)[ov count]];
-            else if ([ov isKindOfClass:[NSDictionary class]]) [log appendFormat:@"  %@ = (dict[%lu])\n", nm, (unsigned long)[ov count]];
+            else if ([ov isKindOfClass:[NSArray class]]) {
+                NSArray *arr = (NSArray *)ov;
+                [log appendFormat:@"  %@ = (array[%lu])\n", nm, (unsigned long)arr.count];
+                for (NSUInteger k = 0; k < arr.count && k < 8; k++) {
+                    id el = arr[k];
+                    NSString *es = ([el isKindOfClass:[NSString class]] || [el isKindOfClass:[NSNumber class]])
+                        ? [el description] : NSStringFromClass([el class]);
+                    [log appendFormat:@"    [%lu] %@\n", (unsigned long)k, es];
+                }
+            }
+            else if ([ov isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *d = (NSDictionary *)ov;
+                [log appendFormat:@"  %@ = (dict[%lu])\n", nm, (unsigned long)d.count];
+                for (id k2 in d) {
+                    id val = d[k2];
+                    NSString *vs = ([val isKindOfClass:[NSString class]] || [val isKindOfClass:[NSNumber class]])
+                        ? [val description] : NSStringFromClass([val class]);
+                    [log appendFormat:@"    %@ = %@\n", k2, vs];
+                }
+            }
             else [log appendFormat:@"  %@ = (%@)\n", nm, NSStringFromClass([ov class])];
         }
     }
