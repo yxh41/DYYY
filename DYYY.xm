@@ -11893,13 +11893,68 @@ static Class tabBarButtonClass = nil;
     return %orig;
 }
 
+#ifdef DYYY_CHAPTER_PROBE
+// 临时调试探针：dump 章节对象全部安全字段到文件，供定位「营销章节」标记。
+// 仅 debug 构建（Makefile 定义 DYYY_CHAPTER_PROBE）包含，主构建不含。
+static NSMutableSet *DYYYChapterProbeDumpedModels(void) {
+    static NSMutableSet *s;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ s = [NSMutableSet set]; });
+    return s;
+}
+
+static void DYYYProbeChapterList(NSArray *chapters, id model) {
+    if (!chapters || chapters.count == 0) return;
+    // 按 model 指针去重，避免同一条视频反复 dump
+    NSValue *key = [NSValue valueWithPointer:(__bridge const void *)model];
+    if ([DYYYChapterProbeDumpedModels() containsObject:key]) return;
+    [DYYYChapterProbeDumpedModels() addObject:key];
+
+    NSMutableString *log = [NSMutableString string];
+    [log appendFormat:@"\n========== [DYYY][chapter] model=%@ chapters=%lu ==========\n",
+        NSStringFromClass([model class]), (unsigned long)chapters.count];
+    for (NSUInteger i = 0; i < chapters.count; i++) {
+        id ch = chapters[i];
+        [log appendFormat:@"--- chapter[%lu] class=%@ ---\n", (unsigned long)i, NSStringFromClass([ch class])];
+        // DYYYAllMemberNames 已按 type encoding 过滤，只含对象/标量字段，valueForKey: 安全
+        NSArray<NSString *> *names = DYYYAllMemberNames(ch);
+        for (NSString *nm in names) {
+            id ov = nil;
+            @try { ov = [ch valueForKey:nm]; } @catch (__unused NSException *e) { continue; }
+            if (!ov) { [log appendFormat:@"  %@ = (null)\n", nm]; continue; }
+            if ([ov isKindOfClass:[NSString class]]) [log appendFormat:@"  %@ = \"%@\"\n", nm, ov];
+            else if ([ov isKindOfClass:[NSNumber class]]) [log appendFormat:@"  %@ = %@\n", nm, ov];
+            else if ([ov isKindOfClass:[NSArray class]]) [log appendFormat:@"  %@ = (array[%lu])\n", nm, (unsigned long)[ov count]];
+            else if ([ov isKindOfClass:[NSDictionary class]]) [log appendFormat:@"  %@ = (dict[%lu])\n", nm, (unsigned long)[ov count]];
+            else [log appendFormat:@"  %@ = (%@)\n", nm, NSStringFromClass([ov class])];
+        }
+    }
+    NSString *path = @"/var/mobile/Documents/dyyy_chapter_probe.log";
+    FILE *f = fopen([path UTF8String], "a");
+    if (f) { fputs([log UTF8String], f); fflush(f); fclose(f); }
+    NSLog(@"[DYYY][chapter] dumped %lu chapters -> %@", (unsigned long)chapters.count, path);
+}
+#endif
+
 //屏蔽章节要点数据
 - (NSArray *)chapterList {
-	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
-	if (hideChapterList) {
-		return @[]; // 返回空数组
-	}
-	return %orig;
+#ifdef DYYY_CHAPTER_PROBE
+    NSArray *orig = %orig;
+    if (orig.count > 0) {
+        DYYYProbeChapterList(orig, self);
+    }
+    BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
+    if (hideChapterList) {
+        return @[];
+    }
+    return orig;
+#else
+    BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
+    if (hideChapterList) {
+        return @[]; // 返回空数组
+    }
+    return %orig;
+#endif
 }
 
 // 屏蔽共创数据
