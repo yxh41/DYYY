@@ -11944,6 +11944,17 @@ static void DYYYProbeExpandInto(NSMutableString *log, id obj, NSString *tag) {
         NSArray *arr = (NSArray *)obj;
         if (arr.count == 0) return;
         id el = arr[0];
+        // 标量数组（如 adChapterIndexArray 存的是 NSNumber 索引）直接打印元素值，
+        // 否则只知道 count 等于什么都没看到
+        if ([el isKindOfClass:[NSNumber class]] || [el isKindOfClass:[NSString class]]) {
+            NSMutableString *vals = [NSMutableString string];
+            NSUInteger vlim = MIN(arr.count, (NSUInteger)12);
+            for (NSUInteger k = 0; k < vlim; k++) {
+                [vals appendFormat:@"%@%@", (k ? @"," : @""), arr[k]];
+            }
+            [log appendFormat:@"  [adfields] %@<values: %@>\n", tag, vals];
+            return;
+        }
         if (![NSStringFromClass([el class]) hasPrefix:@"AWE"]) return;
         [log appendFormat:@"  [adfields] %@<array[0] %@>\n", tag, NSStringFromClass([el class])];
         DYYYProbeExpandInto(log, el, [tag stringByAppendingString:@"  "]);
@@ -12105,11 +12116,53 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
 }
 #endif
 
+// 自动跳过广告章节：复刻 dyyds 做法——抖音原生字段 adChapterAutoSkipIndexArray 由服务端控制，
+// 但服务端从不下发（探针实测 14/14 为 null），故本地把 adChapterIndexArray 复制进去，
+// 借抖音原生「智能跳过营销章节」机制实现自动跳过。开关 DYYYAutoSkipAdChapter 默认关，
+// 测试期由 %ctor 的 registerDefaults 临时开；正式合 main 时改回默认关并加设置项。
+static void DYYYApplyAdChapterAutoSkip(id model) {
+    if (!model) return;
+    if (!DYYYGetBool(@"DYYYAutoSkipAdChapter")) return;
+    id chapterData = nil;
+    @try { chapterData = [model valueForKey:@"chapterData"]; } @catch (__unused NSException *e) { chapterData = nil; }
+    if (!chapterData) return;
+    id adIdx = nil;
+    @try { adIdx = [chapterData valueForKey:@"adChapterIndexArray"]; } @catch (__unused NSException *e) { adIdx = nil; }
+    if (![adIdx isKindOfClass:[NSArray class]] || [adIdx count] == 0) return;
+    // 已填充则跳过，避免重复写
+    id curSkip = nil;
+    @try { curSkip = [chapterData valueForKey:@"adChapterAutoSkipIndexArray"]; } @catch (__unused NSException *e) {}
+    if ([curSkip isKindOfClass:[NSArray class]] && [curSkip count] > 0) return;
+    NSMutableArray *copy = [NSMutableArray arrayWithCapacity:[adIdx count]];
+    for (id v in (NSArray *)adIdx) {
+        if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) [copy addObject:v];
+    }
+    if (copy.count == 0) return;
+    @try {
+        [chapterData setValue:[copy copy] forKey:@"adChapterAutoSkipIndexArray"];
+    } @catch (__unused NSException *e) {
+#ifdef DYYY_CHAPTER_PROBE
+        for (NSString *p in DYYYChapterProbeLogPaths()) {
+            FILE *f = fopen([p fileSystemRepresentation], "a");
+            if (f) { fprintf(f, "\n[adskip] KVC setValue FAILED for adChapterAutoSkipIndexArray\n"); fclose(f); }
+        }
+#endif
+        return;
+    }
+#ifdef DYYY_CHAPTER_PROBE
+    for (NSString *p in DYYYChapterProbeLogPaths()) {
+        FILE *f = fopen([p fileSystemRepresentation], "a");
+        if (f) { fprintf(f, "\n[adskip] OK filled adChapterAutoSkipIndexArray = [%s]\n", [[copy componentsJoinedByString:@","] UTF8String]); fclose(f); }
+    }
+#endif
+}
+
 //屏蔽章节要点数据
 - (NSArray *)chapterList {
 #ifdef DYYY_CHAPTER_PROBE
     NSArray *orig = %orig;
     if (orig.count > 0) {
+        DYYYApplyAdChapterAutoSkip(self);
         DYYYProbeChapterList(orig, self);
     }
     BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
@@ -12118,11 +12171,13 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
     }
     return orig;
 #else
+    NSArray *orig = %orig;
+    DYYYApplyAdChapterAutoSkip(self);
     BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
     if (hideChapterList) {
         return @[]; // 返回空数组
     }
-    return %orig;
+    return orig;
 #endif
 }
 
@@ -14147,7 +14202,9 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
 
 %ctor {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        @"DYYYDisableFeedNowPlayingInfo" : @YES
+        @"DYYYDisableFeedNowPlayingInfo" : @YES,
+        // 测试期临时默认开自动跳过广告章节；正式合 main 前改回 @NO 并补设置开关
+        @"DYYYAutoSkipAdChapter" : @YES
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
