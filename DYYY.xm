@@ -11896,6 +11896,34 @@ static Class tabBarButtonClass = nil;
 #ifdef DYYY_CHAPTER_PROBE
 // 临时调试探针：dump 章节对象全部安全字段到文件，供定位「营销章节」标记。
 // 仅 debug 构建（Makefile 定义 DYYY_CHAPTER_PROBE）包含，主构建不含。
+static BOOL gDYYYChapterProbeToasted = NO;
+
+// 探针日志路径：优先 App 沙盒 Documents（项目内已验证可写，见 DYYYCustomAssetsDirectory）。
+// roothide 下 /var/mobile/... 与 Filza 看到的并非同一棵目录树，故沙盒路径为主、绝对路径为副。
+static NSArray<NSString *> *DYYYChapterProbeLogPaths(void) {
+    NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *primary = [docDir stringByAppendingPathComponent:@"dyyy_chapter_probe.log"];
+    return @[primary, @"/var/mobile/Documents/dyyy_chapter_probe.log"];
+}
+
+// 启动自检：确认 dylib 已加载 + 日志可写，用于区分「路径/权限问题」与「chapterList 未被调用」
+static void DYYYChapterProbeSelfTest(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSArray<NSString *> *paths = DYYYChapterProbeLogPaths();
+        BOOL ok = NO;
+        for (NSString *p in paths) {
+            FILE *f = fopen([p fileSystemRepresentation], "a");
+            if (f) {
+                fprintf(f, "\n[probe selftest] dylib loaded, log writable, path=%s\n", [p UTF8String]);
+                fclose(f);
+                ok = YES;
+            }
+        }
+        NSLog(@"[DYYY][chapter] selftest ok=%d paths=%@", ok, paths);
+        [DYYYToast showSuccessToastWithMessage:ok ? @"章节探针自检：日志可写" : @"章节探针自检：写入失败"];
+    });
+}
+
 static NSMutableSet *DYYYChapterProbeDumpedModels(void) {
     static NSMutableSet *s;
     static dispatch_once_t t;
@@ -11929,10 +11957,31 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
             else [log appendFormat:@"  %@ = (%@)\n", nm, NSStringFromClass([ov class])];
         }
     }
-    NSString *path = @"/var/mobile/Documents/dyyy_chapter_probe.log";
-    FILE *f = fopen([path UTF8String], "a");
-    if (f) { fputs([log UTF8String], f); fflush(f); fclose(f); }
-    NSLog(@"[DYYY][chapter] dumped %lu chapters -> %@", (unsigned long)chapters.count, path);
+    BOOL written = NO;
+    NSString *firstPath = nil;
+    for (NSString *p in DYYYChapterProbeLogPaths()) {
+        if (!firstPath) firstPath = p;
+        FILE *f = fopen([p fileSystemRepresentation], "a");
+        if (f) {
+            fputs([log UTF8String], f);
+            fflush(f);
+            fclose(f);
+            written = YES;
+        }
+    }
+    NSLog(@"[DYYY][chapter] dumped %lu chapters written=%d path=%@",
+          (unsigned long)chapters.count, written, firstPath);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (written) {
+            if (!gDYYYChapterProbeToasted) {
+                gDYYYChapterProbeToasted = YES;
+                [DYYYToast showSuccessToastWithMessage:
+                    [NSString stringWithFormat:@"章节日志已写入 %lu 条章节", (unsigned long)chapters.count]];
+            }
+        } else {
+            [DYYYToast showSuccessToastWithMessage:@"章节日志写入失败"];
+        }
+    });
 }
 #endif
 
@@ -13982,6 +14031,10 @@ static void DYYYProbeChapterList(NSArray *chapters, id model) {
     }];
 
     DYYYMigrateCombinedHDRModeIfNeeded();
+
+#ifdef DYYY_CHAPTER_PROBE
+    DYYYChapterProbeSelfTest();
+#endif
 
     // 作品日期显示：静态 %hook 的 cell 类可能因抖音改名而不存在（Logos 会静默跳过），
     // 这里在启动时按类名特征运行时补挂，保证功能不因类名漂移而无声失效。
