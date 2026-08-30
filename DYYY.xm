@@ -11934,6 +11934,45 @@ static NSMutableSet *DYYYChapterProbeDumpedModels(void) {
 // 扫描 AWEAwemeModel 上与广告/电商/营销/章节相关的字段，判断 iOS 端是否存在「营销章节」数据。
 // 用关键字匹配而非全量 dump：AWEAwemeModel 字段极多，全量会把日志撑爆且无法阅读。
 // 关键词刻意避开裸 "ad"（会误命中 load/read/download），改用前缀与更长的特征串。
+// 展开抖音模型对象一层：chapterData 这类 codegen 容器才是真正的数据所在地，
+// 只打类名等于什么都没看到。数组则展开其首个元素以窥探元素结构。限流防日志爆炸。
+static void DYYYProbeExpandInto(NSMutableString *log, id obj, NSString *tag) {
+    if (!obj) return;
+    if ([obj isKindOfClass:[NSString class]] || [obj isKindOfClass:[NSNumber class]]) return;
+
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSArray *arr = (NSArray *)obj;
+        if (arr.count == 0) return;
+        id el = arr[0];
+        if (![NSStringFromClass([el class]) hasPrefix:@"AWE"]) return;
+        [log appendFormat:@"  [adfields] %@<array[0] %@>\n", tag, NSStringFromClass([el class])];
+        DYYYProbeExpandInto(log, el, [tag stringByAppendingString:@"  "]);
+        return;
+    }
+
+    NSString *cn = NSStringFromClass([obj class]);
+    if (![cn hasPrefix:@"AWE"]) return;
+    NSArray<NSString *> *members = DYYYAllMemberNames(obj);
+    [log appendFormat:@"  [adfields] %@<expand %@ members=%lu>\n", tag, cn, (unsigned long)members.count];
+    NSUInteger lim = MIN(members.count, (NSUInteger)40);
+    for (NSUInteger j = 0; j < lim; j++) {
+        NSString *mn = members[j];
+        id mv = nil;
+        @try { mv = [obj valueForKey:mn]; } @catch (__unused NSException *e) { continue; }
+        NSString *ss;
+        if (!mv) ss = @"(null)";
+        else if ([mv isKindOfClass:[NSString class]]) {
+            NSString *s = (NSString *)mv;
+            ss = s.length > 100 ? [[s substringToIndex:100] stringByAppendingString:@"…"] : s;
+        }
+        else if ([mv isKindOfClass:[NSNumber class]]) ss = [mv description];
+        else if ([mv isKindOfClass:[NSArray class]]) ss = [NSString stringWithFormat:@"(array[%lu])", (unsigned long)[mv count]];
+        else if ([mv isKindOfClass:[NSDictionary class]]) ss = [NSString stringWithFormat:@"(dict[%lu])", (unsigned long)[mv count]];
+        else ss = NSStringFromClass([mv class]);
+        [log appendFormat:@"  [adfields] %@  %@ = %@\n", tag, mn, ss];
+    }
+}
+
 static void DYYYProbeAdFields(id model, NSMutableString *log) {
     if (!model) return;
     NSArray<NSString *> *all = DYYYAllMemberNames(model);
@@ -11967,6 +12006,7 @@ static void DYYYProbeAdFields(id model, NSMutableString *log) {
         else if ([ov isKindOfClass:[NSDictionary class]]) vs = [NSString stringWithFormat:@"(dict[%lu])", (unsigned long)[ov count]];
         else vs = [NSString stringWithFormat:@"(%@)", NSStringFromClass([ov class])];
         [log appendFormat:@"  [adfields] %@ = %@\n", nm, vs];
+        if (ov) DYYYProbeExpandInto(log, ov, @"");
     }
 }
 
