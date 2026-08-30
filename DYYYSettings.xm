@@ -2244,6 +2244,14 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"cellType" : @37,
               @"imageName" : @"ic_eyeslash_outlined_16"
           },
+          @{
+              @"identifier" : @"DYYYAutoSkipAdChapter",
+              @"title" : @"自动跳过广告章节",
+              @"subTitle" : @"自动跳过视频中的营销章节（借用抖音原生智能跳过，需保留章节进度）",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_skip_outlined_16"
+          },
           @{@"identifier" : @"DYYYHidePopover",
             @"title" : @"隐藏上次看到",
             @"detail" : @"",
