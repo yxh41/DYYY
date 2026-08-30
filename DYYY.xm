@@ -11893,13 +11893,41 @@ static Class tabBarButtonClass = nil;
     return %orig;
 }
 
+// 自动跳过广告章节：复刻 dyyds 做法——抖音原生字段 adChapterAutoSkipIndexArray 由服务端控制，
+// 但服务端从不下发（探针实测全为 null），故本地把 adChapterIndexArray 复制进去，
+// 借抖音原生「智能跳过营销章节」机制实现自动跳过。开关 DYYYAutoSkipAdChapter 默认关。
+static void DYYYApplyAdChapterAutoSkip(id model) {
+    if (!model) return;
+    if (!DYYYGetBool(@"DYYYAutoSkipAdChapter")) return;
+    id chapterData = nil;
+    @try { chapterData = [model valueForKey:@"chapterData"]; } @catch (__unused NSException *e) { chapterData = nil; }
+    if (!chapterData) return;
+    id adIdx = nil;
+    @try { adIdx = [chapterData valueForKey:@"adChapterIndexArray"]; } @catch (__unused NSException *e) { adIdx = nil; }
+    if (![adIdx isKindOfClass:[NSArray class]] || [adIdx count] == 0) return;
+    // 已填充则跳过，避免重复写
+    id curSkip = nil;
+    @try { curSkip = [chapterData valueForKey:@"adChapterAutoSkipIndexArray"]; } @catch (__unused NSException *e) {}
+    if ([curSkip isKindOfClass:[NSArray class]] && [curSkip count] > 0) return;
+    NSMutableArray *copy = [NSMutableArray arrayWithCapacity:[adIdx count]];
+    for (id v in (NSArray *)adIdx) {
+        if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) [copy addObject:v];
+    }
+    if (copy.count == 0) return;
+    @try {
+        [chapterData setValue:[copy copy] forKey:@"adChapterAutoSkipIndexArray"];
+    } @catch (__unused NSException *e) {}
+}
+
 //屏蔽章节要点数据
 - (NSArray *)chapterList {
-	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
-	if (hideChapterList) {
-		return @[]; // 返回空数组
-	}
-	return %orig;
+    NSArray *orig = %orig;
+    DYYYApplyAdChapterAutoSkip(self);
+    BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
+    if (hideChapterList) {
+        return @[]; // 返回空数组
+    }
+    return orig;
 }
 
 // 屏蔽共创数据
