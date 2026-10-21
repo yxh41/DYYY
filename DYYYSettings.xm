@@ -2454,6 +2454,14 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"detail" : @"逗号分隔按钮名",
               @"cellType" : @20,
               @"imageName" : @"ic_eyeslash_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYLongPressWard",
+              @"title" : @"视频插眼",
+              @"subTitle" : @"长按视频弹出面板中显示「视频插眼」与「插眼列表」入口，可标记分类与备注",
+              @"detail" : @"",
+              @"cellType" : @6,
+              @"imageName" : @"ic_location_outlined_16"
           }
       ];
 

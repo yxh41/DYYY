@@ -9,6 +9,8 @@
 #import "DYYYKeywordListView.h"
 #import "DYYYManager.h"
 #import "DYYYToast.h"
+#import "DYYYWardPanelView.h"
+#import "DYYYWardListViewController.h"
 #import "DYYYUtils.h"
 #import "DYYYPipPlayer.h"
 
@@ -824,8 +826,9 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
 
     // 检查是否有任何功能启用
+    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWard;
 
     // 如果没有任何功能启用，仅使用官方按钮
     if (!hasAnyFeatureEnabled) {
@@ -1414,6 +1417,37 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         [viewModels addObject:pipViewModel];
     }
 
+    // 插眼功能
+    if (enableWard) {
+        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardViewModel.awemeModel = self.awemeModel;
+        wardViewModel.actionType = 692;
+        wardViewModel.duxIconName = @"ic_location_outlined_20";
+        wardViewModel.describeString = @"视频插眼";
+        AWEAwemeModel *wardModel = self.awemeModel;
+        wardViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
+                [panel show];
+            }];
+        };
+        [viewModels addObject:wardViewModel];
+
+        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardListViewModel.awemeModel = self.awemeModel;
+        wardListViewModel.actionType = 693;
+        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
+        wardListViewModel.describeString = @"插眼列表";
+        wardListViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                [DYYYWardListViewController present];
+            }];
+        };
+        [viewModels addObject:wardListViewModel];
+    }
+
     // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
     BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
     if (enableWorkData) {
@@ -1668,8 +1702,9 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
 
     // 检查是否有任何功能启用
+    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWorkData;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWorkData || enableWard;
 
     if (!hasAnyFeatureEnabled) {
         return originalArray;
@@ -2259,6 +2294,37 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
           [panelManager dismissWithAnimation:YES completion:nil];
         };
         [viewModels addObject:pipViewModel];
+    }
+
+    // 插眼功能
+    if (enableWard) {
+        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardViewModel.awemeModel = self.awemeModel;
+        wardViewModel.actionType = 694;
+        wardViewModel.duxIconName = @"ic_location_outlined_20";
+        wardViewModel.describeString = @"视频插眼";
+        AWEAwemeModel *wardModel = self.awemeModel;
+        wardViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
+                [panel show];
+            }];
+        };
+        [viewModels addObject:wardViewModel];
+
+        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardListViewModel.awemeModel = self.awemeModel;
+        wardListViewModel.actionType = 695;
+        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
+        wardListViewModel.describeString = @"插眼列表";
+        wardListViewModel.action = ^{
+            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+            [panelManager dismissWithAnimation:YES completion:^{
+                [DYYYWardListViewController present];
+            }];
+        };
+        [viewModels addObject:wardListViewModel];
     }
 
     // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
