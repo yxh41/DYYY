@@ -356,11 +356,11 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     [DYYYWardManager removeCustomCategory:cat];
     [self closeDropdown];
     [self openDropdown];
-    [DYYYToast showToast:[NSString stringWithFormat:@"已删除分类：%@", cat]];
+    [DYYYUtils showToast:[NSString stringWithFormat:@"已删除分类：%@", cat]];
 }
 
 - (void)manageCategory {
-    DYYYCustomInputView *input = [[DYYYCustomInputView alloc] initWithTitle:@"新增分类" placeholder:@"输入分类名称"];
+    DYYYCustomInputView *input = [[DYYYCustomInputView alloc] initWithTitle:@"新增分类" defaultText:nil placeholder:@"输入分类名称"];
     input.onConfirm = ^(NSString *text) {
         NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (trimmed.length > 0) {
@@ -396,13 +396,13 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     if (_editingWardID.length > 0) {
         [[DYYYWardManager sharedManager] updateWardWithID:_editingWardID fields:ward];
         wardID = _editingWardID;
-        [DYYYToast showToast:@"🌺 已更新插眼"];
+        [DYYYUtils showToast:@"🌺 已更新插眼"];
     } else {
         wardID = [[DYYYWardManager sharedManager] addWard:ward];
         if (wardID.length > 0) {
-            [DYYYToast showToast:@"🌺 插眼成功"];
+            [DYYYUtils showToast:@"🌺 插眼成功"];
         } else {
-            [DYYYToast showToast:@"插眼失败"];
+            [DYYYUtils showToast:@"插眼失败"];
         }
     }
     [self dismiss];

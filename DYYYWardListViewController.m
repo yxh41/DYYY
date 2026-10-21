@@ -377,13 +377,13 @@
         NSString *url = [ward objectForKey:@"shareURL"] ?: @"";
         if (url.length > 0) {
             [UIPasteboard generalPasteboard].string = url;
-            [DYYYToast showToast:@"已复制链接"];
+            [DYYYUtils showToast:@"已复制链接"];
         } else {
-            [DYYYToast showToast:@"无链接"];
+            [DYYYUtils showToast:@"无链接"];
         }
     } else if (action == 3) { // 删除
         [[DYYYWardManager sharedManager] deleteWardWithID:[ward objectForKey:@"wardID"]];
-        [DYYYToast showToast:@"已删除"];
+        [DYYYUtils showToast:@"已删除"];
         [self reloadData];
     }
 }
@@ -391,7 +391,7 @@
 - (void)openWard:(NSDictionary *)ward {
     NSString *awemeID = [ward objectForKey:@"awemeID"];
     if (awemeID.length == 0) {
-        [DYYYToast showToast:@"无视频信息，已复制链接"];
+        [DYYYUtils showToast:@"无视频信息，已复制链接"];
         NSString *url = [ward objectForKey:@"shareURL"];
         if (url.length > 0) [UIPasteboard generalPasteboard].string = url;
         return;
@@ -402,7 +402,7 @@
         // 兜底：复制作品链接
         NSString *share = [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID];
         [UIPasteboard generalPasteboard].string = share;
-        [DYYYToast showToast:@"已复制视频链接"];
+        [DYYYUtils showToast:@"已复制视频链接"];
     }
 }
 
