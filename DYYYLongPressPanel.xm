@@ -3074,8 +3074,8 @@ static void DYYYNeutralizeClonedRow(UIView *row) {
     if ([row isKindOfClass:[UIControl class]]) {
         UIControl *control = (UIControl *)row;
         for (id target in [[control allTargets] allObjects] ?: @[]) {
-            NSSet *events = @[ @(UIControlEventTouchUpInside), @(UIControlEventTouchDown),
-                               @(UIControlEventPrimaryActionTriggered), @(UIControlEventValueChanged) ];
+            NSArray *events = @[ @(UIControlEventTouchUpInside), @(UIControlEventTouchDown),
+                                 @(UIControlEventPrimaryActionTriggered), @(UIControlEventValueChanged) ];
             for (NSNumber *ev in events) {
                 UIControlEvents e = (UIControlEvents)[ev unsignedIntegerValue];
                 for (NSString *action in [control actionsForTarget:target forControlEvent:e]) {
