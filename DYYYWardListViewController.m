@@ -114,7 +114,7 @@ static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
 static id DYYYWardSafeKVC(id obj, NSString *key);
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget);
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
-                              NSInteger flat, NSInteger stride, NSInteger total);
+                              NSInteger flat, NSInteger stride, NSInteger total, NSInteger pageTry);
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
 
@@ -864,19 +864,33 @@ static void DYYYWardShowLocateFailure(void) {
 // 直接用 UITableView 公开 API 拿总行数，逐行 scrollToRow 再复核该行 cell（图搜 cid/正文），
 // 能覆盖任意一行，完全不看模型字段名。递归串行执行，避免「上一行还没渲染完就滚下一行」。
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
-                              NSInteger flat, NSInteger stride, NSInteger total) {
+                              NSInteger flat, NSInteger stride, NSInteger total, NSInteger pageTry) {
     if (!t || gDYYYWardLocateDone == gen || total <= 0) return;
     if (flat >= total) {
-        // 已扫到「当前已加载」的末尾：跳到底部触发分页加载，重新读行数，若变多就接着扫（148 条评论只加载 60 行的场景）
+        // 已扫到「当前已加载」的末尾：滚到真正的最后一行触发分页加载，重新读行数，若变多就接着扫
+        // （148 条评论只加载 60 行的场景）。光设 contentOffset 有些宿主不会 load-more，
+        // 必须 scrollToRow 到最后一行让 willDisplay 真的跑一遍；两种都做，互为保险。
+        NSIndexPath *lastIP = nil;
+        for (NSInteger s = t.numberOfSections - 1; s >= 0; s--) {
+            NSInteger rows = [t numberOfRowsInSection:s];
+            if (rows > 0) { lastIP = [NSIndexPath indexPathForRow:rows - 1 inSection:s]; break; }
+        }
+        if (lastIP) {
+            @try { [t scrollToRowAtIndexPath:lastIP atScrollPosition:UITableViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+        }
         @try { [t setContentOffset:CGPointMake(0, MAX(0, t.contentSize.height - t.bounds.size.height)) animated:NO]; } @catch (NSException *e) {}
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // 网络分页不是瞬时的（实测 0.7s 常不够），所以同一次到底最多重试 3 次（每次 0.9s）再判失败，
+        // 避免「其实还能翻页、只是还没回来」被误报成定位失败。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             NSInteger nowTotal = 0;
             for (NSInteger s = 0; s < t.numberOfSections; s++) nowTotal += [t numberOfRowsInSection:s];
             if (nowTotal > total) {
-                DYYYWardSweepStep(t, cidList, contentHint, gen, total, stride, nowTotal); // 已翻出更多，接着扫
+                DYYYWardSweepStep(t, cidList, contentHint, gen, total, stride, nowTotal, 0); // 已翻出更多，接着扫
+            } else if (pageTry < 2) {
+                DYYYWardSweepStep(t, cidList, contentHint, gen, total, stride, total, pageTry + 1); // 还没回来，再等等
             } else {
-                DYYYWardShowLocateFailure(); // 真到底仍没找到
+                DYYYWardShowLocateFailure(); // 重试 3 次仍无新行，真到底了
             }
         });
         return;
@@ -906,7 +920,7 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
                 return;
             }
         }
-        DYYYWardSweepStep(t, cidList, contentHint, gen, flat + stride, stride, total);
+        DYYYWardSweepStep(t, cidList, contentHint, gen, flat + stride, stride, total, pageTry);
     });
 }
 
@@ -925,7 +939,7 @@ static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger
     NSInteger stride = 1;                    // ≤120 行逐行全覆盖；更多时跳步把检查次数控制在 ~120
     if (total > 120) stride = MAX(1, total / 115);
     gDYYYWardSweepGen = gen;                  // 告知主循环：已在按行扫描，跳过渐进滚动（防互相打架）
-    DYYYWardSweepStep(best, cidList, contentHint, gen, 0, stride, total);
+    DYYYWardSweepStep(best, cidList, contentHint, gen, 0, stride, total, 0);
 }
 
 // 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
@@ -985,9 +999,11 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 if (i == 2) {
                     DYYYWardSweepRows(cidList, contentHint, gen);
                 }
-                // 数据源定位：直接按模型数组算下标再滚过去（第 2/5/8 步各试一次，
+                // 数据源定位：直接按模型数组算下标再滚过去（第 1/5/9 步各试一次，
                 // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
-                if (i == 1 || i == 5 || i == 9) {
+                // 注意：按行扫描一旦接管（gDYYYWardSweepGen==gen），就绝不能再让数据源定位去 scrollToRow，
+                // 否则两边抢滚动位置——实测表现为「扫描到一半被拽回顶部附近」，扫描永远走不完（v2.3-26 偏移停在 991 的真因）。
+                if ((i == 1 || i == 5 || i == 9) && gDYYYWardSweepGen != gen) {
                     DYYYWardLocateViaDataSource(cidList, contentHint);
                     if (gDYYYWardLocateDone == gen) return;
                 }
