@@ -450,20 +450,28 @@
     static NSString *cached = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
-        for (NSDictionary *t in urlTypes) {
-            if (![t isKindOfClass:[NSDictionary class]]) continue;
-            NSArray *schemes = t[@"CFBundleURLSchemes"];
-            if (![schemes isKindOfClass:[NSArray class]]) continue;
-            for (NSString *s in schemes) {
-                if ([s isKindOfClass:[NSString class]] && [s hasPrefix:@"snssdk"]) {
-                    cached = s;
-                    break;
+        // 按 bundle id 确定性映射
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+        NSDictionary *map = @{@"com.ss.iphone.ugc.Aweme" : @"snssdk1128",
+                              @"com.ss.iphone.ugc.aweme.lite" : @"snssdk2329"};
+        cached = map[bid];
+        // 兜底：读宿主 CFBundleURLTypes 第一个 snssdk 前缀 scheme
+        if (cached.length == 0) {
+            NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
+            for (NSDictionary *t in urlTypes) {
+                if (![t isKindOfClass:[NSDictionary class]]) continue;
+                NSArray *schemes = t[@"CFBundleURLSchemes"];
+                if (![schemes isKindOfClass:[NSArray class]]) continue;
+                for (NSString *s in schemes) {
+                    if ([s isKindOfClass:[NSString class]] && [s hasPrefix:@"snssdk"]) {
+                        cached = s;
+                        break;
+                    }
                 }
+                if (cached) break;
             }
-            if (cached) break;
         }
-        if (cached.length == 0) cached = @"snssdk1128"; // 兜底：抖音标准版
+        if (cached.length == 0) cached = @"snssdk1128"; // 最终兜底：抖音标准版
     });
     return cached;
 }
@@ -476,7 +484,9 @@
         if (url.length > 0) [UIPasteboard generalPasteboard].string = url;
         return;
     }
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/?aweme_id=%@", [self hostSnssdkScheme], awemeID]];
+    // 路由必须用 path 形态：极速版仅注册 aweme/detail/<id>，
+    // 查询串形态（?aweme_id=）匹配不到路由会落"外部链接"兜底弹风险提示
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap", [self hostSnssdkScheme], awemeID]];
     BOOL ok = [[UIApplication sharedApplication] openURL:url];
     if (!ok) {
         // 兜底：复制作品链接
