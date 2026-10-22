@@ -142,6 +142,7 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
         }
     }
     NSString *awemeID = DYYYCommentAwemeID(ctx, comment);
+    NSString *commentID = DYYYCommentStrForKeys(comment, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
     NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
 
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
@@ -151,6 +152,7 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     [data setObject:nick forKey:@"nickname"];
     [data setObject:avatar forKey:@"avatarURL"];
     [data setObject:awemeID forKey:@"awemeID"];
+    [data setObject:commentID forKey:@"commentID"];
     [data setObject:ctStr forKey:@"createTime"];
     [data setObject:content forKey:@"desc"];
     [data setObject:shareURL forKey:@"shareURL"];
@@ -2713,11 +2715,49 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
 }
 
 // MARK: - 主页插眼：向主页「…」操作面板注入「插眼主页」
-// 主页「三点」菜单在不同版本可能落在不同 ActionSheet 实现上：
-// 这里既 hook AWEUserActionSheetView，也在运行期扫描其它 *Sheet* 类自己的 setActions:。
-// 命中条件：菜单带「分享/复制链接/拉黑…」这类用户面板特征，且不含「下载/保存…」等视频面板特征。
+// 主页三点菜单（分享名片/发私信/举报/拉黑/设置备注/不让她看/加朋友/关注）
+// 在不同版本可能由不同类承载，且 action 对象的「标题/回调」属性名不固定。
+// 策略：① 文本键多候选探测；② 宿主自带 AWEUserSheetAction 就用官方构造器，
+// 否则克隆一个现有 action 改标题+回调；③ 既 hook AWEUserActionSheetView，
+// 也运行期扫描名字含 Sheet/Menu/Panel/Card/Popup/Dialog/Alert 且自己定义了
+// setActions:/setActionModels:/setMenuItems:/updateWithActions:/configWithActions: 的类；
+// ④ 仍识别不到时给一次诊断 toast 报告面板类名。
 
 static char kDYYYOrigIMPKey;
+
+static NSArray *DYYYSheetTextKeys(void) {
+    static NSArray *keys = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[ @"title", @"actionTitle", @"displayTitle", @"buttonTitle", @"content", @"text", @"desc", @"name" ];
+    });
+    return keys;
+}
+
+static NSArray *DYYYSheetHandlerKeys(void) {
+    static NSArray *keys = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[ @"handler", @"handlerBlock", @"tapHandler", @"tapBlock", @"actionBlock", @"actionHandler",
+                  @"clickBlock", @"block", @"onTap", @"tapAction" ];
+    });
+    return keys;
+}
+
+static NSString *DYYYSheetActionText(id action) {
+    if (!action) return nil;
+    for (NSString *k in DYYYSheetTextKeys()) {
+        @try {
+            id v = [action valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && ((NSString *)v).length > 0) return v;
+            if (v && ![v isKindOfClass:[NSNull class]]) {
+                NSString *s = [NSString stringWithFormat:@"%@", v];
+                if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+            }
+        } @catch (NSException *e) {}
+    }
+    return nil;
+}
 
 // 找真正定义该方法的类（用于取回被替换前的 IMP）
 static Class DYYYDefiningClass(Class cls, SEL sel) {
@@ -2765,16 +2805,6 @@ static IMP DYYYChainedOrig(Class instCls, SEL sel) {
     return v ? (IMP)[v pointerValue] : NULL;
 }
 
-static NSString *DYYYSheetActionTitle(id action) {
-    if (!action) return nil;
-    @try {
-        id t = [action valueForKey:@"title"];
-        if ([t isKindOfClass:[NSString class]]) return t;
-        if (t) return [NSString stringWithFormat:@"%@", t];
-    } @catch (NSException *e) {}
-    return nil;
-}
-
 // 顶层控制器（沿 presented / navigation / tab 往下钻）
 static UIViewController *DYYYSheetTopViewController(void) {
     UIWindow *window = [DYYYUtils getActiveWindow];
@@ -2802,7 +2832,6 @@ static void DYYYCacheProfileUser(id user) {
     NSString *uid = DYYYCommentWardSafeStr(user, @"uid");
     NSString *secUid = DYYYCommentWardSafeStr(user, @"secUid");
     if (nick.length == 0 && uid.length == 0 && secUid.length == 0) return;
-    // 同一个用户不重复写（避免列表滚动时频繁落盘）
     NSDictionary *old = [DYYYPreferences objectForKey:@"DYYYLastProfileUser"];
     if ([old isKindOfClass:[NSDictionary class]]) {
         NSString *oldSec = [old objectForKey:@"secUid"];
@@ -2821,9 +2850,8 @@ static void DYYYCacheProfileUser(id user) {
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     [info setObject:nick forKey:@"nickname"];
     [info setObject:uid forKey:@"uid"];
-    [info setObject:secUid forKey:@"secUid"];
+    [info setObject:sec forKey:@"secUid"];
     [info setObject:avatar forKey:@"avatarURL"];
-    [info setObject:@([[NSDate date] timeIntervalSince1970]) forKey:@"ts"];
     [DYYYPreferences setObject:info forKey:@"DYYYLastProfileUser"];
 }
 
@@ -2867,7 +2895,6 @@ static NSDictionary *DYYYHomeWardResolveProfileUser(void) {
             [info setObject:uid forKey:@"uid"];
             [info setObject:sec forKey:@"secUid"];
             [info setObject:avatar forKey:@"avatarURL"];
-            [info setObject:@([[NSDate date] timeIntervalSince1970]) forKey:@"ts"];
             return info;
         }
         UIViewController *next = vc.presentedViewController;
@@ -2880,28 +2907,29 @@ static NSDictionary *DYYYHomeWardResolveProfileUser(void) {
     return nil;
 }
 
-// 是否为「用户操作」面板：有分享/复制链接/拉黑等特征，且不含视频面板特征
+// 是否为「用户操作」面板：≥2 个用户面板特征标题，且没有视频面板特征标题
 static BOOL DYYYSheetLooksLikeUserSheet(NSArray *actions) {
-    BOOL hasUserMark = NO;
-    BOOL hasVideoMark = NO;
+    NSInteger userMark = 0;
+    BOOL videoMark = NO;
     for (id a in actions) {
-        NSString *t = DYYYSheetActionTitle(a);
+        NSString *t = DYYYSheetActionText(a);
         if (t.length == 0) continue;
-        if ([t containsString:@"分享"] || [t containsString:@"复制链接"] || [t containsString:@"拉黑"] ||
-            [t containsString:@"不感兴趣"] || [t containsString:@"举报"] || [t containsString:@"关注"])
-            hasUserMark = YES;
+        if ([t containsString:@"分享名片"] || [t containsString:@"私信"] || [t containsString:@"拉黑"] ||
+            [t containsString:@"举报"] || [t containsString:@"设置备注"] || [t containsString:@"加朋友"] ||
+            [t containsString:@"不让"] || [t containsString:@"复制链接"] || [t containsString:@"关注"])
+            userMark++;
         if ([t containsString:@"下载"] || [t containsString:@"保存视频"] || [t containsString:@"保存图片"] ||
             [t containsString:@"保存音频"] || [t containsString:@"保存实况"] || [t containsString:@"复制文案"] ||
             [t containsString:@"打开评论"])
-            hasVideoMark = YES;
+            videoMark = YES;
     }
-    return hasUserMark && !hasVideoMark;
+    return userMark >= 2 && !videoMark;
 }
 
 static BOOL DYYYSheetAlreadyHasWard(NSArray *actions) {
     for (id a in actions) {
-        NSString *t = DYYYSheetActionTitle(a);
-        if ([t containsString:@"插眼主页"]) return YES;
+        NSString *t = DYYYSheetActionText(a);
+        if (t.length > 0 && [t containsString:@"插眼主页"]) return YES;
     }
     return NO;
 }
@@ -2934,6 +2962,140 @@ static void DYYYHomeWardShowPanel(void) {
     [panel show];
 }
 
+static void DYYYHomeWardActionTapped(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DYYYHomeWardShowPanel();
+    });
+}
+
+static id DYYYHomeWardHandler(void) {
+    return [^{ DYYYHomeWardActionTapped(); } copy];
+}
+
+// target/selector 风格的兜底目标
+@interface DYYYWardHomeActionTarget : NSObject
++ (instancetype)shared;
+- (void)dyyyHomeWardTapped;
+@end
+
+@implementation DYYYWardHomeActionTarget
++ (instancetype)shared {
+    static DYYYWardHomeActionTarget *obj = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ obj = [[self alloc] init]; });
+    return obj;
+}
+- (void)dyyyHomeWardTapped { DYYYHomeWardActionTapped(); }
+@end
+
+// 克隆一个现有 action（按 property 逐个拷值），用于宿主 action 类型不认识的场景
+static id DYYYCloneActionObject(id src) {
+    if (!src) return nil;
+    Class cls = object_getClass(src);
+    id clone = [[cls alloc] init];
+    if (!clone) return nil;
+    unsigned int n = 0;
+    objc_property_t *list = class_copyPropertyList(cls, &n);
+    for (unsigned int i = 0; i < n; i++) {
+        const char *pname = property_getName(list[i]);
+        if (!pname) continue;
+        NSString *name = [NSString stringWithUTF8String:pname];
+        @try {
+            id v = [src valueForKey:name];
+            if (!v) continue;
+            @try { [clone setValue:v forKey:name]; } @catch (NSException *e) {}
+        } @catch (NSException *e) {}
+    }
+    if (list) free(list);
+    return clone;
+}
+
+// 构造「插眼主页」action：优先用宿主 AWEUserSheetAction，否则克隆现有 action 改标题+回调
+static id DYYYBuildWardAction(NSArray *actions) {
+    Class actCls = NSClassFromString(@"AWEUserSheetAction");
+    if (actCls) {
+        BOOL allHost = (actions.count > 0);
+        for (id a in actions) {
+            if (![a isKindOfClass:actCls]) {
+                allHost = NO;
+                break;
+            }
+        }
+        if (allHost) {
+            id handler = DYYYHomeWardHandler();
+            id act = nil;
+            @try {
+                act = [actCls actionWithTitle:@"🌺 插眼主页" imgName:@"ic_location_outlined_20" handler:handler];
+            } @catch (NSException *e) {
+                act = nil;
+            }
+            if (!act) {
+                @try {
+                    act = [actCls actionWithTitle:@"🌺 插眼主页" style:0 imgName:@"ic_location_outlined_20" handler:handler];
+                } @catch (NSException *e) {
+                    act = nil;
+                }
+            }
+            if (act) return act;
+        }
+    }
+
+    id src = actions.lastObject;
+    if (!src) return nil;
+    id clone = DYYYCloneActionObject(src);
+    if (!clone) return nil;
+
+    // 改标题
+    NSString *textKey = nil;
+    for (NSString *k in DYYYSheetTextKeys()) {
+        @try {
+            id v = [src valueForKey:k];
+            if (v) {
+                textKey = k;
+                break;
+            }
+        } @catch (NSException *e) {}
+    }
+    if (textKey) {
+        @try { [clone setValue:@"🌺 插眼主页" forKey:textKey]; } @catch (NSException *e) {}
+    }
+
+    // 改回调：优先 block 属性
+    id handler = DYYYHomeWardHandler();
+    BOOL handlerSet = NO;
+    for (NSString *k in DYYYSheetHandlerKeys()) {
+        @try {
+            id v = [src valueForKey:k];
+            if (v) {
+                [clone setValue:handler forKey:k];
+                handlerSet = YES;
+                break;
+            }
+        } @catch (NSException *e) {}
+    }
+    if (!handlerSet) {
+        @try {
+            if ([src valueForKey:@"target"]) {
+                [clone setValue:[DYYYWardHomeActionTarget shared] forKey:@"target"];
+                SEL sel = @selector(dyyyHomeWardTapped);
+                NSString *skey = nil;
+                for (NSString *k in @[ @"action", @"selector", @"tapSelector", @"sel" ]) {
+                    @try {
+                        if ([src valueForKey:k]) {
+                            skey = k;
+                            break;
+                        }
+                    } @catch (NSException *e) {}
+                }
+                if (skey) {
+                    @try { [clone setValue:NSStringFromSelector(sel) forKey:skey]; } @catch (NSException *e) {}
+                }
+            }
+        } @catch (NSException *e) {}
+    }
+    return clone;
+}
+
 // 往 actions 里追加「插眼主页」，条件不满足则原样返回
 static NSArray *DYYYHomeWardInjectActions(NSArray *actions) {
     if (![DYYYPreferences boolForKey:@"DYYYHomeWard"]) return actions;
@@ -2941,32 +3103,7 @@ static NSArray *DYYYHomeWardInjectActions(NSArray *actions) {
     if (DYYYSheetAlreadyHasWard(actions)) return actions;
     if (!DYYYSheetLooksLikeUserSheet(actions)) return actions;
 
-    id first = actions.firstObject;
-    NSString *firstCls = first ? NSStringFromClass([first class]) : @"";
-    if (![firstCls containsString:@"SheetAction"]) return actions;
-
-    Class actCls = NSClassFromString(@"AWEUserSheetAction");
-    if (!actCls) return actions;
-
-    id handler = [^{
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        DYYYHomeWardShowPanel();
-      });
-    } copy];
-
-    id wardAction = nil;
-    @try {
-        wardAction = [actCls actionWithTitle:@"🌺 插眼主页" imgName:@"ic_location_outlined_20" handler:handler];
-    } @catch (NSException *e) {
-        wardAction = nil;
-    }
-    if (!wardAction) {
-        @try {
-            wardAction = [actCls actionWithTitle:@"🌺 插眼主页" style:0 imgName:@"ic_location_outlined_20" handler:handler];
-        } @catch (NSException *e) {
-            wardAction = nil;
-        }
-    }
+    id wardAction = DYYYBuildWardAction(actions);
     if (!wardAction) return actions;
 
     NSMutableArray *arr = [actions mutableCopy];
@@ -2974,8 +3111,8 @@ static NSArray *DYYYHomeWardInjectActions(NSArray *actions) {
     return [arr copy];
 }
 
-// 通用 setActions: 钩子（覆盖 AWEUserActionSheetView 之外的 *Sheet* 实现）
-static void DYYYSheetSetActionsHook(id self, SEL _cmd, NSArray *actions) {
+// 通用 setActions: 类钩子（覆盖 AWEUserActionSheetView 之外的 *Sheet*/*Menu*/*Panel* 实现）
+static void DYYYSheetActionsHook(id self, SEL _cmd, NSArray *actions) {
     NSArray *out = actions;
     @try {
         out = DYYYHomeWardInjectActions(actions);
@@ -2996,9 +3133,65 @@ static void DYYYProfileUserSetterHook(id self, SEL _cmd, id user) {
     if (orig) ((void (*)(id, SEL, id))orig)(self, _cmd, user);
 }
 
+#pragma mark - 诊断：识别到主页面板却没注入时，报告面板类名（每次启动只报一次）
+
+static void DYYYCollectLabels(UIView *view, NSInteger depth, NSMutableArray *out) {
+    if (!view || depth > 5 || out.count > 120) return;
+    if ([view isKindOfClass:[UILabel class]]) [out addObject:view];
+    for (UIView *sub in view.subviews) {
+        DYYYCollectLabels(sub, depth + 1, out);
+    }
+}
+
+static void DYYYDiagnosePresented(UIViewController *vc) {
+    if (![DYYYPreferences boolForKey:@"DYYYHomeWard"]) return;
+    if (!vc || ![vc isKindOfClass:[UIViewController class]]) return;
+    static NSMutableSet *reported = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ reported = [NSMutableSet set]; });
+
+    UIView *root = vc.view;
+    if (!root) return;
+    NSMutableArray *labels = [NSMutableArray array];
+    DYYYCollectLabels(root, 0, labels);
+    if (labels.count == 0) return;
+
+    NSInteger mark = 0;
+    for (UILabel *label in labels) {
+        NSString *t = label.text;
+        if (t.length == 0) continue;
+        if ([t containsString:@"插眼主页"]) return; // 已经注入成功
+        if ([t containsString:@"分享名片"] || [t containsString:@"私信"] || [t containsString:@"拉黑"] ||
+            [t containsString:@"举报"] || [t containsString:@"设置备注"] || [t containsString:@"加朋友"] ||
+            [t containsString:@"不让"]) mark++;
+    }
+    if (mark < 2) return;
+
+    NSString *name = NSStringFromClass([vc class]);
+    if ([reported containsObject:name]) return;
+    [reported addObject:name];
+    [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板类名：%@", name]];
+}
+
+static void DYYYPresentVCHook(id self, SEL _cmd, UIViewController *vc, BOOL animated, id completion) {
+    IMP orig = DYYYChainedOrig(object_getClass(self), _cmd);
+    if (orig) ((void (*)(id, SEL, id, BOOL, id))orig)(self, _cmd, vc, animated, completion);
+    @try {
+        DYYYDiagnosePresented(vc);
+    } @catch (NSException *e) {}
+}
+
+static BOOL DYYYClassNameMatches(NSString *name, NSArray<NSString *> *needles) {
+    NSString *lower = [name lowercaseString];
+    for (NSString *n in needles) {
+        if ([lower containsString:n]) return YES;
+    }
+    return NO;
+}
+
 static void DYYYInstallHostHooks(void) {
-    SEL actionsSel = NSSelectorFromString(@"setActions:");
-    SEL userSels[2] = {NSSelectorFromString(@"setUser:"), NSSelectorFromString(@"setUserModel:")};
+    NSArray *sheetNeedles = @[ @"sheet", @"menu", @"panel", @"card", @"popup", @"dialog", @"alert" ];
+    NSArray *actionSels = @[ @"setActions:", @"setActionModels:", @"setMenuItems:", @"updateWithActions:", @"configWithActions:" ];
 
     unsigned int count = 0;
     Class *classes = objc_copyClassList(&count);
@@ -3009,23 +3202,31 @@ static void DYYYInstallHostHooks(void) {
         const char *cname = class_getName(cls);
         if (!cname) continue;
         if (strstr(cname, "DYYY")) continue;
+        NSString *name = [NSString stringWithUTF8String:cname];
+        if (name.length == 0) continue;
+        if (!DYYYClassNameMatches(name, sheetNeedles)) continue;
+        // AWEUserActionSheetView 由 Logos hook 处理，避免双重注入
+        if ([name isEqualToString:@"AWEUserActionSheetView"]) continue;
 
-        // 1) *Sheet* 类的 setActions:
-        if ((strstr(cname, "Sheet") || strstr(cname, "sheet")) && [cls isSubclassOfClass:[UIView class]]) {
-            NSString *name = [NSString stringWithUTF8String:cname];
-            if (name && ![name isEqualToString:@"AWEUserActionSheetView"]) {
-                DYYYChainHook(cls, actionsSel, (IMP)DYYYSheetSetActionsHook);
-            }
-        }
+        BOOL isViewOrVC = [cls isSubclassOfClass:[UIView class]] || [cls isSubclassOfClass:[UIViewController class]];
+        if (!isViewOrVC) continue;
 
-        // 2) 主页 VC / 组件的 setUser:
-        if (strstr(cname, "Profile") || strstr(cname, "UserHome") || strstr(cname, "UserCenter")) {
-            for (int j = 0; j < 2; j++) {
-                if (userSels[j]) DYYYChainHook(cls, userSels[j], (IMP)DYYYProfileUserSetterHook);
-            }
+        for (NSString *selName in actionSels) {
+            SEL sel = NSSelectorFromString(selName);
+            if (!sel) continue;
+            DYYYChainHook(cls, sel, (IMP)DYYYSheetActionsHook);
         }
     }
     free(classes);
+
+    // 诊断：presentViewController 时看面板内容
+    SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+    if (presentSel) {
+        Class vcClass = [UIViewController class];
+        if (DYYYDefiningClass(vcClass, presentSel) == vcClass) {
+            DYYYChainHook(vcClass, presentSel, (IMP)DYYYPresentVCHook);
+        }
+    }
 }
 
 %group DYYYHomeWardGroup

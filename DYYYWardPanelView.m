@@ -45,6 +45,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 @property (nonatomic, copy) NSString *nickname;
 @property (nonatomic, copy) NSString *avatarURL;
 @property (nonatomic, copy) NSString *itemID;
+@property (nonatomic, copy) NSString *commentID;
 @property (nonatomic, copy) NSString *createTime;
 @property (nonatomic, copy) NSString *shareURL;
 @property (nonatomic, copy) NSString *desc;
@@ -72,6 +73,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _secUid = [data objectForKey:@"secUid"] ?: @"";
         _avatarURL = [data objectForKey:@"avatarURL"] ?: @"";
         _itemID = [data objectForKey:@"awemeID"] ?: @"";
+        _commentID = [data objectForKey:@"commentID"] ?: @"";
         _createTime = [data objectForKey:@"createTime"] ?: @"";
         _shareURL = [data objectForKey:@"shareURL"] ?: @"";
         _desc = [data objectForKey:@"desc"] ?: @"";
@@ -91,6 +93,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _secUid = [ward objectForKey:@"secUid"] ?: @"";
         _avatarURL = [ward objectForKey:@"avatarURL"] ?: @"";
         _itemID = [ward objectForKey:@"awemeID"] ?: @"";
+        _commentID = [ward objectForKey:@"commentID"] ?: @"";
         _createTime = [ward objectForKey:@"createTime"] ?: @"";
         _shareURL = [ward objectForKey:@"shareURL"] ?: @"";
         _desc = [ward objectForKey:@"desc"] ?: @"";
@@ -418,6 +421,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     [ward setObject:_nickname forKey:@"nickname"];
     [ward setObject:(_avatarURL ?: @"") forKey:@"avatarURL"];
     [ward setObject:(_itemID ?: @"") forKey:@"awemeID"];
+    [ward setObject:(_commentID ?: @"") forKey:@"commentID"];
     [ward setObject:(_createTime ?: @"") forKey:@"createTime"];
     [ward setObject:_selectedCategory forKey:@"category"];
     [ward setObject:(_noteTextView.text ?: @"") forKey:@"note"];
