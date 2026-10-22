@@ -71,6 +71,7 @@ static void DYYYWardOpenCommentPanelIfNeeded(void) {
 }
 
 static NSString *gDYYYWardLocateDiag = nil; // 最近一次定位失败原因，供 toast 诊断
+static NSInteger gDYYYWardGraphStrCount = 0; // 本次定位扫过的字符串数（诊断用：0 表示根本没扫到内容）
 
 // 递归收集视图树里所有 UITableView / UICollectionView（评论区列表类型/嵌套不定，
 // 曾出现「找错列表只看到 2 条无关 cell」的情况，故收集全部候选逐个试）
@@ -193,6 +194,8 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
         NSInteger plen = contentHint.length > 10 ? 10 : (NSInteger)contentHint.length;
         probe = [contentHint substringToIndex:plen]; // 正文片段：cell 文本被截断也靠片段命中
     }
+    gDYYYWardGraphStrCount = 0;
+    NSString *firstCellCls = nil;
 
     for (UIScrollView *scroll in lists) {
         NSArray *cells = nil;
@@ -203,13 +206,14 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
         }
         if (cells.count == 0) continue;
         totalVisible += cells.count;
+        if (!firstCellCls) { id fc = cells.firstObject; if (fc) firstCellCls = NSStringFromClass([fc class]); }
 
         // ① cid 精确：在 cell 对象图里搜「值等于目标 cid」的字符串（不看私有字段名）
         if (cidList.count > 0) {
             for (id cell in cells) {
                 if (![cell isKindOfClass:[UIView class]]) continue;
-                NSInteger budget = 400;
-                if (DYYYWardGraphMatch(cell, cidList, nil, 4, &budget)) {
+                NSInteger budget = 1500;
+                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &budget)) {
                     DYYYWardScrollAndHighlight(scroll, cell);
                     [DYYYUtils showToast:@"已定位到该评论"];
                     return YES;
@@ -221,8 +225,8 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
         if (probe.length > 0) {
             for (id cell in cells) {
                 if (![cell isKindOfClass:[UIView class]]) continue;
-                NSInteger budget = 400;
-                if (DYYYWardGraphMatch(cell, @[], probe, 4, &budget)) {
+                NSInteger budget = 1500;
+                if (DYYYWardGraphMatch(cell, @[], probe, 8, &budget)) {
                     DYYYWardScrollAndHighlight(scroll, cell);
                     [DYYYUtils showToast:@"已定位到该评论"];
                     return YES;
@@ -232,8 +236,9 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     }
 
     NSString *cidTail = firstCid ? [firstCid substringToIndex:MIN(10, firstCid.length)] : @"(空)";
-    gDYYYWardLocateDiag = [NSString stringWithFormat:@"%ld 列表可见 %ld 条无匹配 cid:%@ 内容:%@",
-                           (long)lists.count, (long)totalVisible, cidTail, probe ?: @"(空)"];
+    gDYYYWardLocateDiag = [NSString stringWithFormat:@"%ld列表可见%ld条无匹配 cid:%@ 内容:%@ 扫描%ld串 首cell:%@",
+                           (long)lists.count, (long)totalVisible, cidTail, probe ?: @"(空)",
+                           (long)gDYYYWardGraphStrCount, firstCellCls ?: @"(无)"];
     return NO;
 }
 
@@ -376,6 +381,7 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
     (*budget)--;
     if ([node isKindOfClass:[NSString class]]) {
         NSString *s = (NSString *)node;
+        gDYYYWardGraphStrCount++;
         if (s.length == 0 || s.length > 4000) return NO;
         if (cidList.count > 0) {
             for (id c in cidList) {
@@ -398,6 +404,7 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
     }
     if ([node isKindOfClass:[NSAttributedString class]]) {
         NSString *s = [(NSAttributedString *)node string];
+        gDYYYWardGraphStrCount++;
         if (s.length > 0 && s.length <= 4000) {
             for (id c in cidList) {
                 if ([c isKindOfClass:[NSString class]] && ((NSString *)c).length > 4 && [s isEqualToString:(NSString *)c]) return YES;
@@ -408,6 +415,7 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
     }
     if ([node isKindOfClass:[UILabel class]]) {
         NSString *s = [(UILabel *)node text];
+        gDYYYWardGraphStrCount++;
         if (s.length > 0 && s.length <= 4000) {
             for (id c in cidList) {
                 if ([c isKindOfClass:[NSString class]] && ((NSString *)c).length > 4 && [s isEqualToString:(NSString *)c]) return YES;
@@ -435,10 +443,18 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
         return NO;
     }
     if ([node isKindOfClass:[UIView class]]) {
-        for (UIView *sub in [(UIView *)node subviews]) {
+        UIView *uv = (UIView *)node;
+        // ① 直接读常见文本属性：覆盖 UILabel 之外的 YYLabel/UITextView/自定义标签；
+        //    accessibilityLabel 正是安卓 AccessibilityService 在 UI 树里读的东西——最贴近「按内容找」
+        for (NSString *k in @[ @"text", @"attributedText", @"accessibilityLabel", @"accessibilityValue" ]) {
+            id tv = DYYYWardSafeKVC(uv, k); // 已按返回类型 '@' 过滤，非对象 getter 不会调用
+            if (tv && DYYYWardLooksLikeObject(tv) && DYYYWardGraphMatch(tv, cidList, probe, depth, budget)) return YES;
+        }
+        // ② 子视图
+        for (UIView *sub in uv.subviews) {
             if (DYYYWardGraphMatch(sub, cidList, probe, depth - 1, budget)) return YES;
         }
-        // 继续走 ivar（UIView 自身几何 ivar 多为非对象，会被类型闸过滤）
+        // ③ 继续走 ivar（拿 cell 上挂的模型对象）
     }
     // 普通对象：扫对象类型 ivar（skip 列表里的不碰，避免爬向 App 全局图 / layer 环）
     Class cls = object_getClass(node);
@@ -491,8 +507,11 @@ static NSArray *DYYYWardModelArraysIn(id obj) {
                                 @"commentSectionModels", @"dataModels", @"modelList" ];
     // 名字启发式：含这些片段的 ivar 多半是集合缓存。只收集真正的 NSArray，
     // 伪对象已被 DYYYWardLooksLikeObject 挡掉，扩名不会引入崩溃风险
-    NSArray *nameHint = @[ @"Array", @"Arr", @"List", @"Models", @"Model", @"Data", @"Items",
-                           @"Item", @"Sections", @"Section", @"Elements", @"Element", @"comments" ];
+    // ⚠️ 名字提示必须小写比较：ObjC ivar 几乎都是小写（_data/_items/_list/_models），
+    // 之前用大写子串("Data"/"List"/"Items")匹配，极速版这些数组一个都没命中 → 「数据源0数组」
+    NSArray *nameHint = @[ @"array", @"arr", @"list", @"models", @"model", @"data", @"items",
+                           @"item", @"sections", @"section", @"elements", @"element", @"comments",
+                           @"comment", @"datalist", @"datasource", @"cellmodels", @"viewmodels" ];
     Class cls = object_getClass(obj);
     for (NSInteger depth = 0; cls && depth < 3 && out.count < 12; depth++) {
         unsigned int ic = 0;
@@ -504,10 +523,14 @@ static NSArray *DYYYWardModelArraysIn(id obj) {
             NSString *cn = [NSString stringWithUTF8String:n];
             NSString *bare = cn;
             if ([bare hasPrefix:@"_"]) bare = [bare substringFromIndex:1];
-            BOOL nameOK = [nameWhitelist containsObject:bare];
+            NSString *lower = [bare lowercaseString];
+            BOOL nameOK = NO;
+            for (NSString *w in nameWhitelist) {
+                if ([bare isEqualToString:w] || [lower isEqualToString:[w lowercaseString]]) { nameOK = YES; break; }
+            }
             if (!nameOK) {
                 for (NSString *h in nameHint) {
-                    if ([bare containsString:h]) { nameOK = YES; break; }
+                    if ([lower containsString:h]) { nameOK = YES; break; }
                 }
             }
             if (!nameOK) continue;
@@ -541,6 +564,9 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
         @autoreleasepool {
             id item = [arr objectAtIndex:i];
             if (!item || [item isKindOfClass:[NSNull class]]) continue;
+            // 值搜优先：不依赖模型字段名，直接在模型图里按 cid/正文找（与可见 cell 同一套判定）
+            if (cidList.count > 0) { NSInteger bg = 150; if (DYYYWardGraphMatch(item, cidList, nil, 3, &bg)) return (NSInteger)i; }
+            if (probe.length > 0) { NSInteger bg = 150; if (DYYYWardGraphMatch(item, @[], probe, 3, &bg)) return (NSInteger)i; }
             NSString *cid = DYYYWardCIDOfModel(item);
             if (cid.length == 0) {
                 for (NSString *k in wrapKeys) {
