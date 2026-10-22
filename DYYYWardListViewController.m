@@ -173,6 +173,23 @@ static void DYYYWardScrollAndHighlight(UIScrollView *scroll, id cell) {
     [UIView animateWithDuration:0.6 delay:1.2 options:0 animations:^{ highlight.alpha = 0.0; } completion:^(BOOL f) { [highlight removeFromSuperview]; }];
 }
 
+// 评论正文可能含表情短码（如 [看]/[泣不成声]），屏幕上渲染成表情图或不同字符，
+// 直接 containsString 必然失败 → 生成 probe 时截掉第一个 '[' / '［' 及其后内容；
+// 截完太短再退回原串前 4 字。
+static NSString *DYYYWardContentProbe(NSString *content, NSInteger maxLen) {
+    if (content.length < 4) return nil;
+    NSString *base = content;
+    NSUInteger cut = base.length;
+    NSRange a = [base rangeOfString:@"["];
+    NSRange b = [base rangeOfString:@"［"];
+    if (a.location != NSNotFound) cut = MIN(cut, a.location);
+    if (b.location != NSNotFound) cut = MIN(cut, b.location);
+    if (cut >= 4) base = [base substringToIndex:cut];
+    if (base.length > (NSUInteger)maxLen) base = [base substringToIndex:(NSUInteger)maxLen];
+    if (base.length < 4) base = [content substringToIndex:MIN((NSUInteger)4, content.length)];
+    return base.length >= 4 ? base : nil;
+}
+
 // 在评论列表可见 cell 里找 cid 匹配的评论；cid 字段名各版本不一致时，
 // 再用评论内容前缀兜底匹配 cell 里的 label 文本（前缀逐级缩短，兼容 cell 文本被截断）。
 // 滚动过去并闪一下高亮框。列表类型/嵌套不定，逐个候选列表试。
@@ -193,11 +210,7 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     NSInteger totalVisible = 0;
     NSString *firstCid = nil;
     for (id c in cidList) { if ([c isKindOfClass:[NSString class]] && ((NSString *)c).length > 0) { firstCid = (NSString *)c; break; } }
-    NSString *probe = nil;
-    if (contentHint.length >= 4) {
-        NSInteger plen = contentHint.length > 10 ? 10 : (NSInteger)contentHint.length;
-        probe = [contentHint substringToIndex:plen]; // 正文片段：cell 文本被截断也靠片段命中
-    }
+    NSString *probe = DYYYWardContentProbe(contentHint, 10); // 自动裁掉 [看] 等表情短码
     gDYYYWardGraphStrCount = 0;
     NSString *firstCellCls = nil;
 
@@ -561,11 +574,7 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
     if (![arr isKindOfClass:[NSArray class]] || arr.count == 0) return NSNotFound;
     NSUInteger n = arr.count;
     if (n > 1500) n = 1500;
-    NSString *probe = nil;
-    if (contentHint.length >= 4) {
-        NSInteger len = contentHint.length > 10 ? 10 : (NSInteger)contentHint.length;
-        probe = [contentHint substringToIndex:(NSUInteger)len];
-    }
+    NSString *probe = DYYYWardContentProbe(contentHint, 10); // 自动裁掉 [看] 等表情短码
     NSArray *wrapKeys = @[ @"model", @"comment", @"awemeComment", @"commentModel", @"originComment" ];
     for (NSUInteger i = 0; i < n; i++) {
         @autoreleasepool {
@@ -631,9 +640,8 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
                 NSInteger budget = 400;
                 if (cidList.count > 0) hit = DYYYWardGraphMatch(cell, cidList, nil, 4, &budget);
                 if (!hit) {
-                    NSString *p = nil;
-                    if (contentHint.length >= 4) p = [contentHint substringToIndex:MIN(10, contentHint.length)];
-                    if (p.length > 0) { NSInteger b2 = 400; hit = DYYYWardGraphMatch(cell, @[], p, 4, &b2); }
+                    NSString *p = DYYYWardContentProbe(contentHint, 10);
+                    if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
                 }
                 if (!hit) return;
                 DYYYWardScrollAndHighlight(tv, cell);
@@ -819,13 +827,60 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
     gDYYYWardHostLocateMethods = diag;
 }
 
+// 统一的定位失败 toast（带完整诊断：目标 cid/内容、扫描串数、首 cell、行数/偏移、宿主方法、数据源）
+static void DYYYWardShowLocateFailure(void) {
+    NSString *reason = gDYYYWardLocateDiag ?: @"未匹配到可见评论";
+    NSString *hostMsg = @"";
+    if (gDYYYWardHostLocateMethods.length > 0) {
+        hostMsg = [NSString stringWithFormat:@" 方法:%@", gDYYYWardHostLocateMethods];
+    }
+    NSString *dsMsg = @"";
+    if (gDYYYWardDataSourceDiag.length > 0) {
+        dsMsg = [NSString stringWithFormat:@" %@", gDYYYWardDataSourceDiag];
+    }
+    NSInteger maxRows = 0; CGFloat off = 0;
+    UIViewController *cvc = DYYYWardFindCommentVC();
+    if (cvc) {
+        for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
+            NSInteger cnt = 0;
+            if ([sv isKindOfClass:[UITableView class]]) {
+                UITableView *t = (UITableView *)sv;
+                for (NSInteger s = 0; s < t.numberOfSections; s++) cnt += [t numberOfRowsInSection:s];
+            } else if ([sv isKindOfClass:[UICollectionView class]]) {
+                UICollectionView *cv2 = (UICollectionView *)sv;
+                for (NSInteger s = 0; s < cv2.numberOfSections; s++) cnt += [cv2 numberOfItemsInSection:s];
+            }
+            if (cnt > maxRows) { maxRows = cnt; off = sv.contentOffset.y; }
+        }
+    }
+    BOOL hostInvoked = [gDYYYWardHostLocateMethods containsString:@"已调用"];
+    NSString *prefix = hostInvoked ? @"已请求宿主定位" : @"评论定位失败";
+    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@ 行:%ld 偏移:%.0f",
+                          prefix, reason, hostMsg, dsMsg, (long)maxRows, off]];
+}
+
 // v2.3-26：按行扫描。评论面板可视高度小（一屏约 7 行），0.8 屏/步的渐进滚动覆盖不到整列
 // （实测 60 行只滚到偏移 2184 就没再往下）——目标评论常落在被漏掉的中间/后半段。
 // 直接用 UITableView 公开 API 拿总行数，逐行 scrollToRow 再复核该行 cell（图搜 cid/正文），
 // 能覆盖任意一行，完全不看模型字段名。递归串行执行，避免「上一行还没渲染完就滚下一行」。
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
                               NSInteger flat, NSInteger stride, NSInteger total) {
-    if (!t || gDYYYWardLocateDone == gen || flat >= total || total <= 0) return;
+    if (!t || gDYYYWardLocateDone == gen || total <= 0) return;
+    if (flat >= total) {
+        // 已扫到「当前已加载」的末尾：跳到底部触发分页加载，重新读行数，若变多就接着扫（148 条评论只加载 60 行的场景）
+        @try { [t setContentOffset:CGPointMake(0, MAX(0, t.contentSize.height - t.bounds.size.height)) animated:NO]; } @catch (NSException *e) {}
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardLocateDone == gen) return;
+            NSInteger nowTotal = 0;
+            for (NSInteger s = 0; s < t.numberOfSections; s++) nowTotal += [t numberOfRowsInSection:s];
+            if (nowTotal > total) {
+                DYYYWardSweepStep(t, cidList, contentHint, gen, total, stride, nowTotal); // 已翻出更多，接着扫
+            } else {
+                DYYYWardShowLocateFailure(); // 真到底仍没找到
+            }
+        });
+        return;
+    }
     NSIndexPath *ip = nil;
     NSInteger remain = flat;
     for (NSInteger s = 0; s < t.numberOfSections; s++) {
@@ -839,7 +894,7 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
         if (gDYYYWardLocateDone == gen) return;
         UITableViewCell *cell = [t cellForRowAtIndexPath:ip];
         if (cell) {
-            NSString *probe = contentHint.length >= 4 ? [contentHint substringToIndex:MIN(10, contentHint.length)] : nil;
+            NSString *probe = DYYYWardContentProbe(contentHint, 10);
             BOOL hit = NO;
             NSInteger b = 1500;
             if (cidList.count > 0) hit = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
@@ -941,35 +996,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     [DYYYUtils showToast:@"评论查找中…"];
                 }
                 if (i == 17) {
-                    NSString *reason = gDYYYWardLocateDiag ?: @"未匹配到可见评论";
-                    NSString *hostMsg = @"";
-                    if (gDYYYWardHostLocateMethods.length > 0) {
-                        hostMsg = [NSString stringWithFormat:@" 方法:%@", gDYYYWardHostLocateMethods];
-                    }
-                    NSString *dsMsg = @"";
-                    if (gDYYYWardDataSourceDiag.length > 0) {
-                        dsMsg = [NSString stringWithFormat:@" %@", gDYYYWardDataSourceDiag];
-                    }
-                    // 行数/偏移诊断：判断是「滚动根本没生效」还是「列表里没有这条(回复/更深)」
-                    NSInteger maxRows = 0; CGFloat off = 0;
-                    UIViewController *cvc = DYYYWardFindCommentVC();
-                    if (cvc) {
-                        for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
-                            NSInteger cnt = 0;
-                            if ([sv isKindOfClass:[UITableView class]]) {
-                                UITableView *t = (UITableView *)sv;
-                                for (NSInteger s = 0; s < t.numberOfSections; s++) cnt += [t numberOfRowsInSection:s];
-                            } else if ([sv isKindOfClass:[UICollectionView class]]) {
-                                UICollectionView *cv2 = (UICollectionView *)sv;
-                                for (NSInteger s = 0; s < cv2.numberOfSections; s++) cnt += [cv2 numberOfItemsInSection:s];
-                            }
-                            if (cnt > maxRows) { maxRows = cnt; off = sv.contentOffset.y; }
-                        }
-                    }
-                    BOOL hostInvoked = [gDYYYWardHostLocateMethods containsString:@"已调用"];
-                    NSString *prefix = hostInvoked ? @"已请求宿主定位" : @"评论定位失败";
-                    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@ 行:%ld 偏移:%.0f",
-                                          prefix, reason, hostMsg, dsMsg, (long)maxRows, off]];
+                    // 若按行扫描正在进行/已接管，失败 toast 由扫描自身在「真到底」时报；
+                    // 否则（无 table 可扫）这里兜底报一次。
+                    if (gDYYYWardSweepGen != gen) DYYYWardShowLocateFailure();
                     return;
                 }
                 if (gDYYYWardLocateDone == gen || gDYYYWardLocatePending == gen || gDYYYWardSweepGen == gen) return; // 已定位/正在定位/正在按行扫描，勿再渐进滚动（防互相打架）
