@@ -5,7 +5,7 @@
 #import "DYYYUtils.h"
 #import "DYYYToast.h"
 
-@interface DYYYWardListViewController () <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate>
+@interface DYYYWardListViewController () <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UIView *typeTabBar;
@@ -357,7 +357,28 @@
         [card addSubview:b];
     }
 
+    // 点击卡片本体（非按钮区）直接跳转到插眼视频
+    objc_setAssociatedObject(card, "wardIndex", @(indexPath.row), OBJC_ASSOCIATION_RETAIN);
+    card.userInteractionEnabled = YES;
+    UITapGestureRecognizer *cardTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cardTapped:)];
+    cardTap.delegate = self;
+    [card addGestureRecognizer:cardTap];
+
     return cell;
+}
+
+- (void)cardTapped:(UITapGestureRecognizer *)gesture {
+    NSNumber *idxNum = objc_getAssociatedObject(gesture.view, "wardIndex");
+    if (!idxNum) return;
+    NSInteger idx = [idxNum integerValue];
+    if (idx >= self.filteredWards.count) return;
+    [self openWard:self.filteredWards[idx]];
+}
+
+// 按钮区域不触发卡片跳转，避免与 编辑/复制/删除 重复响应
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    if ([touch.view isKindOfClass:[UIButton class]]) return NO;
+    return YES;
 }
 
 - (void)actionTapped:(UIButton *)sender event:(UIEvent *)event {
@@ -396,7 +417,7 @@
         if (url.length > 0) [UIPasteboard generalPasteboard].string = url;
         return;
     }
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"snssdk1233://aweme/detail/?aweme_id=%@", awemeID]];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"snssdk1128://aweme/detail/?aweme_id=%@", awemeID]];
     BOOL ok = [[UIApplication sharedApplication] openURL:url];
     if (!ok) {
         // 兜底：复制作品链接
