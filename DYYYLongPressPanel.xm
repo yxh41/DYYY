@@ -3118,6 +3118,35 @@ static void DYYYSetRowTexts(UIView *row, NSString *text) {
     }
 }
 
+// 把视图高度加一块：优先改 height constraint，否则 frame 布局直接改 frame
+static void DYYYGrowHeight(UIView *view, CGFloat delta) {
+    if (!view || delta <= 0) return;
+    for (NSLayoutConstraint *c in view.constraints) {
+        if (c.firstItem == view && c.firstAttribute == NSLayoutAttributeHeight && c.secondItem == nil) {
+            c.constant += delta;
+            return;
+        }
+    }
+    for (NSLayoutConstraint *c in view.superview.constraints) {
+        if (c.firstItem == view && c.firstAttribute == NSLayoutAttributeHeight && c.secondItem == nil && c.constant > 0) {
+            c.constant += delta;
+            return;
+        }
+    }
+    if (view.translatesAutoresizingMaskIntoConstraints) {
+        CGRect f = view.frame;
+        f.size.height += delta;
+        view.frame = f;
+    }
+}
+
+// 清掉克隆行里的图标（如「关注」行右侧的 +），只留文字
+static void DYYYStripCloneIcons(UIView *row) {
+    for (UIView *sub in [row.subviews copy]) {
+        if ([sub isKindOfClass:[UIImageView class]]) [sub removeFromSuperview];
+    }
+}
+
 // 尝试把「插眼主页」行注入到识别到的用户面板里
 static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
     if (!container || !lastRow) return;
@@ -3126,6 +3155,7 @@ static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
     if (!clone) return;
     DYYYNeutralizeClonedRow(clone);
     DYYYSetRowTexts(clone, @"🌺 插眼主页");
+    DYYYStripCloneIcons(clone);
 
     UITapGestureRecognizer *tap =
         [[UITapGestureRecognizer alloc] initWithTarget:[DYYYWardHomeActionTarget shared]
@@ -3133,14 +3163,25 @@ static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
     [clone addGestureRecognizer:tap];
     clone.userInteractionEnabled = YES;
 
+    CGFloat rowHeight = CGRectGetHeight(lastRow.bounds);
+
     if ([container isKindOfClass:[UIStackView class]]) {
         [(UIStackView *)container addArrangedSubview:clone];
     } else if ([container isKindOfClass:[UIScrollView class]]) {
-        // 表格/滚动视图：行是 cell，不能直接塞视图，交给诊断
-        [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@ 行：%@", NSStringFromClass([container class]), NSStringFromClass([lastRow class])]];
-        return;
+        // 表格/滚动容器（UICollectionView/UITableView）：行在 cell 里，不能直接塞。
+        // 做法：把最后一行深拷贝到滚动容器的父面板底部，同时抬高滚动容器与面板高度，
+        // 让新行露在面板里（图标已清、回调已中和，只承载「插眼主页」文字与点击）
+        UIView *panel = container.superview;
+        if (!panel) {
+            [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@ 行：%@", NSStringFromClass([container class]), NSStringFromClass([lastRow class])]];
+            return;
+        }
+        CGRect rowFrameInPanel = [lastRow convertRect:lastRow.bounds toView:panel];
+        clone.frame = CGRectOffset(rowFrameInPanel, 0, rowHeight + 8);
+        [panel addSubview:clone];
+        DYYYGrowHeight(container, rowHeight + 8);
+        DYYYGrowHeight(panel, rowHeight + 8);
     } else {
-        CGFloat rowHeight = CGRectGetHeight(lastRow.bounds);
         clone.frame = CGRectOffset(lastRow.frame, 0, rowHeight);
         [container addSubview:clone];
         if (container.constraints.count == 0 && container.translatesAutoresizingMaskIntoConstraints) {
