@@ -58,6 +58,8 @@ static UIViewController *DYYYWardFindVC(Class cls) {
     return found;
 }
 
+static UIViewController *DYYYWardFindCommentVC(void);
+
 // 评论区没打开时，借作品页交互控制器主动打开
 static void DYYYWardOpenCommentPanelIfNeeded(void) {
     UIViewController *commentVC = DYYYWardFindCommentVC();
