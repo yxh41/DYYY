@@ -2621,6 +2621,8 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
 }
 
 // 主页插眼：向主页右上角「三个点」操作面板注入「插眼主页」
+%group DYYYHomeWardGroup
+
 %hook AWEUserActionSheetView
 
 - (void)setActions:(NSArray *)actions {
@@ -2677,3 +2679,8 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
 }
 
 %end
+%end
+
+%ctor {
+    %init(DYYYHomeWardGroup);
+}
