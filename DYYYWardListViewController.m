@@ -570,7 +570,7 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
 }
 
 // 把数组下标换算成 indexPath 并滚动过去；滚完取 cell 复核，命中才高亮
-static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList) {
+static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList, NSString *contentHint) {
     if (!scroll || idx < 0) return NO;
     NSIndexPath *ip = nil;
     if ([scroll isKindOfClass:[UITableView class]]) {
@@ -661,7 +661,7 @@ static BOOL DYYYWardLocateViaDataSource(NSArray *cidList, NSString *contentHint)
                     NSInteger idx = DYYYWardIndexInArray(arr, cidList, contentHint);
                     if (idx == NSNotFound) continue;
                     foundIdx = idx;
-                    if (DYYYWardScrollListToIndex(scroll, idx, cidList)) {
+                    if (DYYYWardScrollListToIndex(scroll, idx, cidList, contentHint)) {
                         gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源命中 idx%ld", (long)idx];
                         gDYYYWardLocatePending = gDYYYWardLocateGen;
                         return YES;
