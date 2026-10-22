@@ -107,13 +107,18 @@ static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
     return result;
 }
 
+// 安全取值：优先读同名对象类型 ivar；其次是返回类型为对象的 getter；字典走 objectForKey。
+// 只有确认是对象类型才允许 KVC —— valueForKey: 撞上结构体/裸指针/数组/位域属性会直接
+// SIGSEGV，@try 抓不住。key 不存在时 valueForKey: 会抛 NSUnknownKeyException，也被挡掉。
+static id DYYYWardSafeKVC(id obj, NSString *key);
+
 static NSString *DYYYWardCIDOf(id obj) {
     if (!obj) return nil;
     // 与插眼保存侧（DYYYCommentStrForKeys）保持同一套 cid 键
     NSArray *cidKeys = @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ];
     for (NSString *k in cidKeys) {
         @try {
-            id v = [obj valueForKey:k];
+            id v = DYYYWardSafeKVC(obj, k);
             if (v && ![v isKindOfClass:[NSNull class]]) {
                 NSString *s = [NSString stringWithFormat:@"%@", v];
                 if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
@@ -129,13 +134,13 @@ static NSString *DYYYWardCommentIDOfCell(id cell) {
     NSArray *modelKeys = @[ @"comment", @"commentModel", @"awemeComment", @"model", @"cellViewModel", @"itemModel" ];
     for (NSString *k in modelKeys) {
         @try {
-            id m = [cell valueForKey:k];
+            id m = DYYYWardSafeKVC(cell, k);
             if (!m || [m isKindOfClass:[NSNull class]]) continue;
             NSString *cid = DYYYWardCIDOf(m);
             if (cid) return cid;
             for (NSString *k2 in @[ @"model", @"comment", @"awemeComment" ]) {
                 @try {
-                    id m2 = [m valueForKey:k2];
+                    id m2 = DYYYWardSafeKVC(m, k2);
                     if (m2 && ![m2 isKindOfClass:[NSNull class]]) {
                         NSString *cid2 = DYYYWardCIDOf(m2);
                         if (cid2) return cid2;
@@ -286,44 +291,114 @@ static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 static NSString *gDYYYWardDataSourceDiag = nil;
 
+// ⚠️ 本段一律禁用 valueForKey:。在陌生宿主对象上做 KVC，遇到结构体/裸指针/数组/位域
+// 类型的属性会直接 SIGSEGV/SIGBUS，@try/@catch 抓不住信号（v2.3-19 就是这样闪退的）。
+// 改为按名字读 ivar：先用 ivar_getTypeEncoding 确认是对象类型（首字符 '@'）再 object_getIvar。
+
+// 按名字取对象 ivar（含 `_` 前缀，沿继承链向上最多 4 层）
+// 结果按「类 + 键」缓存：扫 ivar 列表不便宜，上千条评论逐个探测时会明显卡主线程
+static NSMutableDictionary *gDYYYWardIvarCache = nil;
+
+static id DYYYWardIvarNamed(id obj, NSString *name) {
+    if (!obj || name.length == 0) return nil;
+    Class startCls = object_getClass(obj);
+    if (!gDYYYWardIvarCache) gDYYYWardIvarCache = [NSMutableDictionary dictionary];
+    NSString *cacheKey = [NSString stringWithFormat:@"%p|%@", (void *)startCls, name];
+    id cached = [gDYYYWardIvarCache objectForKey:cacheKey];
+    if (cached) {
+        if ([cached isKindOfClass:[NSNull class]]) return nil;
+        Ivar cv = (Ivar)[(NSValue *)cached pointerValue];
+        return object_getIvar(obj, cv);
+    }
+    NSString *want = name;
+    NSString *wantUnderscore = [@"_" stringByAppendingString:name];
+    Class cls = startCls;
+    for (NSInteger depth = 0; cls && depth < 4; depth++) {
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        Ivar hit = NULL;
+        id found = nil;
+        for (unsigned int i = 0; i < ic && !hit; i++) {
+            const char *n = ivar_getName(ivars[i]);
+            const char *t = ivar_getTypeEncoding(ivars[i]);
+            if (!n || !t || t[0] != '@') continue;
+            NSString *cn = [NSString stringWithUTF8String:n];
+            if (![cn isEqualToString:want] && ![cn isEqualToString:wantUnderscore]) continue;
+            hit = ivars[i];
+            found = object_getIvar(obj, ivars[i]);
+        }
+        if (ivars) free(ivars);
+        if (hit) {
+            [gDYYYWardIvarCache setObject:[NSValue valueWithPointer:(void *)hit] forKey:cacheKey];
+            return found;
+        }
+        cls = class_getSuperclass(cls);
+    }
+    [gDYYYWardIvarCache setObject:[NSNull null] forKey:cacheKey];
+    return nil;
+}
+
+// 见上方声明：确认是对象类型才允许 KVC
+static id DYYYWardSafeKVC(id obj, NSString *key) {
+    if (!obj || key.length == 0) return nil;
+    if ([obj isKindOfClass:[NSDictionary class]]) return [(NSDictionary *)obj objectForKey:key];
+    id v = DYYYWardIvarNamed(obj, key);
+    if (v) return v;
+    SEL sel = NSSelectorFromString(key);
+    Method m = class_getInstanceMethod(object_getClass(obj), sel);
+    if (!m) return nil;
+    char rt[64];
+    method_getReturnType(m, rt, sizeof(rt));
+    if (rt[0] != '@') return nil; // 非对象返回值：KVC 可能按标量/结构体处理，直接放弃
+    @try { return [obj valueForKey:key]; } @catch (NSException *e) { return nil; }
+}
+
 // 取对象的评论文本（各版本字段名不一致）
-static NSString *DYYYWardTextOf(id obj) {
+static NSString *DYYYWardTextOfModel(id obj) {
     if (!obj) return nil;
     for (NSString *k in @[ @"content", @"text", @"commentContent", @"contentText", @"commentText", @"desc", @"description" ]) {
-        @try {
-            id v = [obj valueForKey:k];
-            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return (NSString *)v;
-        } @catch (NSException *e) {}
+        id v = DYYYWardIvarNamed(obj, k);
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return (NSString *)v;
     }
     return nil;
 }
 
-// 取出对象里所有「可能是评论模型数组」的 NSArray：常见键 + NSArray 类型 ivar
-// （只取对象类型 ivar，object_getIvar 对非对象类型会崩，故先按 type encoding 过滤 '@'）
+// 取对象的 cid（可能是 NSString 或 NSNumber）
+static NSString *DYYYWardCIDOfModel(id obj) {
+    if (!obj) return nil;
+    for (NSString *k in @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]) {
+        id v = DYYYWardIvarNamed(obj, k);
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return (NSString *)v;
+        if ([v isKindOfClass:[NSNumber class]]) {
+            NSString *s = [(NSNumber *)v stringValue];
+            if (s.length > 0) return s;
+        }
+    }
+    return nil;
+}
+
+// 取出对象里所有 NSArray 类型的 ivar（沿继承链向上最多 3 层）
 static NSArray *DYYYWardModelArraysIn(id obj) {
     NSMutableArray *out = [NSMutableArray array];
     if (!obj) return out;
-    for (NSString *k in @[ @"dataArray", @"comments", @"commentArray", @"commentList", @"commentModels",
-                           @"models", @"cellModels", @"viewModels", @"items", @"itemModels", @"listData",
-                           @"data", @"list", @"elements", @"rows", @"sectionModels", @"dataSource" ]) {
-        @try {
-            id v = [obj valueForKey:k];
-            if ([v isKindOfClass:[NSArray class]] && [(NSArray *)v count] > 0 && out.count < 10) [out addObject:v];
-        } @catch (NSException *e) {}
+    Class cls = object_getClass(obj);
+    for (NSInteger depth = 0; cls && depth < 3 && out.count < 8; depth++) {
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        for (unsigned int i = 0; i < ic && out.count < 8; i++) {
+            const char *t = ivar_getTypeEncoding(ivars[i]);
+            if (!t || t[0] != '@') continue;
+            id v = object_getIvar(obj, ivars[i]);
+            if (![v isKindOfClass:[NSArray class]]) continue;
+            NSUInteger c = [(NSArray *)v count];
+            if (c == 0 || c > 10000) continue;
+            BOOL dup = NO;
+            for (NSArray *exist in out) { if (exist == (NSArray *)v) { dup = YES; break; } }
+            if (!dup) [out addObject:v];
+        }
+        if (ivars) free(ivars);
+        cls = class_getSuperclass(cls);
     }
-    unsigned int ic = 0;
-    Ivar *ivars = class_copyIvarList(object_getClass(obj), &ic);
-    for (unsigned int i = 0; i < ic && out.count < 10; i++) {
-        const char *t = ivar_getTypeEncoding(ivars[i]);
-        if (!t || t[0] != '@') continue;
-        id v = nil;
-        @try { v = object_getIvar(obj, ivars[i]); } @catch (NSException *e) { continue; }
-        if (![v isKindOfClass:[NSArray class]] || [(NSArray *)v count] == 0 || [(NSArray *)v count] > 20000) continue;
-        BOOL dup = NO;
-        for (NSArray *exist in out) { if (exist == (NSArray *)v) { dup = YES; break; } }
-        if (!dup) [out addObject:v];
-    }
-    if (ivars) free(ivars);
     return out;
 }
 
@@ -331,7 +406,7 @@ static NSArray *DYYYWardModelArraysIn(id obj) {
 static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *contentHint) {
     if (![arr isKindOfClass:[NSArray class]] || arr.count == 0) return NSNotFound;
     NSUInteger n = arr.count;
-    if (n > 4000) n = 4000;
+    if (n > 1500) n = 1500;
     NSString *probe = nil;
     if (contentHint.length >= 4) {
         NSInteger len = contentHint.length > 10 ? 10 : (NSInteger)contentHint.length;
@@ -342,15 +417,13 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
         @autoreleasepool {
             id item = [arr objectAtIndex:i];
             if (!item || [item isKindOfClass:[NSNull class]]) continue;
-            NSString *cid = DYYYWardCIDOf(item);
+            NSString *cid = DYYYWardCIDOfModel(item);
             if (cid.length == 0) {
                 for (NSString *k in wrapKeys) {
-                    @try {
-                        id m = [item valueForKey:k];
-                        if (!m || [m isKindOfClass:[NSNull class]]) continue;
-                        cid = DYYYWardCIDOf(m);
-                        if (cid.length > 0) break;
-                    } @catch (NSException *e) {}
+                    id m = DYYYWardIvarNamed(item, k);
+                    if (!m || [m isKindOfClass:[NSNull class]]) continue;
+                    cid = DYYYWardCIDOfModel(m);
+                    if (cid.length > 0) break;
                 }
             }
             if (cid.length > 0) {
@@ -359,14 +432,12 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
                 }
             }
             if (probe) {
-                NSString *txt = DYYYWardTextOf(item);
+                NSString *txt = DYYYWardTextOfModel(item);
                 if (txt.length > 0 && [txt containsString:probe]) return (NSInteger)i;
                 for (NSString *k in wrapKeys) {
-                    @try {
-                        id m = [item valueForKey:k];
-                        NSString *t2 = DYYYWardTextOf(m);
-                        if (t2.length > 0 && [t2 containsString:probe]) return (NSInteger)i;
-                    } @catch (NSException *e) {}
+                    id m = DYYYWardIvarNamed(item, k);
+                    NSString *t2 = DYYYWardTextOfModel(m);
+                    if (t2.length > 0 && [t2 containsString:probe]) return (NSInteger)i;
                 }
             }
         }
@@ -380,23 +451,14 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
     NSIndexPath *ip = nil;
     if ([scroll isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)scroll;
-        id ds = nil;
-        @try { ds = [tv valueForKey:@"dataSource"]; } @catch (NSException *e) {}
-        if (!ds) return NO;
-        NSInteger sections = 1;
-        @try {
-            if ([ds respondsToSelector:@selector(numberOfSectionsInTableView:)]) {
-                NSInteger s = [ds numberOfSectionsInTableView:tv];
-                if (s > 0) sections = s;
-            }
-        } @catch (NSException *e) { sections = 1; }
+        // 只用 UITableView 公开 API 问行数（不调 dataSource 的回调方法，副作用/崩溃风险都更小）
+        NSInteger sections = tv.numberOfSections;
+        if (sections < 1) sections = 1;
         if (sections > 8) sections = 8;
         NSInteger remain = idx;
         for (NSInteger s = 0; s < sections; s++) {
             NSInteger rows = 0;
-            @try {
-                if ([ds respondsToSelector:@selector(tableView:numberOfRowsInSection:)]) rows = [ds tableView:tv numberOfRowsInSection:s];
-            } @catch (NSException *e) { rows = 0; }
+            if (s < tv.numberOfSections) rows = [tv numberOfRowsInSection:s];
             if (rows > 0 && remain < rows) { ip = [NSIndexPath indexPathForRow:remain inSection:s]; break; }
             remain -= rows;
         }
@@ -425,23 +487,13 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
     }
     if ([scroll isKindOfClass:[UICollectionView class]]) {
         UICollectionView *cv = (UICollectionView *)scroll;
-        id ds = nil;
-        @try { ds = [cv valueForKey:@"dataSource"]; } @catch (NSException *e) {}
-        if (!ds) return NO;
-        NSInteger sections = 1;
-        @try {
-            if ([ds respondsToSelector:@selector(numberOfSectionsInCollectionView:)]) {
-                NSInteger s = [ds numberOfSectionsInCollectionView:cv];
-                if (s > 0) sections = s;
-            }
-        } @catch (NSException *e) { sections = 1; }
+        NSInteger sections = cv.numberOfSections;
+        if (sections < 1) sections = 1;
         if (sections > 8) sections = 8;
         NSInteger remain = idx;
         for (NSInteger s = 0; s < sections; s++) {
             NSInteger items = 0;
-            @try {
-                if ([ds respondsToSelector:@selector(collectionView:numberOfItemsInSection:)]) items = [ds collectionView:cv numberOfItemsInSection:s];
-            } @catch (NSException *e) { items = 0; }
+            if (s < cv.numberOfSections) items = [cv numberOfItemsInSection:s];
             if (items > 0 && remain < items) { ip = [NSIndexPath indexPathForItem:remain inSection:s]; break; }
             remain -= items;
         }
@@ -468,23 +520,26 @@ static BOOL DYYYWardLocateViaDataSource(NSArray *cidList, NSString *contentHint)
     NSInteger foundIdx = NSNotFound;
     for (UIScrollView *scroll in lists) {
         id ds = nil;
-        @try { ds = [scroll valueForKey:@"dataSource"]; } @catch (NSException *e) {}
+        if ([scroll isKindOfClass:[UITableView class]]) ds = [(UITableView *)scroll dataSource];
+        else if ([scroll isKindOfClass:[UICollectionView class]]) ds = [(UICollectionView *)scroll dataSource];
         if (!ds) continue;
-        NSMutableArray *owners = [NSMutableArray arrayWithObject:ds];
-        @try {
-            id vm = [ds valueForKey:@"viewModel"];
-            if (vm && ![vm isKindOfClass:[NSNull class]]) [owners addObject:vm];
-        } @catch (NSException *e) {}
+        NSMutableArray *owners = [NSMutableArray array];
+        [owners addObject:ds];
+        id vm = DYYYWardIvarNamed(ds, @"viewModel");
+        if (!vm) vm = DYYYWardIvarNamed(ds, @"model");
+        if (vm && ![vm isKindOfClass:[NSNull class]] && vm != ds) [owners addObject:vm];
         for (id owner in owners) {
             for (NSArray *arr in DYYYWardModelArraysIn(owner)) {
                 arrCount++;
-                NSInteger idx = DYYYWardIndexInArray(arr, cidList, contentHint);
-                if (idx == NSNotFound) continue;
-                foundIdx = idx;
-                if (DYYYWardScrollListToIndex(scroll, idx, cidList)) {
-                    gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源命中 idx%ld", (long)idx];
-                    return YES;
-                }
+                @try {
+                    NSInteger idx = DYYYWardIndexInArray(arr, cidList, contentHint);
+                    if (idx == NSNotFound) continue;
+                    foundIdx = idx;
+                    if (DYYYWardScrollListToIndex(scroll, idx, cidList)) {
+                        gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源命中 idx%ld", (long)idx];
+                        return YES;
+                    }
+                } @catch (NSException *e) {}
             }
             if (arrCount > 14) break;
         }
@@ -567,7 +622,7 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
         }
     }
     id vm = nil;
-    @try { vm = [target valueForKey:@"viewModel"]; } @catch (NSException *e) { vm = nil; }
+    vm = DYYYWardIvarNamed(target, @"viewModel"); // 同上：不用 KVC，避免属性类型非对象时崩溃
     if (vm) {
         [diag appendFormat:@" VM:%@", NSStringFromClass([vm class])];
         NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
