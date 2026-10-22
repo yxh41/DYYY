@@ -410,7 +410,14 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 
 - (void)backgroundTapped {
     [self.noteTextView resignFirstResponder];
-    if (_dropdownOpen) [self closeDropdown];
+    if (_dropdownOpen) {
+        [self closeDropdown];
+        return;
+    }
+    // 键盘已收起：点击背景即关闭，避免面板残留在 window 上挡住后续交互
+    if (!self.noteTextView.isFirstResponder) {
+        [self dismiss];
+    }
 }
 
 - (void)saveTapped {
@@ -449,6 +456,12 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 - (void)show {
     UIWindow *window = [DYYYUtils getActiveWindow];
     if (!window) return;
+    // 先清掉残留实例，避免多个面板叠加把交互全挡住
+    for (UIView *sub in [window.subviews copy]) {
+        if ([sub isKindOfClass:[DYYYWardPanelView class]] && sub != self) {
+            [sub removeFromSuperview];
+        }
+    }
     self.frame = window.bounds;
     [window addSubview:self];
     [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{

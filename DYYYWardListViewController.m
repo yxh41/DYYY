@@ -68,20 +68,83 @@ static void DYYYWardOpenCommentPanelIfNeeded(void) {
     }
 }
 
-// 在评论列表可见 cell 里找 cid 匹配的评论，滚动过去并闪一下高亮框
-static BOOL DYYYWardHighlightComment(NSString *commentID) {
-    if (commentID.length == 0) return NO;
-    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
-    if (!commentVC || !commentVC.view) return NO;
+// 递归找评论列表：抖音评论区嵌套深（容器→容器→列表），直接子视图常找不到
+static UIScrollView *DYYYWardFindListDeep(UIView *view, NSInteger depth, Class prefer) {
+    if (!view || depth > 8) return nil;
+    if (prefer && [view isKindOfClass:prefer]) return (UIScrollView *)view;
+    for (UIView *sub in view.subviews) {
+        UIScrollView *s = DYYYWardFindListDeep(sub, depth + 1, prefer);
+        if (s) return s;
+    }
+    return nil;
+}
 
-    UIScrollView *scroll = nil;
-    for (UIView *sub in commentVC.view.subviews) {
-        if ([sub isKindOfClass:[UITableView class]] || [sub isKindOfClass:[UICollectionView class]]) {
-            scroll = (UIScrollView *)sub;
-            break;
+// 评论列表可能在容器 VC 自己的 view 上，也可能在子 VC 的 view 上；UITableView 优先
+static UIScrollView *DYYYWardCommentListView(UIViewController *commentVC) {
+    UIScrollView *scroll = DYYYWardFindListDeep(commentVC.view, 0, [UITableView class]);
+    if (!scroll) scroll = DYYYWardFindListDeep(commentVC.view, 0, [UICollectionView class]);
+    if (!scroll) {
+        for (UIViewController *child in commentVC.childViewControllers) {
+            if (!child.isViewLoaded) continue;
+            scroll = DYYYWardFindListDeep(child.view, 0, [UITableView class]);
+            if (!scroll) scroll = DYYYWardFindListDeep(child.view, 0, [UICollectionView class]);
+            if (scroll) break;
         }
     }
-    if (!scroll) return NO;
+    return scroll;
+}
+
+static NSString *DYYYWardCIDOf(id obj) {
+    if (!obj) return nil;
+    // 与插眼保存侧（DYYYCommentStrForKeys）保持同一套 cid 键
+    NSArray *cidKeys = @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ];
+    for (NSString *k in cidKeys) {
+        @try {
+            id v = [obj valueForKey:k];
+            if (v && ![v isKindOfClass:[NSNull class]]) {
+                NSString *s = [NSString stringWithFormat:@"%@", v];
+                if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+            }
+        } @catch (NSException *e) {}
+    }
+    return nil;
+}
+
+// cell → 评论模型 → cid；模型可能嵌在 viewModel 里，最多探两层
+static NSString *DYYYWardCommentIDOfCell(id cell) {
+    if (!cell) return nil;
+    NSArray *modelKeys = @[ @"comment", @"commentModel", @"awemeComment", @"model", @"cellViewModel", @"itemModel" ];
+    for (NSString *k in modelKeys) {
+        @try {
+            id m = [cell valueForKey:k];
+            if (!m || [m isKindOfClass:[NSNull class]]) continue;
+            NSString *cid = DYYYWardCIDOf(m);
+            if (cid) return cid;
+            for (NSString *k2 in @[ @"model", @"comment", @"awemeComment" ]) {
+                @try {
+                    id m2 = [m valueForKey:k2];
+                    if (m2 && ![m2 isKindOfClass:[NSNull class]]) {
+                        NSString *cid2 = DYYYWardCIDOf(m2);
+                        if (cid2) return cid2;
+                    }
+                } @catch (NSException *e) {}
+            }
+        } @catch (NSException *e) {}
+    }
+    return nil;
+}
+
+// 在评论列表可见 cell 里找 cid 匹配的评论，滚动过去并闪一下高亮框
+static BOOL DYYYWardHighlightComment(NSString *commentID) {
+    if (commentID.length == 0) { gDYYYWardLocateDiag = @"commentID 为空"; return NO; }
+    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
+    if (!commentVC || !commentVC.view) { gDYYYWardLocateDiag = @"评论区未打开"; return NO; }
+
+    UIScrollView *scroll = DYYYWardCommentListView(commentVC);
+    if (!scroll) {
+        gDYYYWardLocateDiag = [NSString stringWithFormat:@"未找到列表(%@)", NSStringFromClass([commentVC class])];
+        return NO;
+    }
 
     NSArray *cells = nil;
     if ([scroll isKindOfClass:[UITableView class]]) {
@@ -89,38 +152,18 @@ static BOOL DYYYWardHighlightComment(NSString *commentID) {
     } else {
         cells = [(UICollectionView *)scroll visibleCells];
     }
-    if (cells.count == 0) return NO;
-
-    NSArray *commentKeys = @[ @"comment", @"commentModel", @"model", @"cellViewModel", @"itemModel" ];
-    NSArray *cidKeys = @[ @"cid", @"commentID", @"commentId", @"comment_id" ];
+    if (cells.count == 0) { gDYYYWardLocateDiag = @"列表为空或未加载"; return NO; }
 
     for (id cell in cells) {
         if (![cell isKindOfClass:[UIView class]]) continue;
-        id comment = nil;
-        for (NSString *k in commentKeys) {
-            @try {
-                id v = [cell valueForKey:k];
-                if (v) {
-                    comment = v;
-                    break;
-                }
-            } @catch (NSException *e) {}
-        }
-        if (!comment) continue;
-        NSString *cid = @"";
-        for (NSString *k in cidKeys) {
-            @try {
-                id v = [comment valueForKey:k];
-                if (v && ![v isKindOfClass:[NSNull class]]) {
-                    cid = [NSString stringWithFormat:@"%@", v];
-                    if (cid.length > 0 && ![cid isEqualToString:@"(null)"]) break;
-                    cid = @"";
-                }
-            } @catch (NSException *e) {}
-        }
+        NSString *cid = DYYYWardCommentIDOfCell(cell);
         if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
 
         UIView *cellView = (UIView *)cell;
+        // 清掉复用残留的高亮框，避免叠框
+        for (UIView *sub in [cellView.subviews copy]) {
+            if (sub.tag == 20261022) [sub removeFromSuperview];
+        }
         if ([scroll isKindOfClass:[UITableView class]]) {
             NSIndexPath *ip = [(UITableView *)scroll indexPathForCell:(UITableViewCell *)cell];
             if (ip) {
@@ -144,11 +187,13 @@ static BOOL DYYYWardHighlightComment(NSString *commentID) {
         [UIView animateWithDuration:0.6 delay:1.2 options:0 animations:^{ highlight.alpha = 0.0; } completion:^(BOOL f) { [highlight removeFromSuperview]; }];
         return YES;
     }
+    gDYYYWardLocateDiag = [NSString stringWithFormat:@"可见 %ld 条无匹配", (long)cells.count];
     return NO;
 }
 
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
+static NSString *gDYYYWardLocateDiag = nil; // 最近一次定位失败原因，供 toast 诊断
 
 static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID) {
     (void)awemeID;
@@ -162,13 +207,17 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID) {
         } @catch (NSException *e) {}
     });
 
-    // 评论列表是异步加载的，多试几次
+    // 评论列表是异步加载的，多试几次；全部失败时 toast 诊断信息
     for (NSInteger i = 0; i < 6; i++) {
         NSTimeInterval delay = 2.8 + i * 1.0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
-                if (DYYYWardHighlightComment(commentID)) gDYYYWardLocateDone = gen;
+                if (DYYYWardHighlightComment(commentID)) {
+                    gDYYYWardLocateDone = gen;
+                } else if (i == 5) {
+                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", gDYYYWardLocateDiag ?: @"未知原因"]];
+                }
             } @catch (NSException *e) {}
         });
     }
