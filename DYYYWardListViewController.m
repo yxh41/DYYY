@@ -78,6 +78,18 @@
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+// 从视频返回后，宿主 App（标准版/极速版）可能把导航栏隐藏了，这里强制恢复导航栏与关闭按钮
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self.navigationController setNavigationBarHidden:NO animated:NO];
+    if (!self.navigationItem.rightBarButtonItem) {
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                                                                style:UIBarButtonItemStyleDone
+                                                                               target:self
+                                                                              action:@selector(close)];
+    }
+}
+
 #pragma mark - 布局
 
 - (void)setupSearchBar {
@@ -153,6 +165,17 @@
     self.tableView.backgroundColor = [UIColor clearColor];
     [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"wardCell"];
     [self.view addSubview:self.tableView];
+
+    // 点击列表空白处收回键盘（不拦截卡片点击/按钮）
+    UITapGestureRecognizer *bgTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(resignSearchKeyboard)];
+    bgTap.cancelsTouchesInView = NO;
+    [self.tableView addGestureRecognizer:bgTap];
+}
+
+- (void)resignSearchKeyboard {
+    if ([self.searchBar isFirstResponder]) {
+        [self.searchBar resignFirstResponder];
+    }
 }
 
 #pragma mark - 过滤/排序
@@ -270,6 +293,10 @@
 }
 
 #pragma mark - UISearchBarDelegate
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
+}
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
     self.keyword = searchText;
@@ -408,6 +435,7 @@
     if (!idxNum) return;
     NSInteger idx = [idxNum integerValue];
     if (idx >= self.filteredWards.count) return;
+    [self resignSearchKeyboard];
     [self openWard:self.filteredWards[idx]];
 }
 
