@@ -515,13 +515,42 @@
 }
 
 - (void)openWard:(NSDictionary *)ward {
+    NSString *type = [ward objectForKey:@"type"];
+    if (![type isKindOfClass:[NSString class]]) type = @"视频";
     NSString *awemeID = [ward objectForKey:@"awemeID"];
+    if (![awemeID isKindOfClass:[NSString class]]) awemeID = @"";
+
+    // 主页插眼：直接跳该用户主页
+    if ([type isEqualToString:@"主页"]) {
+        NSString *secUid = [ward objectForKey:@"secUid"];
+        if (![secUid isKindOfClass:[NSString class]]) secUid = @"";
+        NSString *uid = [ward objectForKey:@"uid"];
+        if (![uid isKindOfClass:[NSString class]]) uid = @"";
+        NSString *idValue = secUid.length > 0 ? secUid : uid;
+        if (idValue.length > 0) {
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://user/profile/%@", [self hostSnssdkScheme], idValue]];
+            if (url && [[UIApplication sharedApplication] openURL:url]) return;
+        }
+        NSString *share = [ward objectForKey:@"shareURL"];
+        if (![share isKindOfClass:[NSString class]] || share.length == 0) {
+            share = secUid.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid] : @"";
+        }
+        if (share.length > 0) {
+            [UIPasteboard generalPasteboard].string = share;
+            [DYYYUtils showToast:@"已复制主页链接"];
+        } else {
+            [DYYYUtils showToast:@"无主页信息"];
+        }
+        return;
+    }
+
     if (awemeID.length == 0) {
         [DYYYUtils showToast:@"无视频信息，已复制链接"];
         NSString *url = [ward objectForKey:@"shareURL"];
-        if (url.length > 0) [UIPasteboard generalPasteboard].string = url;
+        if ([url isKindOfClass:[NSString class]] && url.length > 0) [UIPasteboard generalPasteboard].string = url;
         return;
     }
+
     // 路由必须用 path 形态：极速版仅注册 aweme/detail/<id>，
     // 查询串形态（?aweme_id=）匹配不到路由会落"外部链接"兜底弹风险提示
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap", [self hostSnssdkScheme], awemeID]];

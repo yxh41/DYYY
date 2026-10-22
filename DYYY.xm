@@ -12320,7 +12320,7 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
 - (void)reportUserDetailVisitIfNeeded:(id)user {
     // 缓存当前主页用户，供「主页插眼」使用
     @try {
-        if (user) {
+        if (user && [DYYYPreferences boolForKey:@"DYYYHomeWard"]) {
             id nickObj = [user valueForKey:@"nickname"];
             NSString *nick = [nickObj isKindOfClass:[NSString class]] ? nickObj : @"";
             id secObj = [user valueForKey:@"secUid"];
