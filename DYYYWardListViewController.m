@@ -210,8 +210,11 @@ static void DYYYWardCollectCellLabels(UIView *view, NSInteger depth, NSMutableAr
 // 在评论列表可见 cell 里找 cid 匹配的评论；cid 字段名各版本不一致时，
 // 再用评论内容前缀兜底匹配 cell 里的 label 文本（前缀逐级缩短，兼容 cell 文本被截断）。
 // 滚动过去并闪一下高亮框。列表类型/嵌套不定，逐个候选列表试。
-static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint) {
-    if (commentID.length == 0 && contentHint.length == 0) { gDYYYWardLocateDiag = @"commentID 为空"; return NO; }
+// cidList：插眼时保存的所有候选 cid（含 commentID），逐个比对，避免字段名不一致匹配不上；
+// contentHint：评论内容，cid 匹配不上时用其前缀匹配 cell 文本（前缀逐级缩短兼容截断）。
+// 列表类型/嵌套不定，逐个候选列表试。
+static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
+    if (cidList.count == 0 && contentHint.length == 0) { gDYYYWardLocateDiag = @"commentID 为空"; return NO; }
     UIViewController *commentVC = DYYYWardFindCommentVC();
     if (!commentVC || !commentVC.view) { gDYYYWardLocateDiag = @"评论区未打开"; return NO; }
 
@@ -232,14 +235,19 @@ static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint)
         if (cells.count == 0) continue;
         totalVisible += cells.count;
 
-        // ① cid 匹配
-        if (commentID.length > 0) {
+        // ① cid 匹配：插眼时保存的候选 cid 逐个比对（各版本字段名不一致，只比对单个会漏）
+        if (cidList.count > 0) {
             for (id cell in cells) {
                 if (![cell isKindOfClass:[UIView class]]) continue;
                 NSString *cid = DYYYWardCommentIDOfCell(cell);
-                if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
-                DYYYWardScrollAndHighlight(scroll, cell);
-                return YES;
+                if (cid.length == 0) continue;
+                for (id target in cidList) {
+                    if (![target isKindOfClass:[NSString class]]) continue;
+                    if ([cid isEqualToString:(NSString *)target]) {
+                        DYYYWardScrollAndHighlight(scroll, cell);
+                        return YES;
+                    }
+                }
             }
         }
 
@@ -323,50 +331,47 @@ static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString 
 
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
-    NSArray *clsNames = @[ @"AWECommentContainerViewController" ];
     NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
                            @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:",
                            @"locateCommentWithCommentID:", @"scrollToCommentWithCommentID:animated:" ];
-    for (NSString *clsName in clsNames) {
-        Class cls = NSClassFromString(clsName);
-        if (!cls) continue;
-        id target = DYYYWardFindVC(cls);
-        if (!target) continue;
-        // ① 白名单
-        if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
+    // 关键：AWECommentContainerViewController 可能不存在（此时定位全靠兜底命中的 VC），
+    // 所以扫「实际找到的评论 VC」而不是硬编码类名，否则方法扫描一次都不会执行
+    id target = DYYYWardFindCommentVC();
+    if (!target) return;
+    NSMutableString *diag = [NSMutableString stringWithFormat:@"VC:%@", NSStringFromClass([target class])];
+
+    if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
+        gDYYYWardLocateDone = gDYYYWardLocateGen;
+        return;
+    }
+    NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
+    if (discovered.count > 0) {
+        [diag appendFormat:@" 方法:%@", [discovered componentsJoinedByString:@";"]];
+        if (DYYYWardTrySelectorsOnTarget(target, discovered, commentID)) {
             gDYYYWardLocateDone = gDYYYWardLocateGen;
             return;
         }
-        // ② 运行时发现 + 盲调（白名单没覆盖时的主要希望）
-        NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
-        if (discovered.count > 0) {
-            gDYYYWardHostLocateMethods = [discovered componentsJoinedByString:@";"];
-            if (DYYYWardTrySelectorsOnTarget(target, discovered, commentID)) {
+    }
+    id vm = nil;
+    @try { vm = [target valueForKey:@"viewModel"]; } @catch (NSException *e) { vm = nil; }
+    if (vm) {
+        [diag appendFormat:@" VM:%@", NSStringFromClass([vm class])];
+        NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
+        if (vmDisc.count > 0) {
+            [diag appendFormat:@" vm方法:%@", [vmDisc componentsJoinedByString:@";"]];
+            if (DYYYWardTrySelectorsOnTarget(vm, vmDisc, commentID)) {
                 gDYYYWardLocateDone = gDYYYWardLocateGen;
                 return;
             }
         }
-        // ③ viewModel 上也试试（白名单 + 运行时发现）
-        id vm = nil;
-        @try { vm = [target valueForKey:@"viewModel"]; } @catch (NSException *e) { vm = nil; }
-        if (vm) {
-            if (DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
-                gDYYYWardLocateDone = gDYYYWardLocateGen;
-                return;
-            }
-            NSArray *vmDiscovered = DYYYWardDiscoverLocateSelectors(vm);
-            if (vmDiscovered.count > 0) {
-                NSString *joined = [vmDiscovered componentsJoinedByString:@";"];
-                gDYYYWardHostLocateMethods = gDYYYWardHostLocateMethods
-                    ? [NSString stringWithFormat:@"%@|vm:%@", gDYYYWardHostLocateMethods, joined]
-                    : [NSString stringWithFormat:@"vm:%@", joined];
-                if (DYYYWardTrySelectorsOnTarget(vm, vmDiscovered, commentID)) {
-                    gDYYYWardLocateDone = gDYYYWardLocateGen;
-                    return;
-                }
-            }
+        if (DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
+            gDYYYWardLocateDone = gDYYYWardLocateGen;
+            return;
         }
     }
+    // 无论有没有候选方法都记诊断（至少带真实类名）
+    gDYYYWardHostLocateMethods = diag;
+}
 }
 
 // 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
@@ -389,7 +394,7 @@ static void DYYYWardScrollCommentList(BOOL up) {
     }
 }
 
-static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSString *contentHint) {
+static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint) {
     (void)awemeID;
     gDYYYWardLocateGen++;
     NSInteger gen = gDYYYWardLocateGen;
@@ -413,10 +418,12 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
             @try {
                 // 宿主内部定位：第 1 步与第 6 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
                 if (i == 0 || i == 5) {
-                    DYYYWardTryHostLocateComment(commentID);
-                    if (gDYYYWardLocateDone == gen) return;
+                    for (NSString *cid in cidList) {
+                        DYYYWardTryHostLocateComment(cid);
+                        if (gDYYYWardLocateDone == gen) return;
+                    }
                 }
-                if (DYYYWardHighlightComment(commentID, contentHint)) {
+                if (DYYYWardHighlightComment(cidList, contentHint)) {
                     gDYYYWardLocateDone = gen;
                     return;
                 }
@@ -976,6 +983,17 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
         if (![commentID isKindOfClass:[NSString class]]) commentID = @"";
         NSString *contentHint = [ward objectForKey:@"desc"];
         if (![contentHint isKindOfClass:[NSString class]]) contentHint = @"";
+        // 候选 cid 列表（插眼时保存的所有 id 字段值），定位时逐个试
+        NSMutableArray *cidList = [NSMutableArray array];
+        id saved = [ward objectForKey:@"commentIDs"];
+        if ([saved isKindOfClass:[NSArray class]]) {
+            for (id v in (NSArray *)saved) {
+                if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+                    if (![cidList containsObject:(NSString *)v]) [cidList addObject:(NSString *)v];
+                }
+            }
+        }
+        if (commentID.length > 0 && ![cidList containsObject:commentID]) [cidList addObject:commentID];
         if (awemeID.length == 0) {
             [DYYYUtils showToast:@"无视频信息，已复制链接"];
             NSString *url = [ward objectForKey:@"shareURL"];
@@ -1005,7 +1023,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
             [DYYYUtils showToast:@"已复制视频链接"];
             return;
         }
-        DYYYWardLocateComment(awemeID, commentID, contentHint);
+        DYYYWardLocateComment(awemeID, cidList, contentHint);
         return;
     }
 

@@ -108,13 +108,10 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     NSString *avatar = @"";
     NSString *ctStr = @"";
     if (comment) {
-        @try {
-            SEL cs = NSSelectorFromString(@"content");
-            if ([comment respondsToSelector:cs]) {
-                NSString *c = [comment performSelector:cs];
-                if (c) content = c;
-            }
-        } @catch (NSException *e) {}
+        // 评论内容：字段名各版本不一（content/text/commentContent/...），
+        // 取不到会导致插眼记录的 desc 为空 → 后面的「内容兜底匹配」直接失效
+        content = DYYYCommentStrForKeys(comment, @[ @"content", @"text", @"commentContent",
+                                                    @"contentText", @"commentText", @"desc", @"description" ]);
         id author = nil;
         @try { author = [comment valueForKey:@"author"]; } @catch (NSException *e) {}
         if (author) {
@@ -143,6 +140,12 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     }
     NSString *awemeID = DYYYCommentAwemeID(ctx, comment);
     NSString *commentID = DYYYCommentStrForKeys(comment, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
+    // 同时保存所有候选 id 值：定位时逐个比对，避免字段名不一致导致永远匹配不上
+    NSMutableArray *cidCandidates = [NSMutableArray array];
+    for (NSString *k in @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]) {
+        NSString *v = DYYYCommentStrForKeys(comment, @[ k ]);
+        if (v.length > 0 && ![cidCandidates containsObject:v]) [cidCandidates addObject:v];
+    }
     NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
 
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
@@ -153,6 +156,7 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     [data setObject:avatar forKey:@"avatarURL"];
     [data setObject:awemeID forKey:@"awemeID"];
     [data setObject:commentID forKey:@"commentID"];
+    [data setObject:cidCandidates forKey:@"commentIDs"];
     [data setObject:ctStr forKey:@"createTime"];
     [data setObject:content forKey:@"desc"];
     [data setObject:shareURL forKey:@"shareURL"];

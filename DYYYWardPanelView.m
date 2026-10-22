@@ -46,6 +46,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 @property (nonatomic, copy) NSString *avatarURL;
 @property (nonatomic, copy) NSString *itemID;
 @property (nonatomic, copy) NSString *commentID;
+@property (nonatomic, copy) NSArray *commentIDs; // 所有候选 cid 值，定位时逐个比对
 @property (nonatomic, copy) NSString *createTime;
 @property (nonatomic, copy) NSString *shareURL;
 @property (nonatomic, copy) NSString *desc;
@@ -74,6 +75,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _avatarURL = [data objectForKey:@"avatarURL"] ?: @"";
         _itemID = [data objectForKey:@"awemeID"] ?: @"";
         _commentID = [data objectForKey:@"commentID"] ?: @"";
+        _commentIDs = ([data objectForKey:@"commentIDs"] isKindOfClass:[NSArray class]) ? [data objectForKey:@"commentIDs"] : @[];
         _createTime = [data objectForKey:@"createTime"] ?: @"";
         _shareURL = [data objectForKey:@"shareURL"] ?: @"";
         _desc = [data objectForKey:@"desc"] ?: @"";
@@ -94,6 +96,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _avatarURL = [ward objectForKey:@"avatarURL"] ?: @"";
         _itemID = [ward objectForKey:@"awemeID"] ?: @"";
         _commentID = [ward objectForKey:@"commentID"] ?: @"";
+        _commentIDs = ([ward objectForKey:@"commentIDs"] isKindOfClass:[NSArray class]) ? [ward objectForKey:@"commentIDs"] : @[];
         _createTime = [ward objectForKey:@"createTime"] ?: @"";
         _shareURL = [ward objectForKey:@"shareURL"] ?: @"";
         _desc = [ward objectForKey:@"desc"] ?: @"";
@@ -431,6 +434,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     [ward setObject:(_avatarURL ?: @"") forKey:@"avatarURL"];
     [ward setObject:(_itemID ?: @"") forKey:@"awemeID"];
     [ward setObject:(_commentID ?: @"") forKey:@"commentID"];
+    if (_commentIDs.count > 0) [ward setObject:_commentIDs forKey:@"commentIDs"];
     [ward setObject:(_createTime ?: @"") forKey:@"createTime"];
     [ward setObject:_selectedCategory forKey:@"category"];
     [ward setObject:(_noteTextView.text ?: @"") forKey:@"note"];
