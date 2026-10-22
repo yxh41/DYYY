@@ -2850,7 +2850,7 @@ static void DYYYCacheProfileUser(id user) {
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     [info setObject:nick forKey:@"nickname"];
     [info setObject:uid forKey:@"uid"];
-    [info setObject:sec forKey:@"secUid"];
+    [info setObject:secUid forKey:@"secUid"];
     [info setObject:avatar forKey:@"avatarURL"];
     [DYYYPreferences setObject:info forKey:@"DYYYLastProfileUser"];
 }
