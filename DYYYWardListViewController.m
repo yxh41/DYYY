@@ -68,6 +68,8 @@ static void DYYYWardOpenCommentPanelIfNeeded(void) {
     }
 }
 
+static NSString *gDYYYWardLocateDiag = nil; // 最近一次定位失败原因，供 toast 诊断
+
 // 递归找评论列表：抖音评论区嵌套深（容器→容器→列表），直接子视图常找不到
 static UIScrollView *DYYYWardFindListDeep(UIView *view, NSInteger depth, Class prefer) {
     if (!view || depth > 8) return nil;
@@ -193,7 +195,6 @@ static BOOL DYYYWardHighlightComment(NSString *commentID) {
 
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
-static NSString *gDYYYWardLocateDiag = nil; // 最近一次定位失败原因，供 toast 诊断
 
 static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID) {
     (void)awemeID;
