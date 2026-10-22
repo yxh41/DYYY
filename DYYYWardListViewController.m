@@ -291,9 +291,32 @@ static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 static NSString *gDYYYWardDataSourceDiag = nil;
 
-// ⚠️ 本段一律禁用 valueForKey:。在陌生宿主对象上做 KVC，遇到结构体/裸指针/数组/位域
+// ⚠️ 本段一律禁用裸 valueForKey:。在陌生宿主对象上做 KVC，遇到结构体/裸指针/数组/位域
 // 类型的属性会直接 SIGSEGV/SIGBUS，@try/@catch 抓不住信号（v2.3-19 就是这样闪退的）。
-// 改为按名字读 ivar：先用 ivar_getTypeEncoding 确认是对象类型（首字符 '@'）再 object_getIvar。
+// ⚠️ 同理，对反射取出的 id 也不能直接发消息（isKindOfClass: 等）：type encoding 标 '@'
+// 但实际存的是 C++ 指针/数据时，第一次 msgSend 就会跳进垃圾地址 —— 崩溃报告表现为
+// "called through a pointer whose authentication code was invalid"（v2.3-20 的 SIGBUS）。
+// 所有反射取出的值必须先过 DYYYWardLooksLikeObject（只读 isa + 查类表，不执行任何代码）。
+
+// 伪对象探测：读 isa 并确认它在 ObjC 运行时注册过。全程只有内存读取与查表，
+// 不发送消息、不执行未知代码，因此不会触发 PAC/SIGBUS。
+static BOOL DYYYWardLooksLikeObject(id v) {
+    if (!v) return NO;
+    uintptr_t bits = (uintptr_t)v;
+    if (bits >> 60) return YES;    // tagged pointer（iOS arm64 最高位为 1）：短 NSString/NSNumber
+    if (bits < 0x100000) return NO; // 过小的地址不是堆指针
+    if (bits & 0x1) return NO;     // 未对齐
+    Class c = object_getClass(v);
+    if (!c) return NO;
+    if (!object_isClass(c)) return NO; // isa 不在运行时注册类表里 → 伪对象
+    return YES;
+}
+
+// type encoding 必须是 '@"ClassName"' 形式才允许读：裸 '@'（generic id）也可能是
+// C++ 指针等非 ObjC 对象，读了再发消息就是 v2.3-20 那种 SIGBUS
+static BOOL DYYYWardIvarTypeIsDeclaredObject(const char *t) {
+    return t && t[0] == '@' && t[1] == '"';
+}
 
 // 按名字取对象 ivar（含 `_` 前缀，沿继承链向上最多 4 层）
 // 结果按「类 + 键」缓存：扫 ivar 列表不便宜，上千条评论逐个探测时会明显卡主线程
@@ -308,7 +331,8 @@ static id DYYYWardIvarNamed(id obj, NSString *name) {
     if (cached) {
         if ([cached isKindOfClass:[NSNull class]]) return nil;
         Ivar cv = (Ivar)[(NSValue *)cached pointerValue];
-        return object_getIvar(obj, cv);
+        id v = object_getIvar(obj, cv);
+        return DYYYWardLooksLikeObject(v) ? v : nil;
     }
     NSString *want = name;
     NSString *wantUnderscore = [@"_" stringByAppendingString:name];
@@ -321,11 +345,13 @@ static id DYYYWardIvarNamed(id obj, NSString *name) {
         for (unsigned int i = 0; i < ic && !hit; i++) {
             const char *n = ivar_getName(ivars[i]);
             const char *t = ivar_getTypeEncoding(ivars[i]);
-            if (!n || !t || t[0] != '@') continue;
+            if (!DYYYWardIvarTypeIsDeclaredObject(t)) continue;
             NSString *cn = [NSString stringWithUTF8String:n];
             if (![cn isEqualToString:want] && ![cn isEqualToString:wantUnderscore]) continue;
+            id v = object_getIvar(obj, ivars[i]);
+            if (!DYYYWardLooksLikeObject(v)) continue; // 类型说谎：跳过，不把伪对象交给调用方
             hit = ivars[i];
-            found = object_getIvar(obj, ivars[i]);
+            found = v;
         }
         if (ivars) free(ivars);
         if (hit) {
@@ -350,7 +376,10 @@ static id DYYYWardSafeKVC(id obj, NSString *key) {
     char rt[64];
     method_getReturnType(m, rt, sizeof(rt));
     if (rt[0] != '@') return nil; // 非对象返回值：KVC 可能按标量/结构体处理，直接放弃
-    @try { return [obj valueForKey:key]; } @catch (NSException *e) { return nil; }
+    @try {
+        id r = [obj valueForKey:key];
+        return DYYYWardLooksLikeObject(r) ? r : nil;
+    } @catch (NSException *e) { return nil; }
 }
 
 // 取对象的评论文本（各版本字段名不一致）
@@ -377,18 +406,29 @@ static NSString *DYYYWardCIDOfModel(id obj) {
     return nil;
 }
 
-// 取出对象里所有 NSArray 类型的 ivar（沿继承链向上最多 3 层）
+// 取出对象里「名字像模型数组缓存」的 NSArray ivar（沿继承链向上最多 3 层）。
+// 只读名字命中白名单的 ivar：对任意 '@' ivar 取值再发消息是 v2.3-20 的闪退来源，
+// 名字不像数组缓存的一律不碰，风险面收敛到几乎为零。
 static NSArray *DYYYWardModelArraysIn(id obj) {
     NSMutableArray *out = [NSMutableArray array];
     if (!obj) return out;
+    NSArray *nameWhitelist = @[ @"dataArray", @"dataArr", @"comments", @"commentArray", @"commentList",
+                                @"commentModels", @"commentDataArray", @"models", @"cellModels",
+                                @"viewModels", @"items", @"itemModels", @"listData", @"elements",
+                                @"sectionModels", @"commentData", @"visibleCommentModels" ];
     Class cls = object_getClass(obj);
     for (NSInteger depth = 0; cls && depth < 3 && out.count < 8; depth++) {
         unsigned int ic = 0;
         Ivar *ivars = class_copyIvarList(cls, &ic);
         for (unsigned int i = 0; i < ic && out.count < 8; i++) {
+            const char *n = ivar_getName(ivars[i]);
             const char *t = ivar_getTypeEncoding(ivars[i]);
-            if (!t || t[0] != '@') continue;
+            if (!DYYYWardIvarTypeIsDeclaredObject(t)) continue;
+            NSString *cn = [NSString stringWithUTF8String:n];
+            if ([cn hasPrefix:@"_"]) cn = [cn substringFromIndex:1];
+            if (![nameWhitelist containsObject:cn]) continue;
             id v = object_getIvar(obj, ivars[i]);
+            if (!DYYYWardLooksLikeObject(v)) continue;
             if (![v isKindOfClass:[NSArray class]]) continue;
             NSUInteger c = [(NSArray *)v count];
             if (c == 0 || c > 10000) continue;
@@ -579,9 +619,12 @@ static NSArray *DYYYWardDiscoverLocateSelectors(id target) {
     return found;
 }
 
-// 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证该能力存在），
-// 先试白名单，再运行时发现候选方法逐个盲调；调用前用 NSMethodSignature 校验单对象参防崩
+// 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证该能力存在）。
+// ⚠️ v2.3-21 起只「发现 + 记录」，不再盲调：对宿主私有方法盲调是 SIGBUS 崩溃源
+// （方法内部对参数/状态有别的预期时，objc_msgSend 传错参就会跳进垃圾地址）。
+// 本版只把候选方法名带回给用户，下一版按回报的方法名做精确（校验签名后）调用。
 static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString *commentID) {
+    (void)commentID;
     if (!target) return NO;
     for (NSString *s in selNames) {
         SEL sel = NSSelectorFromString(s);
@@ -590,14 +633,13 @@ static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString 
         if (!sig || sig.numberOfArguments != 3) continue; // 单对象参方法（self/_cmd/arg）
         const char *t = [sig getArgumentTypeAtIndex:2];
         if (!t || t[0] != '@') continue;
-        @try {
-            [target performSelector:sel withObject:commentID];
-            return YES;
-        } @catch (NSException *e) {}
+        return YES; // 只确认「存在且可调」，不实际执行（防盲调崩溃）
     }
     return NO;
 }
 
+// 本版禁用盲调：命中方法时用 gDYYYWardLocateDone 标记会被误解为「已定位」，
+// 所以这里永远返回 NO，仅靠上面的 respondsToSelector 记录到诊断里
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
     NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
@@ -610,32 +652,18 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
     NSMutableString *diag = [NSMutableString stringWithFormat:@"VC:%@", NSStringFromClass([target class])];
 
     if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
-        gDYYYWardLocateDone = gDYYYWardLocateGen;
-        return;
+        [diag appendString:@" 白名单命中(待精确调用)"];
     }
     NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
     if (discovered.count > 0) {
         [diag appendFormat:@" 方法:%@", [discovered componentsJoinedByString:@";"]];
-        if (DYYYWardTrySelectorsOnTarget(target, discovered, commentID)) {
-            gDYYYWardLocateDone = gDYYYWardLocateGen;
-            return;
-        }
     }
-    id vm = nil;
-    vm = DYYYWardIvarNamed(target, @"viewModel"); // 同上：不用 KVC，避免属性类型非对象时崩溃
+    id vm = DYYYWardIvarNamed(target, @"viewModel"); // 不用 KVC，避免属性类型非对象时崩溃
     if (vm) {
         [diag appendFormat:@" VM:%@", NSStringFromClass([vm class])];
         NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
         if (vmDisc.count > 0) {
             [diag appendFormat:@" vm方法:%@", [vmDisc componentsJoinedByString:@";"]];
-            if (DYYYWardTrySelectorsOnTarget(vm, vmDisc, commentID)) {
-                gDYYYWardLocateDone = gDYYYWardLocateGen;
-                return;
-            }
-        }
-        if (DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
-            gDYYYWardLocateDone = gDYYYWardLocateGen;
-            return;
         }
     }
     // 无论有没有候选方法都记诊断（至少带真实类名）
