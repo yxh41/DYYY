@@ -3118,28 +3118,6 @@ static void DYYYSetRowTexts(UIView *row, NSString *text) {
     }
 }
 
-// 把视图高度加一块：优先改 height constraint，否则 frame 布局直接改 frame
-static void DYYYGrowHeight(UIView *view, CGFloat delta) {
-    if (!view || delta <= 0) return;
-    for (NSLayoutConstraint *c in view.constraints) {
-        if (c.firstItem == view && c.firstAttribute == NSLayoutAttributeHeight && c.secondItem == nil) {
-            c.constant += delta;
-            return;
-        }
-    }
-    for (NSLayoutConstraint *c in view.superview.constraints) {
-        if (c.firstItem == view && c.firstAttribute == NSLayoutAttributeHeight && c.secondItem == nil && c.constant > 0) {
-            c.constant += delta;
-            return;
-        }
-    }
-    if (view.translatesAutoresizingMaskIntoConstraints) {
-        CGRect f = view.frame;
-        f.size.height += delta;
-        view.frame = f;
-    }
-}
-
 // 清掉克隆行里的图标（如「关注」行右侧的 +），只留文字
 static void DYYYStripCloneIcons(UIView *row) {
     for (UIView *sub in [row.subviews copy]) {
@@ -3168,19 +3146,31 @@ static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
     if ([container isKindOfClass:[UIStackView class]]) {
         [(UIStackView *)container addArrangedSubview:clone];
     } else if ([container isKindOfClass:[UIScrollView class]]) {
-        // 表格/滚动容器（UICollectionView/UITableView）：行在 cell 里，不能直接塞。
-        // 做法：把最后一行深拷贝到滚动容器的父面板底部，同时抬高滚动容器与面板高度，
-        // 让新行露在面板里（图标已清、回调已中和，只承载「插眼主页」文字与点击）
-        UIView *panel = container.superview;
-        if (!panel) {
+        // 表格/滚动容器（UICollectionView/UITableView）：行在 cell 里，不能直接塞，
+        // 且跨树 convertRect 到父面板会错位（实测跑到面板顶部）。
+        // 做法：clone 直接挂到同一个 window 上，坐标用 lastRow→window 转换（同树内可靠），
+        // 位置 = 最后一行下方；扫描循环检测到面板消失时清掉残留（tag 20261023）
+        UIWindow *window = lastRow.window ?: container.window;
+        if (!window) {
             [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@ 行：%@", NSStringFromClass([container class]), NSStringFromClass([lastRow class])]];
             return;
         }
-        CGRect rowFrameInPanel = [lastRow convertRect:lastRow.bounds toView:panel];
-        clone.frame = CGRectOffset(rowFrameInPanel, 0, rowHeight + 8);
-        [panel addSubview:clone];
-        DYYYGrowHeight(container, rowHeight + 8);
-        DYYYGrowHeight(panel, rowHeight + 8);
+        CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
+        clone.frame = CGRectOffset(rowInWindow, 0, rowHeight + 8);
+        // 深拷贝会丢 layer 样式，补白底圆角（跟随深浅色）
+        if (@available(iOS 13.0, *)) {
+            clone.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
+                return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
+                    ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
+                    : [UIColor whiteColor];
+            }];
+        } else {
+            clone.backgroundColor = [UIColor whiteColor];
+        }
+        clone.layer.cornerRadius = 12.0;
+        clone.clipsToBounds = YES;
+        clone.tag = 20261023;
+        [window addSubview:clone];
     } else {
         clone.frame = CGRectOffset(lastRow.frame, 0, rowHeight);
         [container addSubview:clone];
@@ -3200,11 +3190,21 @@ static void DYYYScanUserSheet(UIWindow *window) {
     if (labels.count == 0) return;
 
     NSMutableArray *sigLabels = [NSMutableArray array];
+    BOOL hasWardLabel = NO;
     for (UILabel *label in labels) {
         if (DYYYIsSignatureText(label.text)) [sigLabels addObject:label];
-        if (DYYYIsWardHomeText(label.text)) return; // 已经注入过
+        if (DYYYIsWardHomeText(label.text)) hasWardLabel = YES;
     }
-    if (sigLabels.count < 3) return;
+    if (sigLabels.count < 3) {
+        // 特征面板已不在：清掉挂在 window 上的「插眼主页」行，防残留挡交互
+        // （必须在 hasWardLabel 检查之前——clone 本身含「插眼主页」文本，
+        //   若先 return 它会永远清不掉）
+        for (UIView *sub in [window.subviews copy]) {
+            if (sub.tag == 20261023) [sub removeFromSuperview];
+        }
+        return;
+    }
+    if (hasWardLabel) return; // 面板在且已注入过
 
     // 容器：从第一个特征文案往上找，第一个包含 ≥3 个特征文案的祖先
     UIView *container = nil;

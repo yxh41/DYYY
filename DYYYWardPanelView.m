@@ -409,13 +409,15 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 #pragma mark - 操作
 
 - (void)backgroundTapped {
-    [self.noteTextView resignFirstResponder];
+    // 先记录点击时键盘是否弹出：弹出时本次点击只收键盘（resign 后 isFirstResponder 立即变 NO，
+    // 若不提前记录会同帧把面板一起关掉），下次再点才关闭面板
+    BOOL wasEditing = self.noteTextView.isFirstResponder;
+    if (wasEditing) [self.noteTextView resignFirstResponder];
     if (_dropdownOpen) {
         [self closeDropdown];
         return;
     }
-    // 键盘已收起：点击背景即关闭，避免面板残留在 window 上挡住后续交互
-    if (!self.noteTextView.isFirstResponder) {
+    if (!wasEditing) {
         [self dismiss];
     }
 }

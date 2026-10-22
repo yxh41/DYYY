@@ -138,14 +138,19 @@ static NSString *DYYYWardCommentIDOfCell(id cell) {
     return nil;
 }
 
-// 评论区 VC：先认已知类名，找不到就沿 VC 链找类名含 Comment 的（各版本容器类名不一致）
+// 评论区 VC：先认已知类名，找不到就沿 VC 链找类名含 Comment 的（各版本容器类名不一致）；
+// 排除评论输入框/键盘类（它们常驻且类名也含 Comment，会误命中）
 static UIViewController *DYYYWardFindCommentVC(void) {
     UIViewController *vc = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
     if (vc) return vc;
     UIViewController *top = DYYYWardTopViewController();
     for (NSInteger i = 0; top && i < 10; i++) {
         NSString *cls = NSStringFromClass([top class]);
-        if ([cls containsString:@"Comment"] && top.isViewLoaded && top.view.window) return top;
+        BOOL looksLikeContainer = [cls containsString:@"Comment"] &&
+                                  ![cls containsString:@"Input"] && ![cls containsString:@"Keyboard"] &&
+                                  ![cls containsString:@"Edit"] && ![cls containsString:@"Panel"] &&
+                                  ![cls containsString:@"Bar"];
+        if (looksLikeContainer && top.isViewLoaded && top.view.window) return top;
         UIViewController *next = top.presentedViewController;
         if (!next && [top isKindOfClass:[UINavigationController class]]) next = [(UINavigationController *)top topViewController];
         if (!next && [top isKindOfClass:[UITabBarController class]]) next = [(UITabBarController *)top selectedViewController];
@@ -248,6 +253,25 @@ static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint)
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 
+// 把评论列表滚动一屏（up=NO 向下触发分页加载，YES 向上回头找漏掉的）
+static void DYYYWardScrollCommentList(BOOL up) {
+    UIViewController *commentVC = DYYYWardFindCommentVC();
+    if (!commentVC) return;
+    UIScrollView *scroll = DYYYWardCommentListView(commentVC);
+    if (!scroll) return;
+    CGFloat h = CGRectGetHeight(scroll.bounds);
+    if (h <= 0) return;
+    CGFloat maxOffset = scroll.contentSize.height - h;
+    if (maxOffset < 0) maxOffset = 0;
+    CGFloat y;
+    if (up) {
+        y = MAX(0, scroll.contentOffset.y - h * 0.8);
+    } else {
+        y = MIN(scroll.contentOffset.y + h * 0.8, maxOffset);
+    }
+    [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, y) animated:YES];
+}
+
 static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSString *contentHint) {
     (void)awemeID;
     gDYYYWardLocateGen++;
@@ -260,17 +284,23 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
         } @catch (NSException *e) {}
     });
 
-    // 评论列表是异步加载的，多试几次；全部失败时 toast 诊断信息
-    for (NSInteger i = 0; i < 6; i++) {
+    // 滚动搜索：评论列表分页加载，目标评论常不在首屏可见区（cid 与内容匹配都只看 visibleCells）。
+    // 每 1s 一步：先在当前可见 cell 找，找不到就滚动一屏继续（前 8 步向下、后 4 步回头向上），
+    // 滚动同时触发宿主加载更多评论。12 步全失败才 toast 诊断。
+    for (NSInteger i = 0; i < 12; i++) {
         NSTimeInterval delay = 2.8 + i * 1.0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
                 if (DYYYWardHighlightComment(commentID, contentHint)) {
                     gDYYYWardLocateDone = gen;
-                } else if (i == 5) {
-                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", gDYYYWardLocateDiag ?: @"未知原因"]];
+                    return;
                 }
+                if (i == 11) {
+                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", gDYYYWardLocateDiag ?: @"未知原因"]];
+                    return;
+                }
+                DYYYWardScrollCommentList(i >= 8); // 前 8 步向下，后 4 步向上回头
             } @catch (NSException *e) {}
         });
     }
