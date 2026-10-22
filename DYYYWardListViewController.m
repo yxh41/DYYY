@@ -1,7 +1,7 @@
 #import "DYYYWardListViewController.h"
 #import <objc/runtime.h>
-#import <mach/mach.h>
-#import <mach/mach_vm.h>
+#import <malloc/malloc.h>
+#import <dlfcn.h>
 #import "DYYYWardManager.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYUtils.h"
@@ -403,7 +403,8 @@ static NSString *gDYYYWardDataSourceDiag = nil;
 //   （字节恰好是 ASCII 数字），最高 4 位是 0x3 → 被误判为合法对象放行 → 调用方 isKindOfClass:
 //   对它发消息 → 运行时按普通对象去解引用 isa → 该地址未映射 → SIGBUS，崩溃地址就是这个位模式。
 // 正确判据只有 bit63（arm64 tagged pointer 约定）。另外加了「用户态地址窗口」粗筛 +
-// mach_vm_read_overwrite 安全读 isa（绝不直接解引用候选指针）+ 已注册类表比对，三层兜住。
+// 「地址可读性」判定（libmalloc zone / dyld 镜像，均不解引用候选地址）后才读 isa，
+// 再拿 isa 去比对「运行时已注册类表」，三层兜住，伪对象在第一步就被拒。
 static BOOL DYYYWardLooksLikeObject(id v);
 
 // 运行时已注册类（含元类）集合：isa 只能命中真正存在的类，否则一律判为伪对象。
@@ -456,13 +457,24 @@ static BOOL DYYYWardIsRegisteredClass(uintptr_t isa) {
     return NO;
 }
 
-// 安全读 8 字节：用内核拷出，地址非法时返回 KERN_INVALID_ADDRESS 而不是让本进程崩
+// 判断某地址「是否落在可读内存区域」——全程不解引用该地址，只查它属于谁：
+// ① libmalloc 的 zone 范围（堆上的对象都在这里）；
+// ② dyld 已加载镜像（字面量字符串、常量对象在 __DATA/__cstring）。
+// 注：本来想用 mach_vm_read_overwrite 直接做安全读，但 iOS SDK 的 <mach/mach_vm.h>
+// 是 `#error mach_vm.h unsupported`，只能走 libmalloc + dyld 这条路。
+static BOOL DYYYWardAddressReadable(uintptr_t addr) {
+    if (malloc_zone_from_ptr((void *)addr) != NULL) return YES;
+    Dl_info info;
+    if (dladdr((void *)addr, &info) != 0) return YES;
+    return NO;
+}
+
+// 安全读 8 字节：先确认地址可读，再读，避免把内联字符串/结构体位模式当指针解引用撞 SIGBUS
 static BOOL DYYYWardSafeReadPtr(uintptr_t addr, uintptr_t *out) {
     if (!out) return NO;
-    mach_vm_size_t got = 0;
-    kern_return_t kr = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr,
-                                              sizeof(uintptr_t), (mach_vm_address_t)(uintptr_t)out, &got);
-    return (kr == KERN_SUCCESS && got == sizeof(uintptr_t));
+    if (!DYYYWardAddressReadable(addr)) return NO;
+    *out = *(uintptr_t *)addr;
+    return YES;
 }
 
 static BOOL DYYYWardLooksLikeObject(id v) {
