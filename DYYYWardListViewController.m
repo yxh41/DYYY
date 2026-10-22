@@ -19,6 +19,161 @@
 @property (nonatomic, assign) BOOL sortBySaveTime;
 @end
 
+#pragma mark - 评论插眼定位：跳作品 → 开评论区 → 找到该评论并高亮
+
+static UIViewController *DYYYWardTopViewController(void) {
+    UIWindow *window = [DYYYUtils getActiveWindow];
+    UIViewController *vc = window.rootViewController;
+    for (NSInteger i = 0; vc && i < 10; i++) {
+        UIViewController *next = nil;
+        if (vc.presentedViewController) {
+            next = vc.presentedViewController;
+        } else if ([vc isKindOfClass:[UINavigationController class]]) {
+            next = [(UINavigationController *)vc topViewController];
+        } else if ([vc isKindOfClass:[UITabBarController class]]) {
+            next = [(UITabBarController *)vc selectedViewController];
+        }
+        if (!next || next == vc) break;
+        vc = next;
+    }
+    return vc;
+}
+
+static void DYYYWardFindVCHelper(UIViewController *vc, Class cls, NSInteger depth, UIViewController **found) {
+    if (!vc || !cls || depth > 6 || *found) return;
+    if ([vc isKindOfClass:cls]) {
+        *found = vc;
+        return;
+    }
+    for (UIViewController *child in vc.childViewControllers) {
+        DYYYWardFindVCHelper(child, cls, depth + 1, found);
+        if (*found) return;
+    }
+    if (vc.presentedViewController) DYYYWardFindVCHelper(vc.presentedViewController, cls, depth + 1, found);
+}
+
+static UIViewController *DYYYWardFindVC(Class cls) {
+    UIViewController *found = nil;
+    DYYYWardFindVCHelper(DYYYWardTopViewController(), cls, 0, &found);
+    return found;
+}
+
+// 评论区没打开时，借作品页交互控制器主动打开
+static void DYYYWardOpenCommentPanelIfNeeded(void) {
+    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
+    if (commentVC) return;
+    UIViewController *interaction = DYYYWardFindVC(NSClassFromString(@"AWEPlayInteractionViewController"));
+    if (interaction && [interaction respondsToSelector:@selector(performCommentAction)]) {
+        [interaction performSelector:@selector(performCommentAction)];
+    }
+}
+
+// 在评论列表可见 cell 里找 cid 匹配的评论，滚动过去并闪一下高亮框
+static BOOL DYYYWardHighlightComment(NSString *commentID) {
+    if (commentID.length == 0) return NO;
+    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
+    if (!commentVC || !commentVC.view) return NO;
+
+    UIScrollView *scroll = nil;
+    for (UIView *sub in commentVC.view.subviews) {
+        if ([sub isKindOfClass:[UITableView class]] || [sub isKindOfClass:[UICollectionView class]]) {
+            scroll = (UIScrollView *)sub;
+            break;
+        }
+    }
+    if (!scroll) return NO;
+
+    NSArray *cells = nil;
+    if ([scroll isKindOfClass:[UITableView class]]) {
+        cells = [(UITableView *)scroll visibleCells];
+    } else {
+        cells = [(UICollectionView *)scroll visibleCells];
+    }
+    if (cells.count == 0) return NO;
+
+    NSArray *commentKeys = @[ @"comment", @"commentModel", @"model", @"cellViewModel", @"itemModel" ];
+    NSArray *cidKeys = @[ @"cid", @"commentID", @"commentId", @"comment_id" ];
+
+    for (id cell in cells) {
+        if (![cell isKindOfClass:[UIView class]]) continue;
+        id comment = nil;
+        for (NSString *k in commentKeys) {
+            @try {
+                id v = [cell valueForKey:k];
+                if (v) {
+                    comment = v;
+                    break;
+                }
+            } @catch (NSException *e) {}
+        }
+        if (!comment) continue;
+        NSString *cid = @"";
+        for (NSString *k in cidKeys) {
+            @try {
+                id v = [comment valueForKey:k];
+                if (v && ![v isKindOfClass:[NSNull class]]) {
+                    cid = [NSString stringWithFormat:@"%@", v];
+                    if (cid.length > 0 && ![cid isEqualToString:@"(null)"]) break;
+                    cid = @"";
+                }
+            } @catch (NSException *e) {}
+        }
+        if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
+
+        UIView *cellView = (UIView *)cell;
+        if ([scroll isKindOfClass:[UITableView class]]) {
+            NSIndexPath *ip = [(UITableView *)scroll indexPathForCell:(UITableViewCell *)cell];
+            if (ip) {
+                [(UITableView *)scroll scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
+            }
+        } else {
+            NSIndexPath *ip = [(UICollectionView *)scroll indexPathForCell:(UICollectionViewCell *)cell];
+            if (ip) {
+                [(UICollectionView *)scroll scrollToItemAtIndexPath:ip
+                       atScrollPosition:UICollectionViewScrollPositionCenteredVertically
+                               animated:YES];
+            }
+        }
+
+        UIView *highlight = [[UIView alloc] initWithFrame:cellView.bounds];
+        highlight.layer.borderColor = [UIColor colorWithRed:1.0 green:0.35 blue:0.35 alpha:1.0].CGColor;
+        highlight.layer.borderWidth = 2.0;
+        highlight.userInteractionEnabled = NO;
+        highlight.tag = 20261022;
+        [cellView addSubview:highlight];
+        [UIView animateWithDuration:0.6 delay:1.2 options:0 animations:^{ highlight.alpha = 0.0; } completion:^(BOOL f) { [highlight removeFromSuperview]; }];
+        return YES;
+    }
+    return NO;
+}
+
+static NSInteger gDYYYWardLocateGen = 0;
+static NSInteger gDYYYWardLocateDone = 0;
+
+static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID) {
+    (void)awemeID;
+    gDYYYWardLocateGen++;
+    NSInteger gen = gDYYYWardLocateGen;
+
+    // 详情页起来后，如果评论区没自动开，就主动打开
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try {
+            DYYYWardOpenCommentPanelIfNeeded();
+        } @catch (NSException *e) {}
+    });
+
+    // 评论列表是异步加载的，多试几次
+    for (NSInteger i = 0; i < 6; i++) {
+        NSTimeInterval delay = 2.8 + i * 1.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardLocateDone == gen) return;
+            @try {
+                if (DYYYWardHighlightComment(commentID)) gDYYYWardLocateDone = gen;
+            } @catch (NSException *e) {}
+        });
+    }
+}
+
 @implementation DYYYWardListViewController
 
 + (void)present {
@@ -512,161 +667,6 @@
         if (cached.length == 0) cached = @"snssdk1128"; // 最终兜底：抖音标准版
     });
     return cached;
-}
-
-#pragma mark - 评论插眼定位：跳作品 → 开评论区 → 找到该评论并高亮
-
-static UIViewController *DYYYWardTopViewController(void) {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    UIViewController *vc = window.rootViewController;
-    for (NSInteger i = 0; vc && i < 10; i++) {
-        UIViewController *next = nil;
-        if (vc.presentedViewController) {
-            next = vc.presentedViewController;
-        } else if ([vc isKindOfClass:[UINavigationController class]]) {
-            next = [(UINavigationController *)vc topViewController];
-        } else if ([vc isKindOfClass:[UITabBarController class]]) {
-            next = [(UITabBarController *)vc selectedViewController];
-        }
-        if (!next || next == vc) break;
-        vc = next;
-    }
-    return vc;
-}
-
-static void DYYYWardFindVCHelper(UIViewController *vc, Class cls, NSInteger depth, UIViewController **found) {
-    if (!vc || !cls || depth > 6 || *found) return;
-    if ([vc isKindOfClass:cls]) {
-        *found = vc;
-        return;
-    }
-    for (UIViewController *child in vc.childViewControllers) {
-        DYYYWardFindVCHelper(child, cls, depth + 1, found);
-        if (*found) return;
-    }
-    if (vc.presentedViewController) DYYYWardFindVCHelper(vc.presentedViewController, cls, depth + 1, found);
-}
-
-static UIViewController *DYYYWardFindVC(Class cls) {
-    UIViewController *found = nil;
-    DYYYWardFindVCHelper(DYYYWardTopViewController(), cls, 0, &found);
-    return found;
-}
-
-// 评论区没打开时，借作品页交互控制器主动打开
-static void DYYYWardOpenCommentPanelIfNeeded(void) {
-    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
-    if (commentVC) return;
-    UIViewController *interaction = DYYYWardFindVC(NSClassFromString(@"AWEPlayInteractionViewController"));
-    if (interaction && [interaction respondsToSelector:@selector(performCommentAction)]) {
-        [interaction performSelector:@selector(performCommentAction)];
-    }
-}
-
-// 在评论列表可见 cell 里找 cid 匹配的评论，滚动过去并闪一下高亮框
-static BOOL DYYYWardHighlightComment(NSString *commentID) {
-    if (commentID.length == 0) return NO;
-    UIViewController *commentVC = DYYYWardFindVC(NSClassFromString(@"AWECommentContainerViewController"));
-    if (!commentVC || !commentVC.view) return NO;
-
-    UIScrollView *scroll = nil;
-    for (UIView *sub in commentVC.view.subviews) {
-        if ([sub isKindOfClass:[UITableView class]] || [sub isKindOfClass:[UICollectionView class]]) {
-            scroll = (UIScrollView *)sub;
-            break;
-        }
-    }
-    if (!scroll) return NO;
-
-    NSArray *cells = nil;
-    if ([scroll isKindOfClass:[UITableView class]]) {
-        cells = [(UITableView *)scroll visibleCells];
-    } else {
-        cells = [(UICollectionView *)scroll visibleCells];
-    }
-    if (cells.count == 0) return NO;
-
-    NSArray *commentKeys = @[ @"comment", @"commentModel", @"model", @"cellViewModel", @"itemModel" ];
-    NSArray *cidKeys = @[ @"cid", @"commentID", @"commentId", @"comment_id" ];
-
-    for (id cell in cells) {
-        if (![cell isKindOfClass:[UIView class]]) continue;
-        id comment = nil;
-        for (NSString *k in commentKeys) {
-            @try {
-                id v = [cell valueForKey:k];
-                if (v) {
-                    comment = v;
-                    break;
-                }
-            } @catch (NSException *e) {}
-        }
-        if (!comment) continue;
-        NSString *cid = @"";
-        for (NSString *k in cidKeys) {
-            @try {
-                id v = [comment valueForKey:k];
-                if (v && ![v isKindOfClass:[NSNull class]]) {
-                    cid = [NSString stringWithFormat:@"%@", v];
-                    if (cid.length > 0 && ![cid isEqualToString:@"(null)"]) break;
-                    cid = @"";
-                }
-            } @catch (NSException *e) {}
-        }
-        if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
-
-        UIView *cellView = (UIView *)cell;
-        if ([scroll isKindOfClass:[UITableView class]]) {
-            NSIndexPath *ip = [(UITableView *)scroll indexPathForCell:(UITableViewCell *)cell];
-            if (ip) {
-                [(UITableView *)scroll scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
-            }
-        } else {
-            NSIndexPath *ip = [(UICollectionView *)scroll indexPathForCell:(UICollectionViewCell *)cell];
-            if (ip) {
-                [(UICollectionView *)scroll scrollToItemAtIndexPath:ip
-                       atScrollPosition:UICollectionViewScrollPositionCenteredVertically
-                               animated:YES];
-            }
-        }
-
-        UIView *highlight = [[UIView alloc] initWithFrame:cellView.bounds];
-        highlight.layer.borderColor = [UIColor colorWithRed:1.0 green:0.35 blue:0.35 alpha:1.0].CGColor;
-        highlight.layer.borderWidth = 2.0;
-        highlight.userInteractionEnabled = NO;
-        highlight.tag = 20261022;
-        [cellView addSubview:highlight];
-        [UIView animateWithDuration:0.6 delay:1.2 options:0 animations:^{ highlight.alpha = 0.0; } completion:^(BOOL f) { [highlight removeFromSuperview]; }];
-        return YES;
-    }
-    return NO;
-}
-
-static NSInteger gDYYYWardLocateGen = 0;
-static NSInteger gDYYYWardLocateDone = 0;
-
-static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID) {
-    (void)awemeID;
-    gDYYYWardLocateGen++;
-    NSInteger gen = gDYYYWardLocateGen;
-
-    // 详情页起来后，如果评论区没自动开，就主动打开
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @try {
-            DYYYWardOpenCommentPanelIfNeeded();
-        } @catch (NSException *e) {}
-    });
-
-    // 评论列表是异步加载的，多试几次
-    for (NSInteger i = 0; i < 6; i++) {
-        NSTimeInterval delay = 2.8 + i * 1.0;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gDYYYWardLocateDone == gen) return;
-            @try {
-                if (DYYYWardHighlightComment(commentID)) gDYYYWardLocateDone = gen;
-            } @catch (NSException *e) {}
-        });
-    }
 }
 
 - (void)openWard:(NSDictionary *)ward {
