@@ -75,7 +75,8 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _avatarURL = [data objectForKey:@"avatarURL"] ?: @"";
         _itemID = [data objectForKey:@"awemeID"] ?: @"";
         _commentID = [data objectForKey:@"commentID"] ?: @"";
-        _commentIDs = ([data objectForKey:@"commentIDs"] isKindOfClass:[NSArray class]) ? [data objectForKey:@"commentIDs"] : @[];
+        id savedIDs = [data objectForKey:@"commentIDs"];
+        _commentIDs = [savedIDs isKindOfClass:[NSArray class]] ? savedIDs : nil;
         _createTime = [data objectForKey:@"createTime"] ?: @"";
         _shareURL = [data objectForKey:@"shareURL"] ?: @"";
         _desc = [data objectForKey:@"desc"] ?: @"";
@@ -96,7 +97,8 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _avatarURL = [ward objectForKey:@"avatarURL"] ?: @"";
         _itemID = [ward objectForKey:@"awemeID"] ?: @"";
         _commentID = [ward objectForKey:@"commentID"] ?: @"";
-        _commentIDs = ([ward objectForKey:@"commentIDs"] isKindOfClass:[NSArray class]) ? [ward objectForKey:@"commentIDs"] : @[];
+        id savedIDs = [ward objectForKey:@"commentIDs"];
+        _commentIDs = [savedIDs isKindOfClass:[NSArray class]] ? savedIDs : nil;
         _createTime = [ward objectForKey:@"createTime"] ?: @"";
         _shareURL = [ward objectForKey:@"shareURL"] ?: @"";
         _desc = [ward objectForKey:@"desc"] ?: @"";

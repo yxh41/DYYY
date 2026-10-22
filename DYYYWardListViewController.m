@@ -278,8 +278,222 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     return NO;
 }
 
+// MARK: - 数据源定位
+// 只匹配「可见 cell」的致命短板：目标评论在第几百条时根本不在首屏，滚动几屏也覆盖不到。
+// 改从列表 dataSource 的模型数组里直接算出目标评论的下标，再滚到对应 indexPath，
+// 滚完后取该 indexPath 的 cell 复核（算错也不会误高亮）。
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
+static NSString *gDYYYWardDataSourceDiag = nil;
+
+// 取对象的评论文本（各版本字段名不一致）
+static NSString *DYYYWardTextOf(id obj) {
+    if (!obj) return nil;
+    for (NSString *k in @[ @"content", @"text", @"commentContent", @"contentText", @"commentText", @"desc", @"description" ]) {
+        @try {
+            id v = [obj valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return (NSString *)v;
+        } @catch (NSException *e) {}
+    }
+    return nil;
+}
+
+// 取出对象里所有「可能是评论模型数组」的 NSArray：常见键 + NSArray 类型 ivar
+// （只取对象类型 ivar，object_getIvar 对非对象类型会崩，故先按 type encoding 过滤 '@'）
+static NSArray *DYYYWardModelArraysIn(id obj) {
+    NSMutableArray *out = [NSMutableArray array];
+    if (!obj) return out;
+    for (NSString *k in @[ @"dataArray", @"comments", @"commentArray", @"commentList", @"commentModels",
+                           @"models", @"cellModels", @"viewModels", @"items", @"itemModels", @"listData",
+                           @"data", @"list", @"elements", @"rows", @"sectionModels", @"dataSource" ]) {
+        @try {
+            id v = [obj valueForKey:k];
+            if ([v isKindOfClass:[NSArray class]] && [(NSArray *)v count] > 0 && out.count < 10) [out addObject:v];
+        } @catch (NSException *e) {}
+    }
+    unsigned int ic = 0;
+    Ivar *ivars = class_copyIvarList(object_getClass(obj), &ic);
+    for (unsigned int i = 0; i < ic && out.count < 10; i++) {
+        const char *t = ivar_getTypeEncoding(ivars[i]);
+        if (!t || t[0] != '@') continue;
+        id v = nil;
+        @try { v = object_getIvar(obj, ivars[i]); } @catch (NSException *e) { continue; }
+        if (![v isKindOfClass:[NSArray class]] || [(NSArray *)v count] == 0 || [(NSArray *)v count] > 20000) continue;
+        BOOL dup = NO;
+        for (NSArray *exist in out) { if (exist == (NSArray *)v) { dup = YES; break; } }
+        if (!dup) [out addObject:v];
+    }
+    if (ivars) free(ivars);
+    return out;
+}
+
+// 在模型数组里找目标评论下标：cid 命中优先，其次评论内容前缀命中
+static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *contentHint) {
+    if (![arr isKindOfClass:[NSArray class]] || arr.count == 0) return NSNotFound;
+    NSUInteger n = arr.count;
+    if (n > 4000) n = 4000;
+    NSString *probe = nil;
+    if (contentHint.length >= 4) {
+        NSInteger len = contentHint.length > 10 ? 10 : (NSInteger)contentHint.length;
+        probe = [contentHint substringToIndex:(NSUInteger)len];
+    }
+    NSArray *wrapKeys = @[ @"model", @"comment", @"awemeComment", @"commentModel", @"originComment" ];
+    for (NSUInteger i = 0; i < n; i++) {
+        @autoreleasepool {
+            id item = [arr objectAtIndex:i];
+            if (!item || [item isKindOfClass:[NSNull class]]) continue;
+            NSString *cid = DYYYWardCIDOf(item);
+            if (cid.length == 0) {
+                for (NSString *k in wrapKeys) {
+                    @try {
+                        id m = [item valueForKey:k];
+                        if (!m || [m isKindOfClass:[NSNull class]]) continue;
+                        cid = DYYYWardCIDOf(m);
+                        if (cid.length > 0) break;
+                    } @catch (NSException *e) {}
+                }
+            }
+            if (cid.length > 0) {
+                for (id t in cidList) {
+                    if ([t isKindOfClass:[NSString class]] && [cid isEqualToString:(NSString *)t]) return (NSInteger)i;
+                }
+            }
+            if (probe) {
+                NSString *txt = DYYYWardTextOf(item);
+                if (txt.length > 0 && [txt containsString:probe]) return (NSInteger)i;
+                for (NSString *k in wrapKeys) {
+                    @try {
+                        id m = [item valueForKey:k];
+                        NSString *t2 = DYYYWardTextOf(m);
+                        if (t2.length > 0 && [t2 containsString:probe]) return (NSInteger)i;
+                    } @catch (NSException *e) {}
+                }
+            }
+        }
+    }
+    return NSNotFound;
+}
+
+// 把数组下标换算成 indexPath 并滚动过去；滚完取 cell 复核，命中才高亮
+static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList) {
+    if (!scroll || idx < 0) return NO;
+    NSIndexPath *ip = nil;
+    if ([scroll isKindOfClass:[UITableView class]]) {
+        UITableView *tv = (UITableView *)scroll;
+        id ds = nil;
+        @try { ds = [tv valueForKey:@"dataSource"]; } @catch (NSException *e) {}
+        if (!ds) return NO;
+        NSInteger sections = 1;
+        @try {
+            if ([ds respondsToSelector:@selector(numberOfSectionsInTableView:)]) {
+                NSInteger s = [ds numberOfSectionsInTableView:tv];
+                if (s > 0) sections = s;
+            }
+        } @catch (NSException *e) { sections = 1; }
+        if (sections > 8) sections = 8;
+        NSInteger remain = idx;
+        for (NSInteger s = 0; s < sections; s++) {
+            NSInteger rows = 0;
+            @try {
+                if ([ds respondsToSelector:@selector(tableView:numberOfRowsInSection:)]) rows = [ds tableView:tv numberOfRowsInSection:s];
+            } @catch (NSException *e) { rows = 0; }
+            if (rows > 0 && remain < rows) { ip = [NSIndexPath indexPathForRow:remain inSection:s]; break; }
+            remain -= rows;
+        }
+        if (!ip) return NO;
+        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try {
+                UITableViewCell *cell = [tv cellForRowAtIndexPath:ip];
+                if (!cell) return;
+                // 下标是照模型数组算的，cell 取到即认为位置对；cell 取不到 cid（字段名变体）
+                // 时不因此否定，否则等于又把「可见 cell 匹配」那套不可靠判定搬回来
+                NSString *cid = DYYYWardCommentIDOfCell(cell);
+                BOOL miss = NO;
+                if (cid.length > 0) {
+                    miss = YES;
+                    for (id t in cidList) {
+                        if ([t isKindOfClass:[NSString class]] && [cid isEqualToString:(NSString *)t]) { miss = NO; break; }
+                    }
+                }
+                if (miss) return;
+                DYYYWardScrollAndHighlight(tv, cell);
+                gDYYYWardLocateDone = gDYYYWardLocateGen;
+            } @catch (NSException *e) {}
+        });
+        return YES;
+    }
+    if ([scroll isKindOfClass:[UICollectionView class]]) {
+        UICollectionView *cv = (UICollectionView *)scroll;
+        id ds = nil;
+        @try { ds = [cv valueForKey:@"dataSource"]; } @catch (NSException *e) {}
+        if (!ds) return NO;
+        NSInteger sections = 1;
+        @try {
+            if ([ds respondsToSelector:@selector(numberOfSectionsInCollectionView:)]) {
+                NSInteger s = [ds numberOfSectionsInCollectionView:cv];
+                if (s > 0) sections = s;
+            }
+        } @catch (NSException *e) { sections = 1; }
+        if (sections > 8) sections = 8;
+        NSInteger remain = idx;
+        for (NSInteger s = 0; s < sections; s++) {
+            NSInteger items = 0;
+            @try {
+                if ([ds respondsToSelector:@selector(collectionView:numberOfItemsInSection:)]) items = [ds collectionView:cv numberOfItemsInSection:s];
+            } @catch (NSException *e) { items = 0; }
+            if (items > 0 && remain < items) { ip = [NSIndexPath indexPathForItem:remain inSection:s]; break; }
+            remain -= items;
+        }
+        if (!ip) return NO;
+        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES]; } @catch (NSException *e) { return NO; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try {
+                UICollectionViewCell *cell = [cv cellForItemAtIndexPath:ip];
+                if (cell) DYYYWardScrollAndHighlight(cv, cell);
+            } @catch (NSException *e) {}
+        });
+        return YES;
+    }
+    return NO;
+}
+
+// 遍历候选列表 → dataSource（含其 viewModel）的模型数组 → 算出下标 → 滚动复核
+static BOOL DYYYWardLocateViaDataSource(NSArray *cidList, NSString *contentHint) {
+    if (cidList.count == 0 && contentHint.length == 0) return NO;
+    UIViewController *commentVC = DYYYWardFindCommentVC();
+    if (!commentVC || !commentVC.view) { gDYYYWardDataSourceDiag = @"评论区未打开"; return NO; }
+    NSArray *lists = DYYYWardCommentListViews(commentVC);
+    NSInteger arrCount = 0;
+    NSInteger foundIdx = NSNotFound;
+    for (UIScrollView *scroll in lists) {
+        id ds = nil;
+        @try { ds = [scroll valueForKey:@"dataSource"]; } @catch (NSException *e) {}
+        if (!ds) continue;
+        NSMutableArray *owners = [NSMutableArray arrayWithObject:ds];
+        @try {
+            id vm = [ds valueForKey:@"viewModel"];
+            if (vm && ![vm isKindOfClass:[NSNull class]]) [owners addObject:vm];
+        } @catch (NSException *e) {}
+        for (id owner in owners) {
+            for (NSArray *arr in DYYYWardModelArraysIn(owner)) {
+                arrCount++;
+                NSInteger idx = DYYYWardIndexInArray(arr, cidList, contentHint);
+                if (idx == NSNotFound) continue;
+                foundIdx = idx;
+                if (DYYYWardScrollListToIndex(scroll, idx, cidList)) {
+                    gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源命中 idx%ld", (long)idx];
+                    return YES;
+                }
+            }
+            if (arrCount > 14) break;
+        }
+        if (arrCount > 14) break;
+    }
+    gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源%ld数组%@无命中", (long)arrCount,
+                               foundIdx == NSNotFound ? @"(未算到下标)" : [NSString stringWithFormat:@"idx%ld滚不到", (long)foundIdx]];
+    return NO;
+}
 
 // 运行时发现宿主「定位评论」方法：白名单猜不中时，扫 target 类所有实例方法，
 // 名字同时含 comment 与 scroll/locate/highlight/focus/jump 的即为候选（通常只有几个）。
@@ -426,6 +640,12 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     gDYYYWardLocateDone = gen;
                     return;
                 }
+                // 数据源定位：直接按模型数组算下标再滚过去（第 2/5/8 步各试一次，
+                // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
+                if (i == 1 || i == 4 || i == 7) {
+                    DYYYWardLocateViaDataSource(cidList, contentHint);
+                    if (gDYYYWardLocateDone == gen) return;
+                }
                 if (i == 3) {
                     // 中途提示「仍在查找」，避免被误认为失败；真正的失败在第 12 步报
                     [DYYYUtils showToast:@"评论查找中…"];
@@ -434,6 +654,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     NSString *reason = gDYYYWardLocateDiag ?: @"未知原因";
                     if (gDYYYWardHostLocateMethods.length > 0) {
                         reason = [NSString stringWithFormat:@"%@ 方法:%@", reason, gDYYYWardHostLocateMethods];
+                    }
+                    if (gDYYYWardDataSourceDiag.length > 0) {
+                        reason = [NSString stringWithFormat:@"%@ %@", reason, gDYYYWardDataSourceDiag];
                     }
                     [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", reason]];
                     return;
