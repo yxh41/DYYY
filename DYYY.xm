@@ -12340,6 +12340,8 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
                 [info setObject:uid forKey:@"uid"];
                 [info setObject:avatar forKey:@"avatarURL"];
                 [DYYYPreferences setObject:info forKey:@"DYYYLastProfileUser"];
+                // 记录访问时间：扫描循环据此判断当前是否正停在某个用户主页上
+                [DYYYPreferences setObject:[NSDate date] forKey:@"DYYYLastProfileVisitTime"];
             }
         }
     } @catch (NSException *e) {}

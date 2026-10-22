@@ -3303,6 +3303,52 @@ static void DYYYScanUserSheet(UIWindow *window) {
     DYYYInjectHomeWardRow(container, lastRow);
 }
 
+// 主页插眼入口③：不依赖三点菜单结构，直接把「🌺」按钮挂在用户主页页面上。
+// 判定：reportUserDetailVisitIfNeeded: 最近 20s 内被调用过（正停在某个用户主页）
+// + 顶层 VC 类名像用户主页。离开主页/超时即移除，不残留。
+static void DYYYRemoveHomeWardButton(UIViewController *vc) {
+    if (!vc) return;
+    for (UIView *sub in [vc.view.subviews copy]) {
+        if (sub.tag == 20261024) [sub removeFromSuperview];
+    }
+}
+
+static void DYYYSyncHomeWardButton(void) {
+    @try {
+        NSDate *ts = [DYYYPreferences objectForKey:@"DYYYLastProfileVisitTime"];
+        BOOL recent = [ts isKindOfClass:[NSDate class]] && (-[ts timeIntervalSinceNow]) < 20.0;
+        UIViewController *top = DYYYSheetTopViewController();
+        if (!top || !top.isViewLoaded || !top.view) return;
+        NSString *cls = NSStringFromClass([top class]);
+        BOOL looksProfile = [cls containsString:@"User"] || [cls containsString:@"Profile"] ||
+                            [cls containsString:@"Home"] || [cls containsString:@"Detail"];
+        if (!recent || !looksProfile || !top.view.window) {
+            DYYYRemoveHomeWardButton(top);
+            return;
+        }
+        for (UIView *sub in top.view.subviews) {
+            if (sub.tag == 20261024) return; // 已存在
+        }
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
+        CGFloat size = 34.0;
+        CGFloat y = CGRectGetHeight(top.view.bounds) - size - 70.0;
+        if (@available(iOS 11.0, *)) {
+            CGFloat bottomInset = top.view.safeAreaInsets.bottom;
+            if (bottomInset > 0) y = CGRectGetHeight(top.view.bounds) - bottomInset - size - 30.0;
+        }
+        btn.frame = CGRectMake(CGRectGetWidth(top.view.bounds) - size - 12.0, y, size, size);
+        [btn setTitle:@"🌺" forState:UIControlStateNormal];
+        btn.titleLabel.font = [UIFont systemFontOfSize:20.0];
+        btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+        btn.layer.cornerRadius = size / 2.0;
+        btn.tag = 20261024;
+        [btn addTarget:[DYYYWardHomeActionTarget shared]
+                action:@selector(dyyyHomeWardTapped)
+      forControlEvents:UIControlEventTouchUpInside];
+        [top.view addSubview:btn];
+    } @catch (NSException *e) {}
+}
+
 static void DYYYStartUserSheetScan(void) {
     // 每 1.2s 扫一次所有 window；只在开启主页插眼时才真正遍历
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -3317,6 +3363,10 @@ static void DYYYStartUserSheetScan(void) {
                             });
                         }
                     }
+                    // 入口③：用户主页页面上的「🌺」按钮（与菜单注入互不依赖）
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        @try { DYYYSyncHomeWardButton(); } @catch (NSException *e) {}
+                    });
                 }
             } @catch (NSException *e) {}
             [NSThread sleepForTimeInterval:1.2];

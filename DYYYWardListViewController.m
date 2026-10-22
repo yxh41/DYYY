@@ -72,30 +72,39 @@ static void DYYYWardOpenCommentPanelIfNeeded(void) {
 
 static NSString *gDYYYWardLocateDiag = nil; // 最近一次定位失败原因，供 toast 诊断
 
-// 递归找评论列表：抖音评论区嵌套深（容器→容器→列表），直接子视图常找不到
-static UIScrollView *DYYYWardFindListDeep(UIView *view, NSInteger depth, Class prefer) {
-    if (!view || depth > 8) return nil;
-    if (prefer && [view isKindOfClass:prefer]) return (UIScrollView *)view;
-    for (UIView *sub in view.subviews) {
-        UIScrollView *s = DYYYWardFindListDeep(sub, depth + 1, prefer);
-        if (s) return s;
+// 递归收集视图树里所有 UITableView / UICollectionView（评论区列表类型/嵌套不定，
+// 曾出现「找错列表只看到 2 条无关 cell」的情况，故收集全部候选逐个试）
+static void DYYYWardCollectListCandidates(UIView *view, NSInteger depth, NSMutableArray *out) {
+    if (!view || depth > 10 || out.count > 24) return;
+    if ([view isKindOfClass:[UITableView class]] || [view isKindOfClass:[UICollectionView class]]) {
+        [out addObject:view];
     }
-    return nil;
+    for (UIView *sub in view.subviews) {
+        DYYYWardCollectListCandidates(sub, depth + 1, out);
+    }
 }
 
-// 评论列表可能在容器 VC 自己的 view 上，也可能在子 VC 的 view 上；UITableView 优先
-static UIScrollView *DYYYWardCommentListView(UIViewController *commentVC) {
-    UIScrollView *scroll = DYYYWardFindListDeep(commentVC.view, 0, [UITableView class]);
-    if (!scroll) scroll = DYYYWardFindListDeep(commentVC.view, 0, [UICollectionView class]);
-    if (!scroll) {
-        for (UIViewController *child in commentVC.childViewControllers) {
-            if (!child.isViewLoaded) continue;
-            scroll = DYYYWardFindListDeep(child.view, 0, [UITableView class]);
-            if (!scroll) scroll = DYYYWardFindListDeep(child.view, 0, [UICollectionView class]);
-            if (scroll) break;
-        }
+// 评论列表候选：容器 VC 自身 + 子 VC 的视图树；UITableView 优先，其余按面积降序
+static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
+    NSMutableArray *all = [NSMutableArray array];
+    DYYYWardCollectListCandidates(commentVC.view, 0, all);
+    for (UIViewController *child in commentVC.childViewControllers) {
+        if (child.isViewLoaded) DYYYWardCollectListCandidates(child.view, 0, all);
     }
-    return scroll;
+    NSMutableArray *tables = [NSMutableArray array];
+    NSMutableArray *collections = [NSMutableArray array];
+    for (UIScrollView *s in all) {
+        if ([s isKindOfClass:[UITableView class]]) [tables addObject:s];
+        else [collections addObject:s];
+    }
+    [collections sortUsingComparator:^NSComparisonResult(UIScrollView *a, UIScrollView *b) {
+        CGFloat areaA = CGRectGetWidth(a.bounds) * CGRectGetHeight(a.bounds);
+        CGFloat areaB = CGRectGetWidth(b.bounds) * CGRectGetHeight(b.bounds);
+        return areaA < areaB ? NSOrderedDescending : (areaA > areaB ? NSOrderedAscending : NSOrderedSame);
+    }];
+    NSMutableArray *result = [NSMutableArray arrayWithArray:tables];
+    [result addObjectsFromArray:collections];
+    return result;
 }
 
 static NSString *DYYYWardCIDOf(id obj) {
@@ -199,54 +208,65 @@ static void DYYYWardCollectCellLabels(UIView *view, NSInteger depth, NSMutableAr
 }
 
 // 在评论列表可见 cell 里找 cid 匹配的评论；cid 字段名各版本不一致时，
-// 再用评论内容前缀兜底匹配 cell 里的 label 文本。滚动过去并闪一下高亮框。
+// 再用评论内容前缀兜底匹配 cell 里的 label 文本（前缀逐级缩短，兼容 cell 文本被截断）。
+// 滚动过去并闪一下高亮框。列表类型/嵌套不定，逐个候选列表试。
 static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint) {
     if (commentID.length == 0 && contentHint.length == 0) { gDYYYWardLocateDiag = @"commentID 为空"; return NO; }
     UIViewController *commentVC = DYYYWardFindCommentVC();
     if (!commentVC || !commentVC.view) { gDYYYWardLocateDiag = @"评论区未打开"; return NO; }
 
-    UIScrollView *scroll = DYYYWardCommentListView(commentVC);
-    if (!scroll) {
+    NSArray *lists = DYYYWardCommentListViews(commentVC);
+    if (lists.count == 0) {
         gDYYYWardLocateDiag = [NSString stringWithFormat:@"未找到列表(%@)", NSStringFromClass([commentVC class])];
         return NO;
     }
 
-    NSArray *cells = nil;
-    if ([scroll isKindOfClass:[UITableView class]]) {
-        cells = [(UITableView *)scroll visibleCells];
-    } else {
-        cells = [(UICollectionView *)scroll visibleCells];
-    }
-    if (cells.count == 0) { gDYYYWardLocateDiag = @"列表为空或未加载"; return NO; }
-
-    // ① cid 匹配
-    if (commentID.length > 0) {
-        for (id cell in cells) {
-            if (![cell isKindOfClass:[UIView class]]) continue;
-            NSString *cid = DYYYWardCommentIDOfCell(cell);
-            if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
-            DYYYWardScrollAndHighlight(scroll, cell);
-            return YES;
+    NSInteger totalVisible = 0;
+    for (UIScrollView *scroll in lists) {
+        NSArray *cells = nil;
+        if ([scroll isKindOfClass:[UITableView class]]) {
+            cells = [(UITableView *)scroll visibleCells];
+        } else {
+            cells = [(UICollectionView *)scroll visibleCells];
         }
-    }
+        if (cells.count == 0) continue;
+        totalVisible += cells.count;
 
-    // ② 评论内容前缀兜底匹配（取前 12 字，兼容 cell 文本被截断的情况）
-    if (contentHint.length >= 4) {
-        NSString *probe = contentHint.length > 12 ? [contentHint substringToIndex:12] : contentHint;
-        for (id cell in cells) {
-            if (![cell isKindOfClass:[UIView class]]) continue;
-            NSMutableArray *labels = [NSMutableArray array];
-            DYYYWardCollectCellLabels((UIView *)cell, 0, labels);
-            for (UILabel *l in labels) {
-                if (l.text.length > 0 && [l.text containsString:probe]) {
-                    DYYYWardScrollAndHighlight(scroll, cell);
-                    return YES;
+        // ① cid 匹配
+        if (commentID.length > 0) {
+            for (id cell in cells) {
+                if (![cell isKindOfClass:[UIView class]]) continue;
+                NSString *cid = DYYYWardCommentIDOfCell(cell);
+                if (cid.length == 0 || ![cid isEqualToString:commentID]) continue;
+                DYYYWardScrollAndHighlight(scroll, cell);
+                return YES;
+            }
+        }
+
+        // ② 评论内容前缀兜底匹配：cell 文本常被截断，前缀从长到短逐级试
+        if (contentHint.length >= 4) {
+            NSArray *probeLens = contentHint.length > 12 ? @[ @12, @10, @8, @6 ] :
+                                 (contentHint.length > 6 ? @[ @8, @6 ] : @[ @4 ]);
+            for (NSNumber *lenNum in probeLens) {
+                NSInteger len = [lenNum integerValue];
+                if (len > contentHint.length) continue;
+                NSString *probe = [contentHint substringToIndex:len];
+                for (id cell in cells) {
+                    if (![cell isKindOfClass:[UIView class]]) continue;
+                    NSMutableArray *labels = [NSMutableArray array];
+                    DYYYWardCollectCellLabels((UIView *)cell, 0, labels);
+                    for (UILabel *l in labels) {
+                        if (l.text.length > 0 && [l.text containsString:probe]) {
+                            DYYYWardScrollAndHighlight(scroll, cell);
+                            return YES;
+                        }
+                    }
                 }
             }
         }
     }
 
-    gDYYYWardLocateDiag = [NSString stringWithFormat:@"可见 %ld 条无匹配", (long)cells.count];
+    gDYYYWardLocateDiag = [NSString stringWithFormat:@"%ld 个列表可见 %ld 条无匹配", (long)lists.count, (long)totalVisible];
     return NO;
 }
 
@@ -285,7 +305,7 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
 static void DYYYWardScrollCommentList(BOOL up) {
     UIViewController *commentVC = DYYYWardFindCommentVC();
     if (!commentVC) return;
-    UIScrollView *scroll = DYYYWardCommentListView(commentVC);
+    UIScrollView *scroll = [DYYYWardCommentListViews(commentVC) firstObject];
     if (!scroll) return;
     CGFloat h = CGRectGetHeight(scroll.bounds);
     if (h <= 0) return;
