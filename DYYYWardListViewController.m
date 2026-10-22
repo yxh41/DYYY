@@ -372,7 +372,6 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
     // 无论有没有候选方法都记诊断（至少带真实类名）
     gDYYYWardHostLocateMethods = diag;
 }
-}
 
 // 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
 // up=NO 向下触发分页加载，YES 向上回头找漏掉的）
