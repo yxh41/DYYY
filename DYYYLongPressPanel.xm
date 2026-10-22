@@ -3039,7 +3039,7 @@ static BOOL DYYYIsWardHomeText(NSString *t) {
 }
 
 static void DYYYCollectLabelsDeep(UIView *view, NSInteger depth, NSMutableArray *out) {
-    if (!view || depth > 12 || out.count > 240) return;
+    if (!view || depth > 16 || out.count > 800) return;
     if ([view isKindOfClass:[UILabel class]]) [out addObject:view];
     for (UIView *sub in view.subviews) {
         DYYYCollectLabelsDeep(sub, depth + 1, out);
@@ -3125,55 +3125,108 @@ static void DYYYStripCloneIcons(UIView *row) {
     }
 }
 
-// 尝试把「插眼主页」行注入到识别到的用户面板里
-static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
-    if (!container || !lastRow) return;
+// 自绘一行「🌺 插眼主页」（白底圆角深浅色自适应 + 文字 + 点击），
+// 用于深拷贝失败（NSKeyedArchiver 对复杂私有视图会抛异常）时的保底路径
+static UIView *DYYYWardRowWithFrame(CGRect frame) {
+    UIView *row = [[UIView alloc] initWithFrame:frame];
+    if (@available(iOS 13.0, *)) {
+        row.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
+            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
+                ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
+                : [UIColor whiteColor];
+        }];
+    } else {
+        row.backgroundColor = [UIColor whiteColor];
+    }
+    row.layer.cornerRadius = 12.0;
+    row.clipsToBounds = YES;
+    row.tag = 20261023;
 
-    UIView *clone = DYYYDeepCopyView(lastRow);
-    if (!clone) return;
-    DYYYNeutralizeClonedRow(clone);
-    DYYYSetRowTexts(clone, @"🌺 插眼主页");
-    DYYYStripCloneIcons(clone);
+    UILabel *label = [[UILabel alloc] initWithFrame:row.bounds];
+    label.text = @"🌺 插眼主页";
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+    if (@available(iOS 13.0, *)) {
+        label.textColor = [UIColor labelColor];
+    } else {
+        label.textColor = [UIColor darkTextColor];
+    }
+    [row addSubview:label];
 
     UITapGestureRecognizer *tap =
         [[UITapGestureRecognizer alloc] initWithTarget:[DYYYWardHomeActionTarget shared]
                                                 action:@selector(dyyyHomeWardTapped)];
-    [clone addGestureRecognizer:tap];
-    clone.userInteractionEnabled = YES;
+    [row addGestureRecognizer:tap];
+    row.userInteractionEnabled = YES;
+    return row;
+}
 
+// 尝试把「插眼主页」行注入到识别到的用户面板里
+static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
+    if (!container || !lastRow) return;
     CGFloat rowHeight = CGRectGetHeight(lastRow.bounds);
 
+    UITapGestureRecognizer *tap =
+        [[UITapGestureRecognizer alloc] initWithTarget:[DYYYWardHomeActionTarget shared]
+                                                action:@selector(dyyyHomeWardTapped)];
+
+    // 深拷贝失败（私有视图不支持 NSCoding 时静默失败）→ toast 诊断 + 自绘行保底
+    UIView *clone = DYYYDeepCopyView(lastRow);
+    BOOL useClone = (clone != nil);
+    if (useClone) {
+        DYYYNeutralizeClonedRow(clone);
+        DYYYSetRowTexts(clone, @"🌺 插眼主页");
+        DYYYStripCloneIcons(clone);
+        [clone addGestureRecognizer:tap];
+        clone.userInteractionEnabled = YES;
+    } else {
+        [DYYYUtils showToast:[NSString stringWithFormat:@"主页插眼：%@ 深拷贝失败，改用自绘行", NSStringFromClass([lastRow class])]];
+    }
+
     if ([container isKindOfClass:[UIStackView class]]) {
-        [(UIStackView *)container addArrangedSubview:clone];
+        if (useClone) {
+            [(UIStackView *)container addArrangedSubview:clone];
+        } else {
+            [(UIStackView *)container addArrangedSubview:DYYYWardRowWithFrame(CGRectMake(0, 0, CGRectGetWidth(container.bounds), rowHeight))];
+        }
     } else if ([container isKindOfClass:[UIScrollView class]]) {
         // 表格/滚动容器（UICollectionView/UITableView）：行在 cell 里，不能直接塞，
         // 且跨树 convertRect 到父面板会错位（实测跑到面板顶部）。
-        // 做法：clone 直接挂到同一个 window 上，坐标用 lastRow→window 转换（同树内可靠），
+        // 做法：行挂到同一个 window 上，坐标用 lastRow→window 转换（同树内可靠），
         // 位置 = 最后一行下方；扫描循环检测到面板消失时清掉残留（tag 20261023）
         UIWindow *window = lastRow.window ?: container.window;
         if (!window) {
             [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@ 行：%@", NSStringFromClass([container class]), NSStringFromClass([lastRow class])]];
             return;
         }
-        CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
-        clone.frame = CGRectOffset(rowInWindow, 0, rowHeight + 8);
-        // 深拷贝会丢 layer 样式，补白底圆角（跟随深浅色）
-        if (@available(iOS 13.0, *)) {
-            clone.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
-                return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
-                    ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
-                    : [UIColor whiteColor];
-            }];
+        if (useClone) {
+            CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
+            clone.frame = CGRectOffset(rowInWindow, 0, rowHeight + 8);
+            // 深拷贝会丢 layer 样式，补白底圆角（跟随深浅色）
+            if (@available(iOS 13.0, *)) {
+                clone.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
+                    return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
+                        ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
+                        : [UIColor whiteColor];
+                }];
+            } else {
+                clone.backgroundColor = [UIColor whiteColor];
+            }
+            clone.layer.cornerRadius = 12.0;
+            clone.clipsToBounds = YES;
+            clone.tag = 20261023;
+            [window addSubview:clone];
         } else {
-            clone.backgroundColor = [UIColor whiteColor];
+            CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
+            [window addSubview:DYYYWardRowWithFrame(CGRectOffset(rowInWindow, 0, rowHeight + 8))];
         }
-        clone.layer.cornerRadius = 12.0;
-        clone.clipsToBounds = YES;
-        clone.tag = 20261023;
-        [window addSubview:clone];
     } else {
-        clone.frame = CGRectOffset(lastRow.frame, 0, rowHeight);
-        [container addSubview:clone];
+        if (useClone) {
+            clone.frame = CGRectOffset(lastRow.frame, 0, rowHeight);
+            [container addSubview:clone];
+        } else {
+            [container addSubview:DYYYWardRowWithFrame(CGRectOffset(lastRow.frame, 0, rowHeight))];
+        }
         if (container.constraints.count == 0 && container.translatesAutoresizingMaskIntoConstraints) {
             CGRect f = container.frame;
             f.size.height += rowHeight;

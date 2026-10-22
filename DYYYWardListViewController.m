@@ -253,6 +253,34 @@ static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint)
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 
+// 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证该能力存在），
+// 盲调白名单方法名；调用前用 NSMethodSignature 校验单对象参，防签名不匹配崩
+static void DYYYWardTryHostLocateComment(NSString *commentID) {
+    if (commentID.length == 0) return;
+    NSArray *clsNames = @[ @"AWECommentContainerViewController" ];
+    NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
+                           @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:" ];
+    for (NSString *clsName in clsNames) {
+        Class cls = NSClassFromString(clsName);
+        if (!cls) continue;
+        id target = DYYYWardFindVC(cls);
+        if (!target) continue;
+        for (NSString *s in selNames) {
+            SEL sel = NSSelectorFromString(s);
+            if (![target respondsToSelector:sel]) continue;
+            NSMethodSignature *sig = [target methodSignatureForSelector:sel];
+            if (!sig || sig.numberOfArguments != 3) continue; // 单对象参方法（self/_cmd/arg）
+            const char *t = [sig getArgumentTypeAtIndex:2];
+            if (!t || t[0] != '@') continue;
+            @try {
+                [target performSelector:sel withObject:commentID];
+                gDYYYWardLocateDone = gDYYYWardLocateGen;
+                return;
+            } @catch (NSException *e) {}
+        }
+    }
+}
+
 // 把评论列表滚动一屏（up=NO 向下触发分页加载，YES 向上回头找漏掉的）
 static void DYYYWardScrollCommentList(BOOL up) {
     UIViewController *commentVC = DYYYWardFindCommentVC();
@@ -285,21 +313,27 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
     });
 
     // 滚动搜索：评论列表分页加载，目标评论常不在首屏可见区（cid 与内容匹配都只看 visibleCells）。
-    // 每 1s 一步：先在当前可见 cell 找，找不到就滚动一屏继续（前 8 步向下、后 4 步回头向上），
-    // 滚动同时触发宿主加载更多评论。12 步全失败才 toast 诊断。
+    // 每 1s 一步：先试宿主内部定位方法（抖音自身支持跳指定评论），
+    // 再 cid/内容匹配当前可见 cell，失败就滚动一屏继续（前 8 步向下、后 4 步回头向上），
+    // 滚动同时触发宿主加载更多评论。第 4 步起若仍失败先 toast 首因（不用等 12 秒），
+    // 12 步全失败静默结束。
     for (NSInteger i = 0; i < 12; i++) {
         NSTimeInterval delay = 2.8 + i * 1.0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
+                if (i == 0) {
+                    DYYYWardTryHostLocateComment(commentID);
+                    if (gDYYYWardLocateDone == gen) return;
+                }
                 if (DYYYWardHighlightComment(commentID, contentHint)) {
                     gDYYYWardLocateDone = gen;
                     return;
                 }
-                if (i == 11) {
+                if (i == 3) {
                     [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", gDYYYWardLocateDiag ?: @"未知原因"]];
-                    return;
                 }
+                if (i == 11) return;
                 DYYYWardScrollCommentList(i >= 8); // 前 8 步向下，后 4 步向上回头
             } @catch (NSException *e) {}
         });
