@@ -3150,8 +3150,9 @@ static void DYYYDiagnosePresented(UIViewController *vc) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{ reported = [NSMutableSet set]; });
 
-    UIView *root = vc.view;
-    if (!root) return;
+    // 只检查已加载且已入窗的 view，避免在 present 过程中提前触发 loadView
+    UIView *root = vc.viewIfLoaded;
+    if (!root || !root.window) return;
     NSMutableArray *labels = [NSMutableArray array];
     DYYYCollectLabels(root, 0, labels);
     if (labels.count == 0) return;
