@@ -273,9 +273,37 @@ static BOOL DYYYWardHighlightComment(NSString *commentID, NSString *contentHint)
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 
+// 运行时发现宿主「定位评论」方法：白名单猜不中时，扫 target 类所有实例方法，
+// 名字同时含 comment 与 scroll/locate/highlight/focus/jump 的即为候选（通常只有几个）。
+// 命中的方法名记到 gDYYYWardHostLocateMethods，失败 toast 里带上，便于下一版精确调用。
+static NSString *gDYYYWardHostLocateMethods = nil;
+
+static NSArray *DYYYWardDiscoverLocateSelectors(id target) {
+    NSMutableArray *found = [NSMutableArray array];
+    if (!target) return found;
+    unsigned int mc = 0;
+    Method *ml = class_copyMethodList(object_getClass(target), &mc);
+    for (unsigned int i = 0; i < mc; i++) {
+        SEL sel = method_getName(ml[i]);
+        const char *n = sel_getName(sel);
+        if (!n) continue;
+        NSString *name = [NSString stringWithUTF8String:n];
+        if (name.length == 0) continue;
+        BOOL hasComment = [name containsString:@"omment"]; // Comment/comment
+        BOOL hasAction = [name containsString:@"scroll"] || [name containsString:@"Scroll"] ||
+                         [name containsString:@"locate"] || [name containsString:@"Locate"] ||
+                         [name containsString:@"highlight"] || [name containsString:@"Highlight"] ||
+                         [name containsString:@"focus"] || [name containsString:@"Focus"] ||
+                         [name containsString:@"jump"] || [name containsString:@"Jump"] ||
+                         [name containsString:@"seek"] || [name containsString:@"Seek"];
+        if (hasComment && hasAction) [found addObject:name];
+    }
+    if (ml) free(ml);
+    return found;
+}
+
 // 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证该能力存在），
-// 盲调白名单方法名；调用前用 NSMethodSignature 校验单对象参，防签名不匹配崩
-// 在单个 target 上盲调白名单方法；调用前用 NSMethodSignature 校验单对象参，防签名不匹配崩
+// 先试白名单，再运行时发现候选方法逐个盲调；调用前用 NSMethodSignature 校验单对象参防崩
 static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString *commentID) {
     if (!target) return NO;
     for (NSString *s in selNames) {
@@ -293,7 +321,6 @@ static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString 
     return NO;
 }
 
-// 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证），盲调白名单方法名
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
     NSArray *clsNames = @[ @"AWECommentContainerViewController" ];
@@ -305,16 +332,39 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
         if (!cls) continue;
         id target = DYYYWardFindVC(cls);
         if (!target) continue;
+        // ① 白名单
         if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
             gDYYYWardLocateDone = gDYYYWardLocateGen;
             return;
         }
-        // 定位能力也可能挂在 viewModel 上
+        // ② 运行时发现 + 盲调（白名单没覆盖时的主要希望）
+        NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
+        if (discovered.count > 0) {
+            gDYYYWardHostLocateMethods = [discovered componentsJoinedByString:@";"];
+            if (DYYYWardTrySelectorsOnTarget(target, discovered, commentID)) {
+                gDYYYWardLocateDone = gDYYYWardLocateGen;
+                return;
+            }
+        }
+        // ③ viewModel 上也试试（白名单 + 运行时发现）
         id vm = nil;
         @try { vm = [target valueForKey:@"viewModel"]; } @catch (NSException *e) { vm = nil; }
-        if (vm && DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
-            gDYYYWardLocateDone = gDYYYWardLocateGen;
-            return;
+        if (vm) {
+            if (DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
+                gDYYYWardLocateDone = gDYYYWardLocateGen;
+                return;
+            }
+            NSArray *vmDiscovered = DYYYWardDiscoverLocateSelectors(vm);
+            if (vmDiscovered.count > 0) {
+                NSString *joined = [vmDiscovered componentsJoinedByString:@";"];
+                gDYYYWardHostLocateMethods = gDYYYWardHostLocateMethods
+                    ? [NSString stringWithFormat:@"%@|vm:%@", gDYYYWardHostLocateMethods, joined]
+                    : [NSString stringWithFormat:@"vm:%@", joined];
+                if (DYYYWardTrySelectorsOnTarget(vm, vmDiscovered, commentID)) {
+                    gDYYYWardLocateDone = gDYYYWardLocateGen;
+                    return;
+                }
+            }
         }
     }
 }
@@ -361,7 +411,8 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
-                if (i == 0) {
+                // 宿主内部定位：第 1 步与第 6 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
+                if (i == 0 || i == 5) {
                     DYYYWardTryHostLocateComment(commentID);
                     if (gDYYYWardLocateDone == gen) return;
                 }
@@ -370,9 +421,17 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
                     return;
                 }
                 if (i == 3) {
-                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", gDYYYWardLocateDiag ?: @"未知原因"]];
+                    // 中途提示「仍在查找」，避免被误认为失败；真正的失败在第 12 步报
+                    [DYYYUtils showToast:@"评论查找中…"];
                 }
-                if (i == 11) return;
+                if (i == 11) {
+                    NSString *reason = gDYYYWardLocateDiag ?: @"未知原因";
+                    if (gDYYYWardHostLocateMethods.length > 0) {
+                        reason = [NSString stringWithFormat:@"%@ 方法:%@", reason, gDYYYWardHostLocateMethods];
+                    }
+                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", reason]];
+                    return;
+                }
                 DYYYWardScrollCommentList(i >= 8); // 前 8 步向下，后 4 步向上回头
             } @catch (NSException *e) {}
         });
