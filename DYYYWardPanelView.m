@@ -47,6 +47,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 @property (nonatomic, copy) NSString *itemID;
 @property (nonatomic, copy) NSString *createTime;
 @property (nonatomic, copy) NSString *shareURL;
+@property (nonatomic, copy) NSString *desc;
 @end
 
 @implementation DYYYWardPanelView
@@ -71,6 +72,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _itemID = [ward objectForKey:@"awemeID"] ?: @"";
         _createTime = [ward objectForKey:@"createTime"] ?: @"";
         _shareURL = [ward objectForKey:@"shareURL"] ?: @"";
+        _desc = [ward objectForKey:@"desc"] ?: @"";
         NSString *cat = [ward objectForKey:@"category"];
         _selectedCategory = cat.length > 0 ? cat : @"未分类";
         _noteText = [ward objectForKey:@"note"] ?: @"";
@@ -104,6 +106,14 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 
     if (_itemID.length > 0) {
         _shareURL = [NSString stringWithFormat:@"https://www.douyin.com/video/%@", _itemID];
+    }
+
+    // 视频文案：优先头文件声明的 descriptionString，兜底 KVC desc
+    if ([_model respondsToSelector:@selector(descriptionString)]) {
+        _desc = _model.descriptionString ?: @"";
+    }
+    if (_desc.length == 0) {
+        _desc = DYYYWardSafeString(_model, @"desc");
     }
 }
 
@@ -391,6 +401,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     [ward setObject:_selectedCategory forKey:@"category"];
     [ward setObject:(_noteTextView.text ?: @"") forKey:@"note"];
     [ward setObject:(_shareURL ?: @"") forKey:@"shareURL"];
+    [ward setObject:(_desc ?: @"") forKey:@"desc"];
 
     NSString *wardID = nil;
     if (_editingWardID.length > 0) {

@@ -52,7 +52,26 @@
     [self setupCategoryBar];
     [self setupSortSegment];
     [self setupTableView];
+    [self relayoutViews];
     [self reloadData];
+}
+
+// 导航栏下方起始，避免与标题/关闭按钮交叠
+- (void)relayoutViews {
+    CGFloat w = self.view.bounds.size.width;
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat top = CGRectGetMaxY(self.navigationController.navigationBar.frame);
+    if (top < 20) top = 64; // nav bar 未布局时兜底（状态栏20+导航44）
+    self.searchBar.frame = CGRectMake(0, top, w, 44);
+    self.typeTabBar.frame = CGRectMake(0, top + 44, w, 44);
+    self.categoryBar.frame = CGRectMake(0, top + 88, w, 40);
+    self.sortSegment.frame = CGRectMake(w - 168, top + 134, 156, 30);
+    self.tableView.frame = CGRectMake(0, top + 172, w, h - top - 172);
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self relayoutViews];
 }
 
 - (void)close {
@@ -63,7 +82,7 @@
 
 - (void)setupSearchBar {
     self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 44)];
-    self.searchBar.placeholder = @"搜索昵称 / 备注 / 分类";
+    self.searchBar.placeholder = @"搜索分类、备注、昵称、内容";
     self.searchBar.delegate = self;
     [self.view addSubview:self.searchBar];
 }
@@ -153,10 +172,11 @@
         }
         // 关键字
         if (self.keyword.length > 0) {
-            NSString *hay = [NSString stringWithFormat:@"%@ %@ %@",
+            NSString *hay = [NSString stringWithFormat:@"%@ %@ %@ %@",
                             [ward objectForKey:@"nickname"] ?: @"",
                             [ward objectForKey:@"note"] ?: @"",
-                            [ward objectForKey:@"category"] ?: @""];
+                            [ward objectForKey:@"category"] ?: @"",
+                            [ward objectForKey:@"desc"] ?: @""];
             if ([hay rangeOfString:self.keyword options:NSCaseInsensitiveSearch].location == NSNotFound) continue;
         }
         [result addObject:ward];
@@ -263,7 +283,7 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 132;
+    return 172;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -281,7 +301,7 @@
     UIColor *subColor = isDark ? [UIColor colorWithRed:150/255.0 green:150/255.0 blue:155/255.0 alpha:1.0]
                                : [UIColor colorWithRed:120/255.0 green:122/255.0 blue:130/255.0 alpha:1.0];
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 8, tableView.bounds.size.width - 24, 120)];
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 8, tableView.bounds.size.width - 24, 160)];
     card.backgroundColor = cardBg;
     card.layer.cornerRadius = 14;
     [cell.contentView addSubview:card];
@@ -324,14 +344,30 @@
     }
     [card addSubview:saveLabel];
 
-    // 备注 / 视频时间
+    // 视频文案 / 备注（两行）
+    NSString *desc = [ward objectForKey:@"desc"] ?: @"";
     NSString *note = [ward objectForKey:@"note"] ?: @"";
     NSString *createTime = [ward objectForKey:@"createTime"] ?: @"";
-    UILabel *detail = [[UILabel alloc] initWithFrame:CGRectMake(12, 80, card.bounds.size.width - 24, 18)];
-    detail.font = [UIFont systemFontOfSize:12];
+    UILabel *descLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 78, card.bounds.size.width - 24, 36)];
+    descLabel.font = [UIFont systemFontOfSize:12];
+    descLabel.textColor = textColor;
+    descLabel.numberOfLines = 2;
+    descLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    if (desc.length > 0) {
+        descLabel.text = desc;
+    } else if (note.length > 0) {
+        descLabel.text = note;
+    } else if (createTime.length > 0) {
+        descLabel.text = [NSString stringWithFormat:@"视频：%@", createTime];
+    }
+    [card addSubview:descLabel];
+
+    // 备注补充 / 视频时间
+    UILabel *detail = [[UILabel alloc] initWithFrame:CGRectMake(12, 118, card.bounds.size.width - 24, 16)];
+    detail.font = [UIFont systemFontOfSize:11];
     detail.textColor = subColor;
     detail.lineBreakMode = NSLineBreakByTruncatingTail;
-    if (note.length > 0) {
+    if (desc.length > 0 && note.length > 0) {
         detail.text = [NSString stringWithFormat:@"备注：%@", note];
     } else if (createTime.length > 0) {
         detail.text = [NSString stringWithFormat:@"视频：%@", createTime];
@@ -343,7 +379,7 @@
     CGFloat btnW = (card.bounds.size.width - 24) / 4;
     for (NSInteger i = 0; i < actions.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(12 + i * btnW, 100, btnW, 20);
+        b.frame = CGRectMake(12 + i * btnW, 138, btnW, 20);
         [b setTitle:actions[i] forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont systemFontOfSize:13];
         b.tag = 400 + i;
@@ -409,6 +445,29 @@
     }
 }
 
+// 宿主 App 自己的 snssdk scheme：标准版 snssdk1128 / 极速版 snssdk2329 / TikTok snssdk1233
+- (NSString *)hostSnssdkScheme {
+    static NSString *cached = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
+        for (NSDictionary *t in urlTypes) {
+            if (![t isKindOfClass:[NSDictionary class]]) continue;
+            NSArray *schemes = t[@"CFBundleURLSchemes"];
+            if (![schemes isKindOfClass:[NSArray class]]) continue;
+            for (NSString *s in schemes) {
+                if ([s isKindOfClass:[NSString class]] && [s hasPrefix:@"snssdk"]) {
+                    cached = s;
+                    break;
+                }
+            }
+            if (cached) break;
+        }
+        if (cached.length == 0) cached = @"snssdk1128"; // 兜底：抖音标准版
+    });
+    return cached;
+}
+
 - (void)openWard:(NSDictionary *)ward {
     NSString *awemeID = [ward objectForKey:@"awemeID"];
     if (awemeID.length == 0) {
@@ -417,7 +476,7 @@
         if (url.length > 0) [UIPasteboard generalPasteboard].string = url;
         return;
     }
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"snssdk1128://aweme/detail/?aweme_id=%@", awemeID]];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/?aweme_id=%@", [self hostSnssdkScheme], awemeID]];
     BOOL ok = [[UIApplication sharedApplication] openURL:url];
     if (!ok) {
         // 兜底：复制作品链接
