@@ -272,10 +272,12 @@ static BOOL DYYYWardLooksLikeObject(id v) {
     return YES;
 }
 
-// type encoding 必须是 '@"ClassName"' 形式才允许读：裸 '@'（generic id）也可能是
-// C++ 指针等非 ObjC 对象，读了再发消息就是 v2.3-20 那种 SIGBUS
+// type encoding 首字符为 '@' 即对象槽，允许裸 '@'（generic id）——**Swift 存储属性几乎都是裸 '@'**，
+// 之前只认 '@"ClassName"' 导致 Swift 的模型/数组 ivar 全被跳过（v2.3-24 仍「数据源0数组」的真因）。
+// 裸 '@' 槽可能存 C++ 指针/裸数据，但**所有读取点**都会先过 DYYYWardLooksLikeObject 做零代码执行
+// 合法性探测（读 isa + 查类表）再发消息，所以放宽安全——v2.3-21 的崩溃是「没探测就 isKindOfClass」，不是读本身。
 static BOOL DYYYWardIvarTypeIsDeclaredObject(const char *t) {
-    return t && t[0] == '@' && t[1] == '"';
+    return t && t[0] == '@';
 }
 
 // 按名字取对象 ivar（含 `_` 前缀，沿继承链向上最多 4 层）
@@ -359,7 +361,8 @@ static NSArray *DYYYWardObjectIvars(Class cls) {
     Ivar *ivars = class_copyIvarList(cls, &ic); // ivar* 指向类元数据，长期有效；数组不 free
     for (unsigned int i = 0; i < ic; i++) {
         const char *t = ivar_getTypeEncoding(ivars[i]);
-        if (t && t[0] == '@' && t[1] == '"') [out addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
+        // 允许裸 '@'（Swift 存储属性）——读值后由 DYYYWardLooksLikeObject 统一验真，安全
+        if (t && t[0] == '@') [out addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
     }
     [gDYYYWardGraphIvarsCache setObject:out forKey:key];
     return out;
@@ -849,13 +852,13 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     // 再 cid/内容匹配当前可见 cell，失败就滚动一屏继续（前 8 步向下、后 4 步回头向上），
     // 滚动同时触发宿主加载更多评论。第 4 步起若仍失败先 toast 首因（不用等 12 秒），
     // 12 步全失败静默结束。
-    for (NSInteger i = 0; i < 12; i++) {
-        NSTimeInterval delay = 2.8 + i * 1.0;
+    for (NSInteger i = 0; i < 14; i++) {
+        NSTimeInterval delay = 2.6 + i * 0.9;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
                 // 宿主内部定位：第 1 步与第 6 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
-                if (i == 0 || i == 5) {
+                if (i == 0 || i == 6) {
                     for (NSString *cid in cidList) {
                         DYYYWardTryHostLocateComment(cid);
                         if (gDYYYWardLocateDone == gen) return;
@@ -867,7 +870,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 }
                 // 数据源定位：直接按模型数组算下标再滚过去（第 2/5/8 步各试一次，
                 // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
-                if (i == 1 || i == 4 || i == 7) {
+                if (i == 1 || i == 5 || i == 9) {
                     DYYYWardLocateViaDataSource(cidList, contentHint);
                     if (gDYYYWardLocateDone == gen) return;
                 }
@@ -875,7 +878,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     // 中途提示「仍在查找」，避免被误认为失败；真正的失败在第 12 步报
                     [DYYYUtils showToast:@"评论查找中…"];
                 }
-                if (i == 11) {
+                if (i == 13) {
                     NSString *reason = gDYYYWardLocateDiag ?: @"未匹配到可见评论";
                     NSString *hostMsg = @"";
                     if (gDYYYWardHostLocateMethods.length > 0) {
@@ -885,13 +888,30 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     if (gDYYYWardDataSourceDiag.length > 0) {
                         dsMsg = [NSString stringWithFormat:@" %@", gDYYYWardDataSourceDiag];
                     }
+                    // 行数/偏移诊断：判断是「滚动根本没生效」还是「列表里没有这条(回复/更深)」
+                    NSInteger maxRows = 0; CGFloat off = 0;
+                    UIViewController *cvc = DYYYWardFindCommentVC();
+                    if (cvc) {
+                        for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
+                            NSInteger cnt = 0;
+                            if ([sv isKindOfClass:[UITableView class]]) {
+                                UITableView *t = (UITableView *)sv;
+                                for (NSInteger s = 0; s < t.numberOfSections; s++) cnt += [t numberOfRowsInSection:s];
+                            } else if ([sv isKindOfClass:[UICollectionView class]]) {
+                                UICollectionView *cv2 = (UICollectionView *)sv;
+                                for (NSInteger s = 0; s < cv2.numberOfSections; s++) cnt += [cv2 numberOfItemsInSection:s];
+                            }
+                            if (cnt > maxRows) { maxRows = cnt; off = sv.contentOffset.y; }
+                        }
+                    }
                     BOOL hostInvoked = [gDYYYWardHostLocateMethods containsString:@"已调用"];
                     NSString *prefix = hostInvoked ? @"已请求宿主定位" : @"评论定位失败";
-                    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@", prefix, reason, hostMsg, dsMsg]];
+                    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@ 行:%ld 偏移:%.0f",
+                                          prefix, reason, hostMsg, dsMsg, (long)maxRows, off]];
                     return;
                 }
                 if (gDYYYWardLocateDone == gen || gDYYYWardLocatePending == gen) return; // 已定位/正在定位，勿再滚动列表（否则把定位到的评论滚走）
-                DYYYWardScrollCommentList(i >= 8); // 前 8 步向下，后 4 步向上回头
+                DYYYWardScrollCommentList(i >= 10); // 前 10 步向下，后 4 步向上回头
             } @catch (NSException *e) {}
         });
     }
