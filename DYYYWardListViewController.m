@@ -128,17 +128,21 @@ static NSString *DYYYWardCIDOf(id obj) {
     return nil;
 }
 
-// cell → 评论模型 → cid；模型可能嵌在 viewModel 里，最多探两层
+// cell → 评论模型 → cid；模型可能嵌在 viewModel 里，最多探两层。
+// 极速版 cell 的模型键与标准版不同（可能是 viewModel/itemViewModel/commentViewModel），
+// 键集宁多勿漏——每层取值都过 DYYYWardSafeKVC 的类型闸，多试几个键没有崩溃风险
 static NSString *DYYYWardCommentIDOfCell(id cell) {
     if (!cell) return nil;
-    NSArray *modelKeys = @[ @"comment", @"commentModel", @"awemeComment", @"model", @"cellViewModel", @"itemModel" ];
+    NSArray *modelKeys = @[ @"comment", @"commentModel", @"awemeComment", @"model", @"viewModel",
+                            @"cellViewModel", @"itemModel", @"itemViewModel", @"commentViewModel",
+                            @"commentItemViewModel", @"data", @"commentData" ];
     for (NSString *k in modelKeys) {
         @try {
             id m = DYYYWardSafeKVC(cell, k);
             if (!m || [m isKindOfClass:[NSNull class]]) continue;
             NSString *cid = DYYYWardCIDOf(m);
             if (cid) return cid;
-            for (NSString *k2 in @[ @"model", @"comment", @"awemeComment" ]) {
+            for (NSString *k2 in @[ @"model", @"comment", @"awemeComment", @"commentModel", @"originComment" ]) {
                 @try {
                     id m2 = DYYYWardSafeKVC(m, k2);
                     if (m2 && ![m2 isKindOfClass:[NSNull class]]) {
@@ -250,6 +254,7 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                     if (![target isKindOfClass:[NSString class]]) continue;
                     if ([cid isEqualToString:(NSString *)target]) {
                         DYYYWardScrollAndHighlight(scroll, cell);
+                        [DYYYUtils showToast:@"已定位到该评论"];
                         return YES;
                     }
                 }
@@ -271,6 +276,7 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                     for (UILabel *l in labels) {
                         if (l.text.length > 0 && [l.text containsString:probe]) {
                             DYYYWardScrollAndHighlight(scroll, cell);
+                            [DYYYUtils showToast:@"已定位到该评论"];
                             return YES;
                         }
                     }
@@ -289,6 +295,7 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
 // 滚完后取该 indexPath 的 cell 复核（算错也不会误高亮）。
 static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
+static NSInteger gDYYYWardLocatePending = 0; // 数据源已精确滚到目标下标，勿再滚动列表（否则把定位到的评论滚走）
 static NSString *gDYYYWardDataSourceDiag = nil;
 
 // ⚠️ 本段一律禁用裸 valueForKey:。在陌生宿主对象上做 KVC，遇到结构体/裸指针/数组/位域
@@ -415,18 +422,31 @@ static NSArray *DYYYWardModelArraysIn(id obj) {
     NSArray *nameWhitelist = @[ @"dataArray", @"dataArr", @"comments", @"commentArray", @"commentList",
                                 @"commentModels", @"commentDataArray", @"models", @"cellModels",
                                 @"viewModels", @"items", @"itemModels", @"listData", @"elements",
-                                @"sectionModels", @"commentData", @"visibleCommentModels" ];
+                                @"sectionModels", @"commentData", @"visibleCommentModels",
+                                @"listModels", @"dataSource", @"sections", @"contentModels",
+                                @"commentSectionModels", @"dataModels", @"modelList" ];
+    // 名字启发式：含这些片段的 ivar 多半是集合缓存。只收集真正的 NSArray，
+    // 伪对象已被 DYYYWardLooksLikeObject 挡掉，扩名不会引入崩溃风险
+    NSArray *nameHint = @[ @"Array", @"Arr", @"List", @"Models", @"Model", @"Data", @"Items",
+                           @"Item", @"Sections", @"Section", @"Elements", @"Element", @"comments" ];
     Class cls = object_getClass(obj);
-    for (NSInteger depth = 0; cls && depth < 3 && out.count < 8; depth++) {
+    for (NSInteger depth = 0; cls && depth < 3 && out.count < 12; depth++) {
         unsigned int ic = 0;
         Ivar *ivars = class_copyIvarList(cls, &ic);
-        for (unsigned int i = 0; i < ic && out.count < 8; i++) {
+        for (unsigned int i = 0; i < ic && out.count < 12; i++) {
             const char *n = ivar_getName(ivars[i]);
             const char *t = ivar_getTypeEncoding(ivars[i]);
             if (!DYYYWardIvarTypeIsDeclaredObject(t)) continue;
             NSString *cn = [NSString stringWithUTF8String:n];
-            if ([cn hasPrefix:@"_"]) cn = [cn substringFromIndex:1];
-            if (![nameWhitelist containsObject:cn]) continue;
+            NSString *bare = cn;
+            if ([bare hasPrefix:@"_"]) bare = [bare substringFromIndex:1];
+            BOOL nameOK = [nameWhitelist containsObject:bare];
+            if (!nameOK) {
+                for (NSString *h in nameHint) {
+                    if ([bare containsString:h]) { nameOK = YES; break; }
+                }
+            }
+            if (!nameOK) continue;
             id v = object_getIvar(obj, ivars[i]);
             if (!DYYYWardLooksLikeObject(v)) continue;
             if (![v isKindOfClass:[NSArray class]]) continue;
@@ -520,6 +540,7 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
                 }
                 if (miss) return;
                 DYYYWardScrollAndHighlight(tv, cell);
+                [DYYYUtils showToast:@"已定位到该评论"];
                 gDYYYWardLocateDone = gDYYYWardLocateGen;
             } @catch (NSException *e) {}
         });
@@ -542,7 +563,7 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
                 UICollectionViewCell *cell = [cv cellForItemAtIndexPath:ip];
-                if (cell) DYYYWardScrollAndHighlight(cv, cell);
+                if (cell) { DYYYWardScrollAndHighlight(cv, cell); [DYYYUtils showToast:@"已定位到该评论"]; }
             } @catch (NSException *e) {}
         });
         return YES;
@@ -577,6 +598,7 @@ static BOOL DYYYWardLocateViaDataSource(NSArray *cidList, NSString *contentHint)
                     foundIdx = idx;
                     if (DYYYWardScrollListToIndex(scroll, idx, cidList)) {
                         gDYYYWardDataSourceDiag = [NSString stringWithFormat:@"数据源命中 idx%ld", (long)idx];
+                        gDYYYWardLocatePending = gDYYYWardLocateGen;
                         return YES;
                     }
                 } @catch (NSException *e) {}
@@ -638,8 +660,32 @@ static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString 
     return NO;
 }
 
-// 本版禁用盲调：命中方法时用 gDYYYWardLocateDone 标记会被误解为「已定位」，
-// 所以这里永远返回 NO，仅靠上面的 respondsToSelector 记录到诊断里
+// v2.3-22：白名单命中后「精确调用」（已先验签名：单对象参），不再只记录。
+// 命中方法名写入 gDYYYWardHostLocateMethods，失败诊断可直接看到；调用本身包 @try。
+// 仅对「名字即定位评论」的 whitelist 方法调用，参数传评论 cid 字符串（合法对象，
+// 不像 v2.3-20 那样盲传参到签名未知的方法），宿主内部自行滚到该评论。
+static NSString *DYYYWardInvokeHostLocate(id target, NSArray *selNames, NSString *commentID) {
+    if (!target || commentID.length == 0) return nil;
+    for (NSString *s in selNames) {
+        SEL sel = NSSelectorFromString(s);
+        if (![target respondsToSelector:sel]) continue;
+        NSMethodSignature *sig = [target methodSignatureForSelector:sel];
+        if (!sig) continue;
+        if (sig.numberOfArguments != 3) continue; // 仅允许 单对象参（self/_cmd/arg）
+        const char *t = [sig getArgumentTypeAtIndex:2];
+        if (!t || t[0] != '@') continue;
+        @try {
+            [target performSelector:sel withObject:commentID];
+            return s; // 调用成功：返回方法名（宿主内部会自行滚动/高亮到该评论）
+        } @catch (NSException *e) {
+            return [@"调用异常:" stringByAppendingString:s];
+        }
+    }
+    return nil;
+}
+
+// 本版对宿主定位方法：先验签名后「精确调用」（v2.3-21 只记录不调用，本版落地调用）。
+// 调用后由后续可见 cell/数据源复核去确认；若宿主方法本身就把评论滚到屏内，用户直接可见。
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
     NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
@@ -651,8 +697,13 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (!target) return;
     NSMutableString *diag = [NSMutableString stringWithFormat:@"VC:%@", NSStringFromClass([target class])];
 
-    if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
-        [diag appendString:@" 白名单命中(待精确调用)"];
+    NSString *invoked = DYYYWardInvokeHostLocate(target, selNames, commentID);
+    if (invoked.length > 0) {
+        [diag appendFormat:@" 白名单已调用(%@)", invoked];
+        // 不设 pending：保留手动滚动兜底（宿主方法在评论数据未就绪时可能静默不生效，
+        // 由后续数据源/可见 cell 复核；pending 只用于数据源已精确滚到下标时，避免被回滚）
+    } else if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
+        [diag appendString:@" 白名单命中(签名不符未调用)"];
     }
     NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
     if (discovered.count > 0) {
@@ -734,16 +785,21 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     [DYYYUtils showToast:@"评论查找中…"];
                 }
                 if (i == 11) {
-                    NSString *reason = gDYYYWardLocateDiag ?: @"未知原因";
+                    NSString *reason = gDYYYWardLocateDiag ?: @"未匹配到可见评论";
+                    NSString *hostMsg = @"";
                     if (gDYYYWardHostLocateMethods.length > 0) {
-                        reason = [NSString stringWithFormat:@"%@ 方法:%@", reason, gDYYYWardHostLocateMethods];
+                        hostMsg = [NSString stringWithFormat:@" 方法:%@", gDYYYWardHostLocateMethods];
                     }
+                    NSString *dsMsg = @"";
                     if (gDYYYWardDataSourceDiag.length > 0) {
-                        reason = [NSString stringWithFormat:@"%@ %@", reason, gDYYYWardDataSourceDiag];
+                        dsMsg = [NSString stringWithFormat:@" %@", gDYYYWardDataSourceDiag];
                     }
-                    [DYYYUtils showToast:[NSString stringWithFormat:@"评论定位失败：%@", reason]];
+                    BOOL hostInvoked = [gDYYYWardHostLocateMethods containsString:@"已调用"];
+                    NSString *prefix = hostInvoked ? @"已请求宿主定位" : @"评论定位失败";
+                    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@", prefix, reason, hostMsg, dsMsg]];
                     return;
                 }
+                if (gDYYYWardLocateDone == gen || gDYYYWardLocatePending == gen) return; // 已定位/正在定位，勿再滚动列表（否则把定位到的评论滚走）
                 DYYYWardScrollCommentList(i >= 8); // 前 8 步向下，后 4 步向上回头
             } @catch (NSException *e) {}
         });
