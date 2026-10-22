@@ -1,5 +1,7 @@
 #import "DYYYWardListViewController.h"
 #import <objc/runtime.h>
+#import <mach/mach.h>
+#import <mach/mach_vm.h>
 #import "DYYYWardManager.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYUtils.h"
@@ -114,9 +116,10 @@ static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
 static id DYYYWardSafeKVC(id obj, NSString *key);
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget);
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
-                              NSInteger flat, NSInteger total, NSInteger pageTry);
+                              NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token);
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
+static NSInteger gDYYYWardSweepToken = 0; // 扫描令牌：取消时自增，已在排队的旧步骤一检查就自行退出
 static NSInteger gDYYYWardFailCount = 0; // 连续定位失败次数：第 1 次只报人话，第 2 次才附完整诊断
 
 // v2.3-23：旧的「按字段名猜 cid」(DYYYWardCIDOf / DYYYWardCommentIDOfCell) 已删除，
@@ -143,6 +146,39 @@ static UIViewController *DYYYWardFindCommentVC(void) {
         top = next;
     }
     return nil;
+}
+
+// 收集所有「看起来是评论区」且 view 在窗口上的 VC 实例。
+// 评论区可能同时存在多个实例（导航栈里的旧页、被覆盖的页面），只取第一个遇到旧实例
+// （viewModel 还没赋值）就会彻底放弃调用宿主方法 —— v2.4-1 之前就是这么失效的。
+static void DYYYWardCollectCommentVCs(UIViewController *vc, NSInteger depth, NSMutableArray *out) {
+    if (!vc || depth > 8 || out.count > 12) return;
+    NSString *cls = NSStringFromClass([vc class]);
+    BOOL looks = cls.length > 0 && [cls containsString:@"Comment"] &&
+                 ![cls containsString:@"Input"] && ![cls containsString:@"Keyboard"] &&
+                 ![cls containsString:@"Edit"] && ![cls containsString:@"Panel"] &&
+                 ![cls containsString:@"Bar"];
+    if (looks && vc.isViewLoaded && vc.view.window && ![out containsObject:vc]) [out addObject:vc];
+    for (UIViewController *c in vc.childViewControllers) DYYYWardCollectCommentVCs(c, depth + 1, out);
+    if (vc.presentedViewController) DYYYWardCollectCommentVCs(vc.presentedViewController, depth + 1, out);
+    if ([vc isKindOfClass:[UINavigationController class]]) {
+        for (UIViewController *c in [(UINavigationController *)vc viewControllers]) DYYYWardCollectCommentVCs(c, depth + 1, out);
+    }
+    if ([vc isKindOfClass:[UITabBarController class]]) {
+        UIViewController *sel = [(UITabBarController *)vc selectedViewController];
+        if (sel) DYYYWardCollectCommentVCs(sel, depth + 1, out);
+    }
+}
+
+static NSArray *DYYYWardAllCommentVCs(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    UIWindow *w = [DYYYUtils getActiveWindow];
+    if (w.rootViewController) DYYYWardCollectCommentVCs(w.rootViewController, 0, out);
+    if (out.count == 0) {
+        UIViewController *one = DYYYWardFindCommentVC(); // 兜底：沿用旧的单实例查找
+        if (one) [out addObject:one];
+    }
+    return out;
 }
 
 // 滚动到 cell 并高亮（P3：左侧 4pt 竖向色条 + 整框细描边，呼吸两次后保留约 3s 再淡出）。
@@ -360,16 +396,89 @@ static NSString *gDYYYWardDataSourceDiag = nil;
 
 // 伪对象探测：读 isa 并确认它在 ObjC 运行时注册过。全程只有内存读取与查表，
 // 不发送消息、不执行未知代码，因此不会触发 PAC/SIGBUS。
+//
+// ⚠️ v2.4-0 崩溃根因（真机 SIGBUS / KERN_PROTECTION_FAILURE @0x3300003630393938）：
+//   tagged pointer 判据写成了 `bits >> 60`，等于「最高 4 位非 0 就当 tagged pointer 放行」。
+//   Swift 的内联字符串/小结构体把内容直接塞在 8 字节里，位模式形如 0x3300003630393938
+//   （字节恰好是 ASCII 数字），最高 4 位是 0x3 → 被误判为合法对象放行 → 调用方 isKindOfClass:
+//   对它发消息 → 运行时按普通对象去解引用 isa → 该地址未映射 → SIGBUS，崩溃地址就是这个位模式。
+// 正确判据只有 bit63（arm64 tagged pointer 约定）。另外加了「用户态地址窗口」粗筛 +
+// mach_vm_read_overwrite 安全读 isa（绝不直接解引用候选指针）+ 已注册类表比对，三层兜住。
+static BOOL DYYYWardLooksLikeObject(id v);
+
+// 运行时已注册类（含元类）集合：isa 只能命中真正存在的类，否则一律判为伪对象。
+// 用裸指针开放寻址哈希表，避免把候选指针当对象（CF/NSValue 包装都可能产生需要解引用的操作）。
+static uintptr_t *gDYYYWardClassSet = NULL;
+static size_t gDYYYWardClassSetCap = 0;
+
+static size_t DYYYWardClassHash(uintptr_t v) {
+    return (size_t)(((v >> 4) ^ (v >> 20)) * 2654435761u);
+}
+
+static void DYYYWardBuildClassSet(void) {
+    if (gDYYYWardClassSet) return;
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) return;
+    Class *buf = (Class *)malloc(sizeof(Class) * (size_t)n);
+    if (!buf) return;
+    n = objc_getClassList(buf, n);
+    size_t cap = 16;
+    while (cap < (size_t)n * 4) cap <<= 1;
+    uintptr_t *set = (uintptr_t *)calloc(cap, sizeof(uintptr_t));
+    if (!set) { free(buf); return; }
+    for (int i = 0; i < n; i++) {
+        uintptr_t vals[2] = { (uintptr_t)buf[i], (uintptr_t)object_getClass(buf[i]) };
+        for (int k = 0; k < 2; k++) {
+            uintptr_t cv = vals[k];
+            if (!cv) continue;
+            size_t h = DYYYWardClassHash(cv) & (cap - 1);
+            for (size_t p = 0; p < cap; p++) {
+                size_t idx = (h + p) & (cap - 1);
+                if (set[idx] == 0) { set[idx] = cv; break; }
+                if (set[idx] == cv) break;
+            }
+        }
+    }
+    free(buf);
+    gDYYYWardClassSetCap = cap;
+    gDYYYWardClassSet = set;
+}
+
+static BOOL DYYYWardIsRegisteredClass(uintptr_t isa) {
+    if (!gDYYYWardClassSet) return NO;
+    size_t cap = gDYYYWardClassSetCap;
+    size_t h = DYYYWardClassHash(isa) & (cap - 1);
+    for (size_t p = 0; p < 64; p++) {
+        uintptr_t cur = gDYYYWardClassSet[(h + p) & (cap - 1)];
+        if (cur == 0) return NO;    // 开放寻址：遇到空槽就是不存在
+        if (cur == isa) return YES;
+    }
+    return NO;
+}
+
+// 安全读 8 字节：用内核拷出，地址非法时返回 KERN_INVALID_ADDRESS 而不是让本进程崩
+static BOOL DYYYWardSafeReadPtr(uintptr_t addr, uintptr_t *out) {
+    if (!out) return NO;
+    mach_vm_size_t got = 0;
+    kern_return_t kr = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr,
+                                              sizeof(uintptr_t), (mach_vm_address_t)(uintptr_t)out, &got);
+    return (kr == KERN_SUCCESS && got == sizeof(uintptr_t));
+}
+
 static BOOL DYYYWardLooksLikeObject(id v) {
     if (!v) return NO;
     uintptr_t bits = (uintptr_t)v;
-    if (bits >> 60) return YES;    // tagged pointer（iOS arm64 最高位为 1）：短 NSString/NSNumber
-    if (bits < 0x100000) return NO; // 过小的地址不是堆指针
-    if (bits & 0x1) return NO;     // 未对齐
-    Class c = object_getClass(v);
-    if (!c) return NO;
-    if (!object_isClass(c)) return NO; // isa 不在运行时注册类表里 → 伪对象
-    return YES;
+    // tagged pointer：arm64 约定只看 bit63（短 NSString/NSNumber）。绝不能用 bits>>60：
+    // 0x3 开头的伪指针会被当成 tagged 放行，随后 msgSend 直接崩（v2.4-0 的真机崩溃）。
+    if (bits & 0x8000000000000000ULL) return YES;
+    if (bits < 0x100000000ULL) return NO;          // 低于 4GB 不可能是堆/缓存对象
+    if (bits > 0x0000FFFFFFFFFFFFULL) return NO;   // 超出用户态窗口 = 内联字符串/结构体位模式
+    if (bits & 0x7) return NO;                     // 必须 8 字节对齐
+    DYYYWardBuildClassSet();
+    uintptr_t isa = 0;
+    if (!DYYYWardSafeReadPtr(bits, &isa)) return NO; // 地址不可读 → 伪对象
+    if (!isa) return NO;
+    return DYYYWardIsRegisteredClass(isa);           // isa 必须是运行时注册过的类
 }
 
 // type encoding 首字符为 '@' 即对象槽，允许裸 '@'（generic id）——**Swift 存储属性几乎都是裸 '@'**，
@@ -408,12 +517,17 @@ static id DYYYWardIvarNamed(id obj, NSString *name) {
             const char *n = ivar_getName(ivars[i]);
             const char *t = ivar_getTypeEncoding(ivars[i]);
             if (!DYYYWardIvarTypeIsDeclaredObject(t)) continue;
+            if (!n) continue;
             NSString *cn = [NSString stringWithUTF8String:n];
+            if (!cn) continue;
             if (![cn isEqualToString:want] && ![cn isEqualToString:wantUnderscore]) continue;
-            id v = object_getIvar(obj, ivars[i]);
-            if (!DYYYWardLooksLikeObject(v)) continue; // 类型说谎：跳过，不把伪对象交给调用方
+            // 关键：名字命中即认定「找到了这个 ivar」，哪怕此刻值还是 nil。
+            // 之前把「值为 nil」也当成「没这个 ivar」并缓存 NSNull，于是第一次调用（评论面板刚起、
+            // viewModel 还没赋值）就把该类永久标记成「没有 viewModel」，后面再也不会去找——
+            // 表现就是诊断里 VM:/vm方法: 整段消失、宿主定位方法一次都不调用（v2.4-1 修）。
             hit = ivars[i];
-            found = v;
+            id v = object_getIvar(obj, ivars[i]);
+            if (DYYYWardLooksLikeObject(v)) found = v;
         }
         if (ivars) free(ivars);
         if (hit) {
@@ -888,54 +1002,62 @@ static NSArray *DYYYWardIDOnlySelectors(NSArray *names) {
 
 // 本版对宿主定位方法：先验签名后「精确调用」（v2.3-21 只记录不调用，本版落地调用）。
 // 调用后由后续可见 cell/数据源复核去确认；若宿主方法本身就把评论滚到屏内，用户直接可见。
+// v2.4-1：不再只认「第一个评论 VC + 名为 viewModel 的 ivar」。
+// 实测同一时刻可能存在多个评论 VC 实例（导航栈里的旧页），也可能 ivar 叫 commentViewModel/vm；
+// 而且早期调用时 viewModel 还没赋值（cache 会把「值为 nil」误记成「没这个 ivar」，见 DYYYWardIvarNamed），
+// 于是宿主方法永远调不到。现在遍历所有候选 VC × 所有候选 ivar 名，找到一个能用的就调。
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
     NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
                            @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:",
                            @"locateCommentWithCommentID:", @"scrollToCommentWithCommentID:animated:" ];
-    // 关键：AWECommentContainerViewController 可能不存在（此时定位全靠兜底命中的 VC），
-    // 所以扫「实际找到的评论 VC」而不是硬编码类名，否则方法扫描一次都不会执行
-    id target = DYYYWardFindCommentVC();
-    if (!target) return;
-    NSMutableString *diag = [NSMutableString stringWithFormat:@"VC:%@", NSStringFromClass([target class])];
-
-    NSString *invoked = DYYYWardInvokeHostLocate(target, selNames, commentID);
-    if (invoked.length > 0) {
-        [diag appendFormat:@" 白名单已调用(%@)", invoked];
-        // 不设 pending：保留手动滚动兜底（宿主方法在评论数据未就绪时可能静默不生效，
-        // 由后续数据源/可见 cell 复核；pending 只用于数据源已精确滚到下标时，避免被回滚）
-    } else if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
-        [diag appendString:@" 白名单命中(签名不符未调用)"];
+    NSArray *vcs = DYYYWardAllCommentVCs();
+    if (vcs.count == 0) {
+        gDYYYWardHostLocateMethods = @"未找到评论VC";
+        return;
     }
-    NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
-    if (discovered.count > 0) {
-        [diag appendFormat:@" 方法:%@", [discovered componentsJoinedByString:@";"]];
+    NSArray *vmNames = @[ @"viewModel", @"commentViewModel", @"vm", @"listViewModel", @"dataViewModel", @"viewModelObject" ];
+    NSInteger vcCount = 0, vmCount = 0;
+    NSString *invoked = nil;
+    NSMutableString *detail = [NSMutableString string];
+    for (UIViewController *vc in vcs) {
+        vcCount++;
         if (invoked.length == 0) {
-            NSString *d = DYYYWardInvokeHostLocate(target, DYYYWardIDOnlySelectors(discovered), commentID);
-            if (d.length > 0) { invoked = d; [diag appendFormat:@" 扫描调用(%@)", d]; }
-        }
-    }
-    // v2.3-28 关键修复：定位方法其实长在 viewModel 上，而不是 VC 上。
-    // 之前只对 VC 试白名单 → respondsToSelector: 全 NO → 一次都没调用过，
-    // 但 vm方法: 诊断却已经把 scrollToCommentWithID: 印出来了（「看得见、从没调」的真因）。
-    id vm = DYYYWardIvarNamed(target, @"viewModel"); // 不用 KVC，避免属性类型非对象时崩溃
-    if (vm) {
-        [diag appendFormat:@" VM:%@", NSStringFromClass([vm class])];
-        if (invoked.length == 0) {
-            NSString *v = DYYYWardInvokeHostLocate(vm, selNames, commentID);
-            if (v.length > 0) { invoked = v; [diag appendFormat:@" vm白名单已调用(%@)", v]; }
-        }
-        NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
-        if (vmDisc.count > 0) {
-            [diag appendFormat:@" vm方法:%@", [vmDisc componentsJoinedByString:@";"]];
-            if (invoked.length == 0) {
-                NSString *v2 = DYYYWardInvokeHostLocate(vm, DYYYWardIDOnlySelectors(vmDisc), commentID); // 宿主自己的定位方法，签名已校验
-                if (v2.length > 0) { invoked = v2; [diag appendFormat:@" vm扫描调用(%@)", v2]; }
+            NSString *d = DYYYWardInvokeHostLocate(vc, selNames, commentID);
+            if (d.length > 0) { invoked = d; [detail appendFormat:@" VC白名单已调用(%@)", d]; }
+            else if (DYYYWardTrySelectorsOnTarget(vc, selNames, commentID)) {
+                [detail appendString:@" VC白名单签名不符"];
             }
         }
+        NSArray *discovered = DYYYWardDiscoverLocateSelectors(vc);
+        if (discovered.count > 0) {
+            [detail appendFormat:@" VC方法:%@", [discovered componentsJoinedByString:@";"]];
+        }
+        // 逐个候选 ivar 名找 viewModel；找到第一个非空的就够（其余候选名通常指向同一对象）
+        for (NSString *vn in vmNames) {
+            id vm = DYYYWardIvarNamed(vc, vn); // 不用 KVC，避免属性类型非对象时崩溃
+            if (!vm) continue;
+            vmCount++;
+            if (detail.length < 160) [detail appendFormat:@" %@:%@", vn, NSStringFromClass([vm class])];
+            if (invoked.length == 0) {
+                NSString *v = DYYYWardInvokeHostLocate(vm, selNames, commentID);
+                if (v.length > 0) { invoked = v; [detail appendFormat:@" vm白名单已调用(%@)", v]; }
+            }
+            NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
+            if (vmDisc.count > 0 && detail.length < 220) {
+                [detail appendFormat:@" vm方法:%@", [vmDisc componentsJoinedByString:@";"]];
+            }
+            if (invoked.length == 0 && vmDisc.count > 0) {
+                NSString *v2 = DYYYWardInvokeHostLocate(vm, DYYYWardIDOnlySelectors(vmDisc), commentID);
+                if (v2.length > 0) { invoked = v2; [detail appendFormat:@" vm扫描调用(%@)", v2]; }
+            }
+            break;
+        }
+        if (invoked.length > 0) break; // 宿主方法已经接受调用，不必再试其它实例
     }
-    // 无论有没有候选方法都记诊断（至少带真实类名）
-    gDYYYWardHostLocateMethods = diag;
+    // 精简诊断：VC 实例数 / 命中 vm 的实例数 + 细节（避免 toast 被撑爆）
+    gDYYYWardHostLocateMethods = [NSString stringWithFormat:@"VCs:%ld vm:%ld%@",
+                                   (long)vcCount, (long)vmCount, detail];
 }
 
 // 统一的定位失败 toast。P3：诊断信息不再直接糊在 toast 上——
@@ -985,8 +1107,9 @@ static void DYYYWardShowLocateFailure(void) {
 // 一次性取整屏 cell 全查，下一轮从本屏最大行 +1 继续 → 步数降到约 1/6，148 行约 3~4s。
 // 只在完全没命中时才退化到全图搜（DYYYWardGraphMatch），常见情况只做便宜的 label 文本比对。
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
-                              NSInteger flat, NSInteger total, NSInteger pageTry) {
+                              NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token) {
     if (!t || gDYYYWardLocateDone == gen || total <= 0) return;
+    if (token != gDYYYWardSweepToken) return; // 已被取消（宿主接管/重新起扫），旧链自行退出
     if (flat >= total) {
         // 已扫到「当前已加载」的末尾：滚到真正的最后一行触发分页加载，重新读行数，若变多就接着扫
         // （148 条评论只加载 60 行的场景）。光设 contentOffset 有些宿主不会 load-more，
@@ -1003,13 +1126,13 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
         // 网络分页不是瞬时的（实测 0.7s 常不够），所以同一次到底最多重试 3 次（每次 0.9s）再判失败，
         // 避免「其实还能翻页、只是还没回来」被误报成定位失败。
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gDYYYWardLocateDone == gen) return;
+            if (gDYYYWardLocateDone == gen || token != gDYYYWardSweepToken) return;
             NSInteger nowTotal = 0;
             for (NSInteger s = 0; s < t.numberOfSections; s++) nowTotal += [t numberOfRowsInSection:s];
             if (nowTotal > total) {
-                DYYYWardSweepStep(t, cidList, contentHint, gen, total, nowTotal, 0); // 已翻出更多，接着扫
+                DYYYWardSweepStep(t, cidList, contentHint, gen, total, nowTotal, 0, token); // 已翻出更多，接着扫
             } else if (pageTry < 2) {
-                DYYYWardSweepStep(t, cidList, contentHint, gen, total, total, pageTry + 1); // 还没回来，再等等
+                DYYYWardSweepStep(t, cidList, contentHint, gen, total, total, pageTry + 1, token); // 还没回来，再等等
             } else {
                 DYYYWardShowLocateFailure(); // 重试 3 次仍无新行，真到底了
             }
@@ -1019,7 +1142,7 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
     // 用户自己正在滑（拖拽/惯性），别跟他抢滚动条，等他松手再继续
     if (t.isDragging || t.isDecelerating) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            DYYYWardSweepStep(t, cidList, contentHint, gen, flat, total, pageTry);
+            DYYYWardSweepStep(t, cidList, contentHint, gen, flat, total, pageTry, token);
         });
         return;
     }
@@ -1034,7 +1157,7 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
     // 领头行顶到列表顶部（不是 Middle），这样一屏能覆盖 flat 之后的 6~7 个新行
     @try { [t scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionTop animated:NO]; } @catch (NSException *e) { return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (gDYYYWardLocateDone == gen) return;
+        if (gDYYYWardLocateDone == gen || token != gDYYYWardSweepToken) return;
         NSString *probe = DYYYWardContentProbe(contentHint, 10);
         NSInteger sectionCount = t.numberOfSections;
         NSArray *visible = [t indexPathsForVisibleRows];
@@ -1070,24 +1193,42 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
             return;
         }
         NSInteger next = (maxFlat >= flat) ? (maxFlat + 1) : (flat + 1); // 本屏最大行之后继续；无可见行就前挪一行
-        DYYYWardSweepStep(t, cidList, contentHint, gen, next, total, pageTry);
+        DYYYWardSweepStep(t, cidList, contentHint, gen, next, total, pageTry, token);
     });
 }
 
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen) {
-    UIViewController *vc = DYYYWardFindCommentVC();
-    if (!vc) return;
+    if (gDYYYWardSweepGen == gen) return;      // 本代已经在扫，别叠加第二条扫描链（两条会互相抢滚动）
+    // 多实例：把每个候选评论 VC 里的 table 都算进来，选行数最多的那个（可能是窗口上正在用的那个）
     UITableView *best = nil; NSInteger total = 0;
-    for (UIScrollView *sv in DYYYWardCommentListViews(vc)) {
-        if (![sv isKindOfClass:[UITableView class]]) continue;
-        UITableView *t = (UITableView *)sv;
-        NSInteger c = 0;
-        for (NSInteger s = 0; s < t.numberOfSections; s++) c += [t numberOfRowsInSection:s];
-        if (c > total) { total = c; best = t; }
+    NSArray *vcs = DYYYWardAllCommentVCs();
+    if (vcs.count == 0) {
+        UIViewController *one = DYYYWardFindCommentVC();
+        if (one) vcs = @[ one ];
+    }
+    for (UIViewController *vc in vcs) {
+        for (UIScrollView *sv in DYYYWardCommentListViews(vc)) {
+            if (![sv isKindOfClass:[UITableView class]]) continue;
+            UITableView *t = (UITableView *)sv;
+            NSInteger c = 0;
+            for (NSInteger s = 0; s < t.numberOfSections; s++) c += [t numberOfRowsInSection:s];
+            if (c > total) { total = c; best = t; }
+        }
     }
     if (!best || total <= 0) return;
     gDYYYWardSweepGen = gen;                  // 告知主循环：已在按行扫描，跳过渐进滚动（防互相打架）
-    DYYYWardSweepStep(best, cidList, contentHint, gen, 0, total, 0);
+    gDYYYWardSweepToken++;                    // 新令牌：让上一代还在排队的步骤失效
+    NSInteger token = gDYYYWardSweepToken;
+    // 起点不一定是 0：宿主定位方法常已经把列表带到目标附近（二级回复尤其），
+    // 这时从当前可见处往上留一屏重叠再往下扫，比每次从第 0 行重扫既快又更容易命中。
+    NSInteger start = 0;
+    NSIndexPath *firstVisible = [best indexPathsForVisibleRows].firstObject;
+    if (firstVisible) {
+        NSInteger fi = firstVisible.row;
+        for (NSInteger s = 0; s < firstVisible.section; s++) fi += [best numberOfRowsInSection:s];
+        start = MAX(0, fi - 6);
+    }
+    DYYYWardSweepStep(best, cidList, contentHint, gen, start, total, 0, token);
 }
 
 // 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
@@ -1139,6 +1280,17 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     for (NSString *cid in cidList) {
                         DYYYWardTryHostLocateComment(cid);
                         if (gDYYYWardLocateDone == gen) return;
+                    }
+                    // 宿主方法真的被调用了 → 它很可能已经把列表带到目标附近。
+                    // 这时必须让正在跑的按行扫描停下（否则扫描下一步就把列表拽回自己那一行，
+                    // 等于把宿主的定位结果抹掉），0.8s 后从新位置重新起扫。
+                    if ([gDYYYWardHostLocateMethods containsString:@"已调用"]) {
+                        gDYYYWardSweepGen = 0;
+                        gDYYYWardSweepToken++;   // 真正叫停在排队/paging 的旧步骤
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            if (gDYYYWardLocateDone == gen) return;
+                            DYYYWardSweepRows(cidList, contentHint, gen);
+                        });
                     }
                 }
                 if (DYYYWardHighlightComment(cidList, contentHint)) {
