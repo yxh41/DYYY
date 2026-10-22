@@ -2462,6 +2462,22 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"detail" : @"",
               @"cellType" : @6,
               @"imageName" : @"ic_location_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYCommentWard",
+              @"title" : @"评论插眼",
+              @"subTitle" : @"长按评论时在弹出菜单中显示「插眼」，保存到插眼列表的「评论」分类",
+              @"detail" : @"",
+              @"cellType" : @6,
+              @"imageName" : @"ic_location_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYHomeWard",
+              @"title" : @"主页插眼",
+              @"subTitle" : @"用户主页右上角「…」菜单中显示「插眼主页」，保存到插眼列表的「主页」分类",
+              @"detail" : @"",
+              @"cellType" : @6,
+              @"imageName" : @"ic_location_outlined_16"
           }
       ];
 

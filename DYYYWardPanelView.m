@@ -48,6 +48,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 @property (nonatomic, copy) NSString *createTime;
 @property (nonatomic, copy) NSString *shareURL;
 @property (nonatomic, copy) NSString *desc;
+@property (nonatomic, copy) NSString *wardType; // 视频 / 主页 / 评论
 @end
 
 @implementation DYYYWardPanelView
@@ -55,8 +56,27 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 - (instancetype)initWithAwemeModel:(AWEAwemeModel *)model {
     if (self = [super initWithFrame:UIScreen.mainScreen.bounds]) {
         _model = model;
+        _wardType = @"视频";
         _selectedCategory = @"未分类";
         [self extractModel];
+        [self buildUI];
+    }
+    return self;
+}
+
+- (instancetype)initWithWardData:(NSDictionary *)data {
+    if (self = [super initWithFrame:UIScreen.mainScreen.bounds]) {
+        _wardType = [data objectForKey:@"type"] ?: @"视频";
+        _nickname = [data objectForKey:@"nickname"] ?: @"未知用户";
+        _uid = [data objectForKey:@"uid"] ?: @"";
+        _secUid = [data objectForKey:@"secUid"] ?: @"";
+        _avatarURL = [data objectForKey:@"avatarURL"] ?: @"";
+        _itemID = [data objectForKey:@"awemeID"] ?: @"";
+        _createTime = [data objectForKey:@"createTime"] ?: @"";
+        _shareURL = [data objectForKey:@"shareURL"] ?: @"";
+        _desc = [data objectForKey:@"desc"] ?: @"";
+        _selectedCategory = @"未分类";
+        _noteText = @"";
         [self buildUI];
     }
     return self;
@@ -65,6 +85,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 - (instancetype)initWithWard:(NSDictionary *)ward {
     if (self = [super initWithFrame:UIScreen.mainScreen.bounds]) {
         _editingWardID = [ward objectForKey:@"wardID"];
+        _wardType = [ward objectForKey:@"type"] ?: @"视频";
         _nickname = [ward objectForKey:@"nickname"] ?: @"未知用户";
         _uid = [ward objectForKey:@"uid"] ?: @"";
         _secUid = [ward objectForKey:@"secUid"] ?: @"";
@@ -391,7 +412,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 
 - (void)saveTapped {
     NSMutableDictionary *ward = [NSMutableDictionary dictionary];
-    [ward setObject:@"视频" forKey:@"type"];
+    [ward setObject:(_wardType ?: @"视频") forKey:@"type"];
     [ward setObject:(_uid ?: @"") forKey:@"uid"];
     [ward setObject:(_secUid ?: @"") forKey:@"secUid"];
     [ward setObject:_nickname forKey:@"nickname"];

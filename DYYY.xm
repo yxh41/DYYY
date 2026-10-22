@@ -12318,6 +12318,32 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
 %hook AWEProfileUserDetailComponent
 
 - (void)reportUserDetailVisitIfNeeded:(id)user {
+    // 缓存当前主页用户，供「主页插眼」使用
+    @try {
+        if (user) {
+            id nickObj = [user valueForKey:@"nickname"];
+            NSString *nick = [nickObj isKindOfClass:[NSString class]] ? nickObj : @"";
+            id secObj = [user valueForKey:@"secUid"];
+            NSString *secUid = secObj ? [NSString stringWithFormat:@"%@", secObj] : @"";
+            id uidObj = [user valueForKey:@"uid"];
+            NSString *uid = uidObj ? [NSString stringWithFormat:@"%@", uidObj] : @"";
+            if (nick.length > 0 || secUid.length > 0) {
+                NSString *avatar = @"";
+                id av = [user valueForKey:@"avatarMedium"];
+                if (av && [av respondsToSelector:@selector(originURLList)]) {
+                    NSArray *l = [av originURLList];
+                    if (l.count > 0) avatar = l.firstObject ?: @"";
+                }
+                NSMutableDictionary *info = [NSMutableDictionary dictionary];
+                [info setObject:nick forKey:@"nickname"];
+                [info setObject:secUid forKey:@"secUid"];
+                [info setObject:uid forKey:@"uid"];
+                [info setObject:avatar forKey:@"avatarURL"];
+                [DYYYPreferences setObject:info forKey:@"DYYYLastProfileUser"];
+            }
+        }
+    } @catch (NSException *e) {}
+
     if (DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload")) {
         return;
     }

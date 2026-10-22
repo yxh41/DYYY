@@ -11,8 +11,138 @@
 #import "DYYYToast.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYWardListViewController.h"
+#import "DYYYWardManager.h"
 #import "DYYYUtils.h"
 #import "DYYYPipPlayer.h"
+
+// MARK: - 评论插眼：向评论长按面板注入「插眼」Element
+static NSString *DYYYCommentWardSafeStr(id obj, NSString *key) {
+    if (!obj || !key) return @"";
+    @try {
+        id v = [obj valueForKey:key];
+        if (v && ![v isKindOfClass:[NSNull class]]) {
+            NSString *s = [NSString stringWithFormat:@"%@", v];
+            if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+        }
+    } @catch (NSException *e) {}
+    return @"";
+}
+
+static id DYYYCommentWardContext(id element) {
+    if (!element) return nil;
+    @try {
+        SEL sel = NSSelectorFromString(@"commentPageContext");
+        if ([element respondsToSelector:sel]) {
+            return [element performSelector:sel];
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static id DYYYCommentWardSelectedComment(id element) {
+    id ctx = DYYYCommentWardContext(element);
+    if (!ctx) return nil;
+    id comment = nil;
+    @try {
+        SEL s1 = NSSelectorFromString(@"selectdComment");
+        if ([ctx respondsToSelector:s1]) comment = [ctx performSelector:s1];
+        if (!comment && [ctx respondsToSelector:NSSelectorFromString(@"params")]) {
+            id p = [ctx performSelector:NSSelectorFromString(@"params")];
+            if (p && [p respondsToSelector:s1]) comment = [p performSelector:s1];
+        }
+    } @catch (NSException *e) {}
+    return comment;
+}
+
+static BOOL DYYYWardEl_shouldShow(id self, SEL _cmd) { (void)self; (void)_cmd; return YES; }
+static id DYYYWardEl_content(id self, SEL _cmd) { (void)self; (void)_cmd; return @"插眼"; }
+static id DYYYWardEl_image(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    if (@available(iOS 13.0, *)) {
+        return [UIImage systemImageNamed:@"mappin.circle"];
+    }
+    return nil;
+}
+static void DYYYWardEl_tapped(id self, SEL _cmd) {
+    (void)_cmd;
+    id comment = DYYYCommentWardSelectedComment(self);
+    NSString *content = @"";
+    NSString *nick = @"未知用户";
+    NSString *uid = @"";
+    NSString *secUid = @"";
+    NSString *avatar = @"";
+    NSString *ctStr = @"";
+    if (comment) {
+        @try {
+            SEL cs = NSSelectorFromString(@"content");
+            if ([comment respondsToSelector:cs]) {
+                NSString *c = [comment performSelector:cs];
+                if (c) content = c;
+            }
+        } @catch (NSException *e) {}
+        id author = nil;
+        @try { author = [comment valueForKey:@"author"]; } @catch (NSException *e) {}
+        if (author) {
+            NSString *n = DYYYCommentWardSafeStr(author, @"nickname");
+            if (n.length > 0) nick = n;
+            uid = DYYYCommentWardSafeStr(author, @"uid");
+            secUid = DYYYCommentWardSafeStr(author, @"secUid");
+            @try {
+                id av = [author valueForKey:@"avatarMedium"];
+                if (av && [av respondsToSelector:@selector(originURLList)]) {
+                    NSArray *l = [av originURLList];
+                    if (l.count > 0) avatar = l.firstObject ?: @"";
+                }
+            } @catch (NSException *e) {}
+        }
+        id ct = nil;
+        @try { ct = [comment valueForKey:@"createTime"]; } @catch (NSException *e) {}
+        double ts = 0;
+        if ([ct isKindOfClass:[NSNumber class]]) ts = [ct doubleValue];
+        if (ts > 0) {
+            NSDate *d = [NSDate dateWithTimeIntervalSince1970:ts];
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+            ctStr = [fmt stringFromDate:d] ?: @"";
+        }
+    }
+    NSMutableDictionary *w = [NSMutableDictionary dictionary];
+    [w setObject:@"评论" forKey:@"type"];
+    [w setObject:uid forKey:@"uid"];
+    [w setObject:secUid forKey:@"secUid"];
+    [w setObject:nick forKey:@"nickname"];
+    [w setObject:avatar forKey:@"avatarURL"];
+    [w setObject:@"" forKey:@"awemeID"];
+    [w setObject:ctStr forKey:@"createTime"];
+    [w setObject:content forKey:@"desc"];
+    [w setObject:@"" forKey:@"shareURL"];
+    [w setObject:@"未分类" forKey:@"category"];
+    [w setObject:@"" forKey:@"note"];
+    NSString *wid = [[DYYYWardManager sharedManager] addWard:w];
+    if (wid.length > 0) {
+        [DYYYUtils showToast:@"🌺 评论已插眼"];
+    } else {
+        [DYYYUtils showToast:@"插眼失败"];
+    }
+}
+
+static Class DYYYWardCommentElementClass(void) {
+    static Class cls = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class base = NSClassFromString(@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement");
+        if (!base) return;
+        Class c = objc_allocateClassPair(base, "DYYYWardCommentElement", 0);
+        if (!c) return;
+        class_addMethod(c, NSSelectorFromString(@"elementShouldShow"), (IMP)DYYYWardEl_shouldShow, "B@:");
+        class_addMethod(c, NSSelectorFromString(@"elementContent"), (IMP)DYYYWardEl_content, "@@:");
+        class_addMethod(c, NSSelectorFromString(@"elementImage"), (IMP)DYYYWardEl_image, "@@:");
+        class_addMethod(c, NSSelectorFromString(@"elementTapped"), (IMP)DYYYWardEl_tapped, "v@:");
+        objc_registerClassPair(c);
+        cls = c;
+    });
+    return cls;
+}
 
 // MARK: - 获取作品数据辅助方法
 // 安全读取任意对象的属性（兼容本地头文件未声明的运行期字段，如 uid/secUid/playCount 等）。
@@ -2457,11 +2587,27 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         }
     }
 
-    if (filteredArray) {
-        %orig([filteredArray copy]);
-    } else {
-        %orig(arg1);
+    NSArray *finalArray = filteredArray ? [filteredArray copy] : arg1;
+
+    // 评论插眼：向评论长按菜单注入「插眼」项
+    if (finalArray.count > 0 && [DYYYPreferences boolForKey:@"DYYYCommentWard"]) {
+        Class elCls = DYYYWardCommentElementClass();
+        if (elCls) {
+            id first = finalArray.firstObject;
+            id ctx = DYYYCommentWardContext(first);
+            id el = [[elCls alloc] init];
+            if (ctx && el) {
+                @try { [el setValue:ctx forKey:@"commentPageContext"]; } @catch (NSException *e) {}
+            }
+            if (el) {
+                NSMutableArray *arr = [finalArray mutableCopy];
+                [arr insertObject:el atIndex:0];
+                finalArray = [arr copy];
+            }
+        }
     }
+
+    %orig(finalArray);
 }
 
 %end
@@ -2473,3 +2619,61 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         %init(DYYYFilterSetterGroup, HOOK_TARGET_OWNER_CLASS = ownerClass);
     }
 }
+
+// 主页插眼：向主页右上角「三个点」操作面板注入「插眼主页」
+%hook AWEUserActionSheetView
+
+- (void)setActions:(NSArray *)actions {
+    if ([DYYYPreferences boolForKey:@"DYYYHomeWard"] && [actions isKindOfClass:[NSArray class]]) {
+        NSDictionary *pu = [DYYYPreferences objectForKey:@"DYYYLastProfileUser"];
+        if ([pu isKindOfClass:[NSDictionary class]] && pu.count > 0) {
+            // 识别主页操作面板（存在「主页/分享/复制链接/举报」等标题项）
+            BOOL isProfileSheet = NO;
+            for (id a in actions) {
+                NSString *t = nil;
+                @try { t = [a valueForKey:@"title"]; } @catch (NSException *e) {}
+                if (![t isKindOfClass:[NSString class]]) continue;
+                if ([t containsString:@"主页"] || [t containsString:@"分享"] || [t containsString:@"复制链接"] || [t containsString:@"举报"]) {
+                    isProfileSheet = YES;
+                    break;
+                }
+            }
+            if (isProfileSheet) {
+                id actCls = NSClassFromString(@"AWEUserSheetAction");
+                if (actCls) {
+                    NSDictionary *info = pu;
+                    id handler = [^{
+                        NSMutableDictionary *w = [NSMutableDictionary dictionary];
+                        [w setObject:@"主页" forKey:@"type"];
+                        [w setObject:([info objectForKey:@"uid"] ?: @"") forKey:@"uid"];
+                        [w setObject:([info objectForKey:@"secUid"] ?: @"") forKey:@"secUid"];
+                        [w setObject:([info objectForKey:@"nickname"] ?: @"未知用户") forKey:@"nickname"];
+                        [w setObject:([info objectForKey:@"avatarURL"] ?: @"") forKey:@"avatarURL"];
+                        [w setObject:@"" forKey:@"awemeID"];
+                        [w setObject:@"" forKey:@"createTime"];
+                        [w setObject:@"主页" forKey:@"desc"];
+                        [w setObject:@"" forKey:@"shareURL"];
+                        [w setObject:@"未分类" forKey:@"category"];
+                        [w setObject:@"" forKey:@"note"];
+                        NSString *wid = [[DYYYWardManager sharedManager] addWard:w];
+                        if (wid.length > 0) {
+                            [DYYYUtils showToast:@"🌺 主页已插眼"];
+                        } else {
+                            [DYYYUtils showToast:@"插眼失败"];
+                        }
+                    } copy];
+                    id wardAction = [actCls actionWithTitle:@"🌺 插眼主页" imgName:@"ic_location_outlined_20" handler:handler];
+                    if (wardAction) {
+                        NSMutableArray *arr = [actions mutableCopy];
+                        [arr addObject:wardAction];
+                        %orig([arr copy]);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    %orig(actions);
+}
+
+%end
