@@ -2660,33 +2660,39 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     NSArray *finalArray = filteredArray ? [filteredArray copy] : arg1;
 
     // 评论插眼：向评论长按菜单注入「插眼」项
-    // setModelsArray: 在一次面板弹出中可能被多次调用（多个 section 各自构建），
-    // 因此这里既清掉历史注入项，又用「同一 context + 短时间窗」做去重，保证只出现一个。
+    // setModelsArray: 在一次面板弹出中会被多次调用（宿主会把上次的数组再喂回来），
+    // 因此这里先清掉之前注入的项，再补一个，保证菜单里始终只有一个「插眼」。
     if (finalArray.count > 0 && [DYYYPreferences boolForKey:@"DYYYCommentWard"]) {
         Class elCls = DYYYWardCommentElementClass();
         if (elCls) {
             NSMutableArray *arr = [NSMutableArray arrayWithCapacity:finalArray.count + 1];
+            NSInteger removed = 0;
             for (id item in finalArray) {
-                if ([NSStringFromClass([item class]) isEqualToString:@"DYYYWardCommentElement"])
+                if ([NSStringFromClass([item class]) isEqualToString:@"DYYYWardCommentElement"]) {
+                    removed++;
                     continue;
+                }
                 [arr addObject:item];
             }
             if (arr.count > 0) {
                 id ctx = DYYYCommentWardContext(arr.firstObject);
                 if (ctx) gDYYYCommentPanelContext = ctx;
 
+                // 宿主重复喂回来（removed>0）时必须补回；全新数组时才用时间窗防多 section 重复注入
                 static NSTimeInterval sLastInjectTime = 0;
                 NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-                // 同一次弹出（1 秒内）只注入一个，避免多 section 重复构建出多个「插眼」
-                BOOL samePanel = (now - sLastInjectTime) < 1.0;
+                BOOL recentlyInjected = (now - sLastInjectTime) < 1.0;
+                BOOL shouldInject = (removed > 0) || !recentlyInjected;
 
-                id el = [[elCls alloc] init];
-                if (el && !samePanel) {
-                    if (ctx) {
-                        @try { [el setValue:ctx forKey:@"commentPageContext"]; } @catch (NSException *e) {}
+                if (shouldInject) {
+                    id el = [[elCls alloc] init];
+                    if (el) {
+                        if (ctx) {
+                            @try { [el setValue:ctx forKey:@"commentPageContext"]; } @catch (NSException *e) {}
+                        }
+                        [arr insertObject:el atIndex:0];
+                        sLastInjectTime = now;
                     }
-                    [arr insertObject:el atIndex:0];
-                    sLastInjectTime = now;
                 }
             }
             finalArray = [arr copy];
@@ -2747,7 +2753,7 @@ static void DYYYChainHook(Class cls, SEL sel, IMP newImp) {
     NSString *key = NSStringFromSelector(sel);
     if ([map objectForKey:key]) return; // 已 hook 过
     IMP oldImp = method_setImplementation(m, newImp);
-    if (oldImp) [map setObject:[NSValue valueWithPointer:oldImp] forKey:key];
+    if (oldImp) [map setObject:[NSValue valueWithPointer:(void *)oldImp] forKey:key];
 }
 
 static IMP DYYYChainedOrig(Class instCls, SEL sel) {
