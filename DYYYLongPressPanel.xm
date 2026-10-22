@@ -2788,9 +2788,10 @@ static NSDictionary *DYYYHomeWardResolveProfileUser(void) {
             if (!obj) continue;
             NSString *cls = NSStringFromClass([obj class]);
             if (![cls containsString:@"User"] && ![cls containsString:@"Author"]) continue;
-            NSString *nick = DYYYCommentWardSafeStr(obj, @"nickname");
-            NSString *uid = DYYYCommentWardSafeStr(obj, @"uid");
-            NSString *secUid = DYYYCommentWardSafeStr(obj, @"secUid");
+            // 字段名各版本不一（sec_uid / userID 等都见过），逐个试
+            NSString *nick = DYYYCommentStrForKeys(obj, @[ @"nickname", @"nick_name" ]);
+            NSString *uid = DYYYCommentStrForKeys(obj, @[ @"uid", @"userID", @"user_id", @"uid_str" ]);
+            NSString *secUid = DYYYCommentStrForKeys(obj, @[ @"secUid", @"sec_uid", @"secuid" ]);
             if (nick.length == 0 && uid.length == 0 && secUid.length == 0) continue;
             NSString *avatar = @"";
             @try {
@@ -2828,7 +2829,13 @@ static void DYYYHomeWardShowPanel(void) {
     if (![secUid isKindOfClass:[NSString class]]) secUid = @"";
     NSString *uid = [info objectForKey:@"uid"];
     if (![uid isKindOfClass:[NSString class]]) uid = @"";
-    NSString *shareURL = secUid.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid] : @"";
+    // secUid 优先；只有 uid 时用 share/user 兜底链接（该形态可被宿主/浏览器打开）
+    NSString *shareURL = @"";
+    if (secUid.length > 0) {
+        shareURL = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid];
+    } else if (uid.length > 0) {
+        shareURL = [NSString stringWithFormat:@"https://www.douyin.com/share/user/%@", uid];
+    }
 
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
     [data setObject:@"主页" forKey:@"type"];

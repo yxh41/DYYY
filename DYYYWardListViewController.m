@@ -275,49 +275,68 @@ static NSInteger gDYYYWardLocateDone = 0;
 
 // 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证该能力存在），
 // 盲调白名单方法名；调用前用 NSMethodSignature 校验单对象参，防签名不匹配崩
+// 在单个 target 上盲调白名单方法；调用前用 NSMethodSignature 校验单对象参，防签名不匹配崩
+static BOOL DYYYWardTrySelectorsOnTarget(id target, NSArray *selNames, NSString *commentID) {
+    if (!target) return NO;
+    for (NSString *s in selNames) {
+        SEL sel = NSSelectorFromString(s);
+        if (![target respondsToSelector:sel]) continue;
+        NSMethodSignature *sig = [target methodSignatureForSelector:sel];
+        if (!sig || sig.numberOfArguments != 3) continue; // 单对象参方法（self/_cmd/arg）
+        const char *t = [sig getArgumentTypeAtIndex:2];
+        if (!t || t[0] != '@') continue;
+        @try {
+            [target performSelector:sel withObject:commentID];
+            return YES;
+        } @catch (NSException *e) {}
+    }
+    return NO;
+}
+
+// 宿主内部定位：抖音自己支持「跳到指定评论」（安卓侧已验证），盲调白名单方法名
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
     NSArray *clsNames = @[ @"AWECommentContainerViewController" ];
     NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
-                           @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:" ];
+                           @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:",
+                           @"locateCommentWithCommentID:", @"scrollToCommentWithCommentID:animated:" ];
     for (NSString *clsName in clsNames) {
         Class cls = NSClassFromString(clsName);
         if (!cls) continue;
         id target = DYYYWardFindVC(cls);
         if (!target) continue;
-        for (NSString *s in selNames) {
-            SEL sel = NSSelectorFromString(s);
-            if (![target respondsToSelector:sel]) continue;
-            NSMethodSignature *sig = [target methodSignatureForSelector:sel];
-            if (!sig || sig.numberOfArguments != 3) continue; // 单对象参方法（self/_cmd/arg）
-            const char *t = [sig getArgumentTypeAtIndex:2];
-            if (!t || t[0] != '@') continue;
-            @try {
-                [target performSelector:sel withObject:commentID];
-                gDYYYWardLocateDone = gDYYYWardLocateGen;
-                return;
-            } @catch (NSException *e) {}
+        if (DYYYWardTrySelectorsOnTarget(target, selNames, commentID)) {
+            gDYYYWardLocateDone = gDYYYWardLocateGen;
+            return;
+        }
+        // 定位能力也可能挂在 viewModel 上
+        id vm = nil;
+        @try { vm = [target valueForKey:@"viewModel"]; } @catch (NSException *e) { vm = nil; }
+        if (vm && DYYYWardTrySelectorsOnTarget(vm, selNames, commentID)) {
+            gDYYYWardLocateDone = gDYYYWardLocateGen;
+            return;
         }
     }
 }
 
-// 把评论列表滚动一屏（up=NO 向下触发分页加载，YES 向上回头找漏掉的）
+// 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
+// up=NO 向下触发分页加载，YES 向上回头找漏掉的）
 static void DYYYWardScrollCommentList(BOOL up) {
     UIViewController *commentVC = DYYYWardFindCommentVC();
     if (!commentVC) return;
-    UIScrollView *scroll = [DYYYWardCommentListViews(commentVC) firstObject];
-    if (!scroll) return;
-    CGFloat h = CGRectGetHeight(scroll.bounds);
-    if (h <= 0) return;
-    CGFloat maxOffset = scroll.contentSize.height - h;
-    if (maxOffset < 0) maxOffset = 0;
-    CGFloat y;
-    if (up) {
-        y = MAX(0, scroll.contentOffset.y - h * 0.8);
-    } else {
-        y = MIN(scroll.contentOffset.y + h * 0.8, maxOffset);
+    for (UIScrollView *scroll in DYYYWardCommentListViews(commentVC)) {
+        CGFloat h = CGRectGetHeight(scroll.bounds);
+        if (h <= 0) continue;
+        CGFloat maxOffset = scroll.contentSize.height - h;
+        if (maxOffset < 0) maxOffset = 0;
+        CGFloat y;
+        if (up) {
+            y = MAX(0, scroll.contentOffset.y - h * 0.8);
+        } else {
+            y = MIN(scroll.contentOffset.y + h * 0.8, maxOffset);
+        }
+        [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, y) animated:YES];
     }
-    [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, y) animated:YES];
 }
 
 static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSString *contentHint) {
@@ -874,7 +893,14 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
         }
         NSString *share = [ward objectForKey:@"shareURL"];
         if (![share isKindOfClass:[NSString class]] || share.length == 0) {
-            share = secUid.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid] : @"";
+            if (secUid.length > 0) {
+                share = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid];
+            } else if (uid.length > 0) {
+                // secUid 缺失时用 share/user 兜底（浏览器/宿主 webview 可打开）
+                share = [NSString stringWithFormat:@"https://www.douyin.com/share/user/%@", uid];
+            } else {
+                share = @"";
+            }
         }
         if (share.length > 0) {
             [UIPasteboard generalPasteboard].string = share;
@@ -897,14 +923,22 @@ static void DYYYWardLocateComment(NSString *awemeID, NSString *commentID, NSStri
             if ([url isKindOfClass:[NSString class]] && url.length > 0) [UIPasteboard generalPasteboard].string = url;
             return;
         }
-        // comment=1：让宿主落地后直接展开评论区（参数无效时退化为普通打开，不影响路由）
-        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap&comment=1",
-                                           [self hostSnssdkScheme], awemeID]];
-        BOOL ok = url && [[UIApplication sharedApplication] openURL:url];
+        // 优先带 comment_id：宿主自身支持「跳到指定评论」（安卓侧已验证），
+        // 只传 comment=1 只能展开评论区、不能定位到具体某条
+        NSString *base = [NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap",
+                          [self hostSnssdkScheme], awemeID];
+        BOOL ok = NO;
+        if (commentID.length > 0) {
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment_id=%@", base, commentID]];
+            ok = url && [[UIApplication sharedApplication] openURL:url];
+        }
         if (!ok) {
-            NSURL *plain = [NSURL URLWithString:[NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap",
-                                                 [self hostSnssdkScheme], awemeID]];
-            ok = [[UIApplication sharedApplication] openURL:plain];
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment=1", base]];
+            ok = url && [[UIApplication sharedApplication] openURL:url];
+        }
+        if (!ok) {
+            NSURL *url = [NSURL URLWithString:base];
+            ok = url && [[UIApplication sharedApplication] openURL:url];
         }
         if (!ok) {
             NSString *share = [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID];

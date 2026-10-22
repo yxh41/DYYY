@@ -12323,10 +12323,25 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
         if (user && [DYYYPreferences boolForKey:@"DYYYHomeWard"]) {
             id nickObj = [user valueForKey:@"nickname"];
             NSString *nick = [nickObj isKindOfClass:[NSString class]] ? nickObj : @"";
-            id secObj = [user valueForKey:@"secUid"];
-            NSString *secUid = secObj ? [NSString stringWithFormat:@"%@", secObj] : @"";
-            id uidObj = [user valueForKey:@"uid"];
-            NSString *uid = uidObj ? [NSString stringWithFormat:@"%@", uidObj] : @"";
+            // secUid / uid 字段名各版本不一，逐个试
+            NSString *secUid = @"";
+            for (NSString *k in @[ @"secUid", @"sec_uid", @"secuid" ]) {
+                id v = nil;
+                @try { v = [user valueForKey:k]; } @catch (NSException *e) {}
+                if (v && ![v isKindOfClass:[NSNull class]]) {
+                    NSString *s = [NSString stringWithFormat:@"%@", v];
+                    if (s.length > 0 && ![s isEqualToString:@"(null)"]) { secUid = s; break; }
+                }
+            }
+            NSString *uid = @"";
+            for (NSString *k in @[ @"uid", @"userID", @"user_id", @"uid_str" ]) {
+                id v = nil;
+                @try { v = [user valueForKey:k]; } @catch (NSException *e) {}
+                if (v && ![v isKindOfClass:[NSNull class]]) {
+                    NSString *s = [NSString stringWithFormat:@"%@", v];
+                    if (s.length > 0 && ![s isEqualToString:@"(null)"]) { uid = s; break; }
+                }
+            }
             if (nick.length > 0 || secUid.length > 0) {
                 NSString *avatar = @"";
                 id av = [user valueForKey:@"avatarMedium"];
