@@ -1505,54 +1505,22 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         }
     }
 
-    // 创建自定义组
+    // 创建自定义组：按每行最多 4 个自动分页
+    // 图集全开可达 12 项，旧逻辑钉死两行（5+7），第二行每格仅约 45pt，
+    // 放不下「保存当前实况/过滤用户」等 4~6 字标签，导致文字挤压交叠。改为每行 ≤4 自动换行。
     NSMutableArray *customGroups = [NSMutableArray array];
     NSInteger totalButtons = viewModels.count;
+    const NSInteger kMaxPerRow = 4; // 每行最多按钮数：>4 时单格宽度不足以容纳 4~6 字标签
 
-    // 根据按钮总数确定每行的按钮数
-    NSInteger firstRowCount = 0;
-    NSInteger secondRowCount = 0;
-
-    // 确定分配方式与原代码相同
-    if (totalButtons <= 2) {
-        firstRowCount = totalButtons;
-    } else if (totalButtons <= 4) {
-        firstRowCount = totalButtons / 2;
-        secondRowCount = totalButtons - firstRowCount;
-    } else if (totalButtons <= 5) {
-        firstRowCount = 3;
-        secondRowCount = totalButtons - firstRowCount;
-    } else if (totalButtons <= 6) {
-        firstRowCount = 4;
-        secondRowCount = totalButtons - firstRowCount;
-    } else if (totalButtons <= 8) {
-        firstRowCount = 4;
-        secondRowCount = totalButtons - firstRowCount;
-    } else {
-        firstRowCount = 5;
-        secondRowCount = totalButtons - firstRowCount;
-    }
-
-    // 创建第一行
-    if (firstRowCount > 0) {
-        NSArray<AWELongPressPanelBaseViewModel *> *firstRowButtons = [viewModels subarrayWithRange:NSMakeRange(0, firstRowCount)];
-        AWELongPressPanelViewGroupModel *firstRowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
-        firstRowGroup.isDYYYCustomGroup = YES;
-        firstRowGroup.groupType = (firstRowCount <= 3) ? 11 : 12;
-        firstRowGroup.isModern = YES;
-        firstRowGroup.groupArr = firstRowButtons;
-        [customGroups addObject:firstRowGroup];
-    }
-
-    // 创建第二行
-    if (secondRowCount > 0) {
-        NSArray<AWELongPressPanelBaseViewModel *> *secondRowButtons = [viewModels subarrayWithRange:NSMakeRange(firstRowCount, secondRowCount)];
-        AWELongPressPanelViewGroupModel *secondRowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
-        secondRowGroup.isDYYYCustomGroup = YES;
-        secondRowGroup.groupType = (secondRowCount <= 3) ? 11 : 12;
-        secondRowGroup.isModern = YES;
-        secondRowGroup.groupArr = secondRowButtons;
-        [customGroups addObject:secondRowGroup];
+    for (NSInteger start = 0; start < totalButtons; start += kMaxPerRow) {
+        NSInteger len = MIN(kMaxPerRow, totalButtons - start);
+        NSArray<AWELongPressPanelBaseViewModel *> *rowButtons = [viewModels subarrayWithRange:NSMakeRange(start, len)];
+        AWELongPressPanelViewGroupModel *rowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
+        rowGroup.isDYYYCustomGroup = YES;
+        rowGroup.groupType = (len <= 3) ? 11 : 12;
+        rowGroup.isModern = YES;
+        rowGroup.groupArr = rowButtons;
+        [customGroups addObject:rowGroup];
     }
 
     NSMutableArray *resultGroups = [NSMutableArray array];
