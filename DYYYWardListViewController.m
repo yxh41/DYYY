@@ -790,6 +790,19 @@ static NSString *DYYYWardInvokeHostLocate(id target, NSArray *selNames, NSString
     return nil;
 }
 
+// v2.3-28：扫描到的候选方法只跑「名字里带 id」的那些（scrollToCommentWithID:/...WithCID: 这类）。
+// 像 locateComment:/focusComment: 可能收的是模型对象，把 cid 字符串塞进去会把 NSString
+// 当 AWECommentModel 用（非对象参数/直访 ivar 时是硬崩溃，@try 拦不住），所以一律不盲调。
+static NSArray *DYYYWardIDOnlySelectors(NSArray *names) {
+    if (names.count == 0) return @[];
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *n in names) {
+        if (![n isKindOfClass:[NSString class]]) continue;
+        if ([[n lowercaseString] containsString:@"id"]) [out addObject:n];
+    }
+    return out;
+}
+
 // 本版对宿主定位方法：先验签名后「精确调用」（v2.3-21 只记录不调用，本版落地调用）。
 // 调用后由后续可见 cell/数据源复核去确认；若宿主方法本身就把评论滚到屏内，用户直接可见。
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
@@ -814,13 +827,28 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
     NSArray *discovered = DYYYWardDiscoverLocateSelectors(target);
     if (discovered.count > 0) {
         [diag appendFormat:@" 方法:%@", [discovered componentsJoinedByString:@";"]];
+        if (invoked.length == 0) {
+            NSString *d = DYYYWardInvokeHostLocate(target, DYYYWardIDOnlySelectors(discovered), commentID);
+            if (d.length > 0) { invoked = d; [diag appendFormat:@" 扫描调用(%@)", d]; }
+        }
     }
+    // v2.3-28 关键修复：定位方法其实长在 viewModel 上，而不是 VC 上。
+    // 之前只对 VC 试白名单 → respondsToSelector: 全 NO → 一次都没调用过，
+    // 但 vm方法: 诊断却已经把 scrollToCommentWithID: 印出来了（「看得见、从没调」的真因）。
     id vm = DYYYWardIvarNamed(target, @"viewModel"); // 不用 KVC，避免属性类型非对象时崩溃
     if (vm) {
         [diag appendFormat:@" VM:%@", NSStringFromClass([vm class])];
+        if (invoked.length == 0) {
+            NSString *v = DYYYWardInvokeHostLocate(vm, selNames, commentID);
+            if (v.length > 0) { invoked = v; [diag appendFormat:@" vm白名单已调用(%@)", v]; }
+        }
         NSArray *vmDisc = DYYYWardDiscoverLocateSelectors(vm);
         if (vmDisc.count > 0) {
             [diag appendFormat:@" vm方法:%@", [vmDisc componentsJoinedByString:@";"]];
+            if (invoked.length == 0) {
+                NSString *v2 = DYYYWardInvokeHostLocate(vm, DYYYWardIDOnlySelectors(vmDisc), commentID); // 宿主自己的定位方法，签名已校验
+                if (v2.length > 0) { invoked = v2; [diag appendFormat:@" vm扫描调用(%@)", v2]; }
+            }
         }
     }
     // 无论有没有候选方法都记诊断（至少带真实类名）
@@ -984,8 +1012,8 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
             @try {
-                // 宿主内部定位：第 1 步与第 6 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
-                if (i == 0 || i == 6) {
+                // 宿主内部定位：第 1/7/13 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
+                if (i == 0 || i == 6 || i == 12) {
                     for (NSString *cid in cidList) {
                         DYYYWardTryHostLocateComment(cid);
                         if (gDYYYWardLocateDone == gen) return;
