@@ -211,9 +211,13 @@
         id va = [a objectForKey:key];
         id vb = [b objectForKey:key];
         if ([va isKindOfClass:[NSNumber class]] && [vb isKindOfClass:[NSNumber class]]) {
-            return [vb compare:va]; // 倒序
+            return [vb compare:va]; // saveTime 为时间戳(NSNumber)，倒序：最新在前
         }
-        return NSOrderedAscending;
+        if ([va isKindOfClass:[NSString class]] && [vb isKindOfClass:[NSString class]]) {
+            // createTime 为 yyyy-MM-dd HH:mm:ss 字符串，字典序即时间序；倒序，空串自然下沉
+            return [vb compare:va];
+        }
+        return NSOrderedSame;
     }];
 
     self.filteredWards = result;
