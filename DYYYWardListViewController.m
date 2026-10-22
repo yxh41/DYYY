@@ -310,7 +310,7 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 172;
+    return 190;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -328,7 +328,7 @@
     UIColor *subColor = isDark ? [UIColor colorWithRed:150/255.0 green:150/255.0 blue:155/255.0 alpha:1.0]
                                : [UIColor colorWithRed:120/255.0 green:122/255.0 blue:130/255.0 alpha:1.0];
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 8, tableView.bounds.size.width - 24, 160)];
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 8, tableView.bounds.size.width - 24, 178)];
     card.backgroundColor = cardBg;
     card.layer.cornerRadius = 14;
     [cell.contentView addSubview:card];
@@ -375,7 +375,7 @@
     NSString *desc = [ward objectForKey:@"desc"] ?: @"";
     NSString *note = [ward objectForKey:@"note"] ?: @"";
     NSString *createTime = [ward objectForKey:@"createTime"] ?: @"";
-    UILabel *descLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 78, card.bounds.size.width - 24, 36)];
+    UILabel *descLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 78, card.bounds.size.width - 24, 34)];
     descLabel.font = [UIFont systemFontOfSize:12];
     descLabel.textColor = textColor;
     descLabel.numberOfLines = 2;
@@ -384,29 +384,35 @@
         descLabel.text = desc;
     } else if (note.length > 0) {
         descLabel.text = note;
-    } else if (createTime.length > 0) {
-        descLabel.text = [NSString stringWithFormat:@"视频：%@", createTime];
     }
     [card addSubview:descLabel];
 
-    // 备注补充 / 视频时间
-    UILabel *detail = [[UILabel alloc] initWithFrame:CGRectMake(12, 118, card.bounds.size.width - 24, 16)];
-    detail.font = [UIFont systemFontOfSize:11];
-    detail.textColor = subColor;
-    detail.lineBreakMode = NSLineBreakByTruncatingTail;
-    if (desc.length > 0 && note.length > 0) {
-        detail.text = [NSString stringWithFormat:@"备注：%@", note];
-    } else if (createTime.length > 0) {
-        detail.text = [NSString stringWithFormat:@"视频：%@", createTime];
+    // 视频时间（始终显示，不再被备注覆盖）
+    UILabel *timeLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 116, card.bounds.size.width - 24, 14)];
+    timeLabel.font = [UIFont systemFontOfSize:11];
+    timeLabel.textColor = subColor;
+    timeLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    if (createTime.length > 0) {
+        timeLabel.text = [NSString stringWithFormat:@"视频：%@", createTime];
     }
-    [card addSubview:detail];
+    [card addSubview:timeLabel];
+
+    // 备注（仅当文案与备注同时存在时另起一行，避免与文案重复）
+    if (desc.length > 0 && note.length > 0) {
+        UILabel *noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 132, card.bounds.size.width - 24, 14)];
+        noteLabel.font = [UIFont systemFontOfSize:11];
+        noteLabel.textColor = subColor;
+        noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        noteLabel.text = [NSString stringWithFormat:@"备注：%@", note];
+        [card addSubview:noteLabel];
+    }
 
     // 操作按钮
     NSArray *actions = @[@"查看", @"编辑", @"复制", @"删除"];
     CGFloat btnW = (card.bounds.size.width - 24) / 4;
     for (NSInteger i = 0; i < actions.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(12 + i * btnW, 138, btnW, 20);
+        b.frame = CGRectMake(12 + i * btnW, 150, btnW, 20);
         [b setTitle:actions[i] forState:UIControlStateNormal];
         b.titleLabel.font = [UIFont systemFontOfSize:13];
         b.tag = 400 + i;
