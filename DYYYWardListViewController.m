@@ -722,7 +722,7 @@ static BOOL DYYYWardCIDIntsMatch(id node, NSArray *cidList) {
     }
     if (nums.count == 0) return NO;
     NSArray *ivs = DYYYWardIntIvars(object_getClass(node));
-    const uint8_t *base = (__bridge const uint8_t *)node; // ARC 下 ObjC 指针转 C 指针必须 __bridge
+    const uint8_t *base = (const uint8_t *)(__bridge const void *)node; // ARC：先 __bridge 到 void*，再转 C 指针
     for (NSValue *iv in ivs) {
         Ivar v = (Ivar)[iv pointerValue];
         ptrdiff_t off = ivar_getOffset(v);
