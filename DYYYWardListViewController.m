@@ -2,8 +2,15 @@
 #import <objc/runtime.h>
 #import <malloc/malloc.h>
 #import <dlfcn.h>
-#import <sys/mman.h> // v2.4-8：mincore——未映射区间返回 ENOMEM 且不 fault 的已映射判定
+#import <sys/mman.h> // v2.4-8 引入；v2.4-11 起 mincore 不再用于可读性判定（只报驻留不报权限，见 PageMapped 注释）
 #import <unistd.h>   // v2.4-8：sysconf(_SC_PAGESIZE)
+// v2.4-11：vm_region_64——查区域保护位（PROT_NONE 保留区必须拒）。
+// 用 __has_include 守卫：万一某 SDK 缺此头文件，退化成「宁拒不放」（v2.4-6 行为，不崩）。
+#if __has_include(<mach/vm_region.h>)
+#import <mach/vm_region.h>
+#import <mach/mach.h>
+#define DYYY_HAVE_VM_REGION 1
+#endif
 #import "DYYYWardManager.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYUtils.h"
@@ -597,12 +604,37 @@ static BOOL DYYYWardIsRegisteredClass(uintptr_t isa) {
 //    zone 内部实现，是这条链的保底。
 // 注：本来想用 mach_vm_read_overwrite 直接做安全读，但 iOS SDK 的 <mach/mach_vm.h>
 // 是 `#error mach_vm.h unsupported`，只能走 libmalloc + dyld + mincore 这条路。
+// v2.4-11：判定地址所在页「已映射且可读」。
+// ⚠️ v2.4-10 真机崩溃（ips：AwemeLite-2026-10-24-013017，PC=DYYY.dylib+0xD9220，
+//    far=0x14c6a710000）根因：mincore 只报「驻留」不查「权限」——XNU 对 PROT_NONE
+//    保留区（GPU Carveout 0x1000000000-0x7000000000 等）也返回 0（成功）。于是
+//    Swift Double 位模式（0x014C6A7100000000 ≈ 1.2e-302：bit63=0、8 对齐、落在
+//    4GB~256TB 窗口内）被 mincore 放行 → SafeReadPtr 读其 isa → SIGSEGV。
+//    改用 vm_region_64 查保护位：必须含 VM_PROT_READ 才算可读。未映射 →
+//    KERN_INVALID_ADDRESS → NO；PROT_NONE → protection 无 READ → NO。
+//    单条目区域缓存：ASCII 扫描步进/连续堆查询免反复 mach trap（全部在主线程）。
 static BOOL DYYYWardPageMapped(uintptr_t addr) {
-    long ps = sysconf(_SC_PAGESIZE);
-    if (ps <= 0) ps = 16384; // arm64 iOS 页大小 16KB
-    uintptr_t page = addr & ~((uintptr_t)ps - 1);
-    char vec = 0;
-    return mincore((void *)page, (size_t)ps, &vec) == 0; // 未映射 → ENOMEM，不 fault
+#ifdef DYYY_HAVE_VM_REGION
+    static uintptr_t cacheStart = 0, cacheEnd = 0;
+    static BOOL cacheReadable = NO;
+    if (cacheStart && addr >= cacheStart && addr < cacheEnd) return cacheReadable;
+    vm_address_t region = (vm_address_t)addr;
+    vm_size_t regionSize = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t objName = MACH_PORT_NULL;
+    kern_return_t kr = vm_region_64(mach_task_self(), &region, &regionSize,
+                                    VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info, &count, &objName);
+    if (kr != KERN_SUCCESS) { cacheStart = cacheEnd = 0; return NO; }
+    cacheStart = (uintptr_t)region;
+    cacheEnd = (uintptr_t)(region + regionSize);
+    cacheReadable = (info.protection & VM_PROT_READ) != 0;
+    return cacheReadable;
+#else
+    (void)addr;
+    return NO; // 无 vm_region 头文件：宁拒不放（假指针全拒，功能退化为 v2.4-6 行为）
+#endif
 }
 
 static BOOL DYYYWardAddressReadable(uintptr_t addr) {
@@ -853,6 +885,11 @@ static NSArray *DYYYWardCIDNums(NSArray *cidList) {
 // v2.4-5：在对象的 64 位整型 ivar（声明为 'q'/'Q' 的字段）里找「值等于某个 cid」的。
 static BOOL DYYYWardCIDIntsMatch(id node, NSArray *nums) {
     if (!node) return NO;
+    // v2.4-11：tagged 指针（短 NSString/NSNumber）的「实例」就是指针值本身那 8 字节，
+    // 没有实例区可扫；class_getInstanceSize 返回的是类的标称大小，照着扫 base+8 之后
+    // 等于读 tagged 值相邻的随机内存 → 可能踩未映射页。GraphMatch 虽对字符串/数字
+    // 提前返回，但 tagged 的其他类（NSDate 等）会漏到这里，必须显式刹车。
+    if ((uintptr_t)(__bridge const void *)node & 0x8000000000000000ULL) return NO;
     NSArray *ivs = DYYYWardIntIvars(object_getClass(node));
     if (ivs.count == 0) return NO;
     const uint8_t *base = (const uint8_t *)(__bridge const void *)node; // ARC：先 __bridge 到 void*，再转 C 指针
@@ -877,6 +914,8 @@ static BOOL DYYYWardCIDIntsMatch(id node, NSArray *nums) {
 // 不做任何解引用/代码执行。误中不可能：cid > 2^62，用户态指针高位必为 0。
 static BOOL DYYYWardCIDRawScan(id node, NSArray *nums) {
     if (!node) return NO;
+    // v2.4-11：tagged 指针无实例区，刹车（同 CIDIntsMatch 注释）
+    if ((uintptr_t)(__bridge const void *)node & 0x8000000000000000ULL) return NO;
     Class cls = object_getClass(node);
     size_t size = class_getInstanceSize(cls);
     if (size <= sizeof(void *) + sizeof(uint64_t)) return NO;
@@ -911,6 +950,8 @@ static BOOL DYYYWardBytesContains(const uint8_t *hay, size_t hayLen, const uint8
 
 static BOOL DYYYWardCIDAsciiScan(id node, NSArray *cidList) {
     if (!node || cidList.count == 0) return NO;
+    // v2.4-11：tagged 指针无实例区，刹车（同 CIDIntsMatch 注释）
+    if ((uintptr_t)(__bridge const void *)node & 0x8000000000000000ULL) return NO;
     NSMutableArray *pats = [NSMutableArray array];
     for (id c in cidList) {
         if (![c isKindOfClass:[NSString class]]) continue;
