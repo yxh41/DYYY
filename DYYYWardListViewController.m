@@ -982,12 +982,14 @@ static NSArray *DYYYWardIntIvars(Class cls) {
 }
 
 // v2.4-5/6 共用：把 cid 字符串列表转成雪花号量级的 uint64 数值列表。
-// v2.4-14：量级从「只认 19 位（1e18~1e19）」放宽到 1e15~1e20。
+// v2.4-14：量级从「只认 19 位（1e18~1e19）」放宽到 1e15~1e19。
 // 原因：二级回复的父评论 id 未必是 19 位（实测有 18 位），旧口径下 nums 为 nil，
 // CIDIntsMatch / CIDRawScan 整段被跳过 —— 而那是 Swift 模型 cid 存成 Int64 时
 // 唯一能命中的手段。
 // 放宽后仍零误中：arm64 iOS 用户态指针 < 2^48 ≈ 2.81e14，任何 >= 1e15 的值不可能
 // 是指针；时间戳 10/13 位（<1e13）、点赞/回复计数都远小于 1e15。
+// ⚠️ 上界只能用 1e19（10^19 < ULLONG_MAX 1.8446e19）。写成 1e20 会直接
+// 「integer literal is too large」编译失败（v2.4-14 CI run 40019789134 教训）。
 static NSArray *DYYYWardCIDNums(NSArray *cidList) {
     if (cidList.count == 0) return nil;
     NSMutableArray *nums = [NSMutableArray arrayWithCapacity:cidList.count];
@@ -996,7 +998,7 @@ static NSArray *DYYYWardCIDNums(NSArray *cidList) {
         const char *s = [(NSString *)c UTF8String];
         if (!s) continue;
         unsigned long long v = strtoull(s, NULL, 10);
-        if (v >= 1000000000000000ULL && v < 100000000000000000000ULL) [nums addObject:@(v)];
+        if (v >= 1000000000000000ULL && v < 10000000000000000000ULL) [nums addObject:@(v)];
     }
     return nums.count > 0 ? nums : nil;
 }
