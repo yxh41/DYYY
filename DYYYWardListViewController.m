@@ -119,6 +119,8 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
                               NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token);
 static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
                                 NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token); // v2.4-3：collection view 版
+static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen); // v2.4-4：父扫描命中后的统一动作
+static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSInteger gen); // v2.4-4
 static NSInteger DYYYWardListRowCount(UIScrollView *sv); // v2.4-3：table/collection 通吃行数
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
@@ -406,6 +408,14 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
 // 思路：定位父评论 → 父 cell 上找「查看回复/展开」按钮点开 → 再让宿主定位/扫描子评论。
 // 父评论 id 来自插眼时存的 parentIDs（不存在就跳过，绝不拿子 cid 去冒充父）。
 static NSString *gDYYYWardParentDiag = nil; // 父评论定位状态（诊断用）
+
+// v2.4-4：二级回复「父评论按屏扫描」。老链路只在可见区/高亮路径找父，父不在首屏
+// （实测 213 条评论父在第几十行）必然失败 → 用 parentIDs 精确匹配扫全表，
+// 命中父 cell 后点开回复，再回来定位子评论。
+static NSArray *gDYYYWardChildCIDs = nil;   // 父扫描命中后回来定位子评论用
+static NSString *gDYYYWardChildHint = nil;
+static BOOL gDYYYWardSweepForParent = NO;   // 当前扫描是在找父评论（命中后点回复而非高亮）
+static BOOL gDYYYWardParentHandled = NO;    // 父已展开/已扫描过，避免重复起父扫描
 
 // 在父 cell 的视图树里找「查看回复/展开回复」类可点元素；命中且未展开就点开并返回 YES（已展开也返回 YES）。
 // 没有可点入口返回 NO，交由后续兜底。只认「短文案 + 含 回复/展开/reply」，避免匹配到评论正文里的词。
@@ -1366,6 +1376,10 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
             if (quick || exact) { hitCell = cell; }
         }
         if (hitCell) {
+            if (gDYYYWardSweepForParent) { // v2.4-4：父扫描命中 → 点开回复再回来找子评论
+                DYYYWardParentSweepHit(hitCell, t, gen);
+                return;
+            }
             DYYYWardScrollAndHighlight(t, hitCell);
             [DYYYUtils showToast:[NSString stringWithFormat:@"已定位：%@", probe.length > 0 ? probe : @"该评论"]];
             gDYYYWardLocateDone = gen;
@@ -1480,6 +1494,10 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
             if (quick || exact) { hitCell = cell; }
         }
         if (hitCell) {
+            if (gDYYYWardSweepForParent) { // v2.4-4：父扫描命中 → 点开回复再回来找子评论
+                DYYYWardParentSweepHit(hitCell, cv, gen);
+                return;
+            }
             DYYYWardScrollAndHighlight(cv, hitCell);
             [DYYYUtils showToast:[NSString stringWithFormat:@"已定位：%@", probe.length > 0 ? probe : @"该评论"]];
             gDYYYWardLocateDone = gen;
@@ -1488,6 +1506,45 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
         NSInteger next = (maxFlat >= flat) ? (maxFlat + 1) : (flat + 1);
         DYYYWardSweepStepCV(cv, cidList, contentHint, gen, next, total, pageTry, token);
     });
+}
+
+// v2.4-4：父扫描命中后的统一动作：点开父 cell 的回复 → 1s 后回来定位子评论
+// （宿主方法 → 可见区复核 → 都不中再起子扫描）。不置 LocateDone——子还没找到。
+static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
+    (void)list;
+    gDYYYWardSweepForParent = NO;
+    gDYYYWardParentHandled = YES;
+    BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)cell);
+    gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
+    NSArray *childCids = gDYYYWardChildCIDs ?: @[];
+    NSString *childHint = gDYYYWardChildHint ?: @"";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gDYYYWardLocateDone == gen) return;
+        for (NSString *cid in childCids) {
+            DYYYWardTryHostLocateComment(cid);
+            if (gDYYYWardLocateDone == gen) return;
+        }
+        if (DYYYWardTargetVisibleNow(childCids, childHint)) {
+            gDYYYWardLocateDone = gen;
+            gDYYYWardFailCount = 0;
+            [DYYYUtils showToast:@"已定位到该评论"];
+            return;
+        }
+        // 子还不在可见区（回复可能还要展开/加载）→ 重起子扫描
+        gDYYYWardSweepGen = 0;
+        DYYYWardSweepRows(childCids, childHint, gen);
+    });
+}
+
+// v2.4-4：父评论按屏扫描（二级回复父不在首屏的唯一活路）。probe 传空 → 只按
+// parentIDs 精确匹配，不拿子评论正文去撞父 cell；命中后交给 DYYYWardParentSweepHit。
+static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSInteger gen) {
+    if (parentIDs.count == 0) return;
+    gDYYYWardChildCIDs = childCidList;
+    gDYYYWardChildHint = childContentHint;
+    gDYYYWardSweepForParent = YES;
+    gDYYYWardParentDiag = @"扫描父评论";
+    DYYYWardSweepRows(parentIDs, @"", gen);
 }
 
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen) {
@@ -1584,6 +1641,7 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
         for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
             id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
             if (pc && [pc isKindOfClass:[UIView class]]) {
+                gDYYYWardParentHandled = YES;
                 BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)pc);
                 gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1602,32 +1660,21 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
             }
         }
     }
-    // ③ 父评论不在可见区：用 parentIDs 做一轮按行扫描/数据源定位，滚到父 cell 后再展开。
-    //    这里只做一次同步尝试（DYYYWardHighlightComment），命中即展开；不命中就返回 NO 交给原有兜底。
-    if (DYYYWardHighlightComment(pids, nil)) {
-        gDYYYWardLocateDone = gen;
-        gDYYYWardParentDiag = @"父已定位";
-        // 父已高亮在可见区 → 再找一次父 cell 点回复
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gDYYYWardLocateDone != gen || gDYYYWardURLGen != gen) return;
-            UIViewController *cvc2 = DYYYWardFindCommentVC();
-            if (!cvc2) return;
-            for (UIScrollView *sv in DYYYWardCommentListViews(cvc2)) {
-                id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
-                if (pc && [pc isKindOfClass:[UIView class]]) {
-                    DYYYWardExpandRepliesOnCell((UIView *)pc);
-                    return;
-                }
-            }
-        });
-        return YES;
-    }
+    // ③ 父评论不在可见区：不再用 DYYYWardHighlightComment 试一次——它命中后会把
+    //    LocateDone 置位，导致子评论永远不再被定位（v2.4-3 前的隐性 bug）。
+    //    v2.4-4 起改由 DYYYWardLocateComment 主循环 i==2 步起「父评论按屏扫描」
+    //    （DYYYWardSweepParentThenExpand），扫到父 → 点开回复 → 再回来找子评论。
     gDYYYWardParentDiag = @"父不在可见区";
     return NO;
 }
 
 static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint, NSArray *parentIDs) {
     (void)awemeID;
+    // v2.4-4：二级回复父状态每次「查看」重置
+    gDYYYWardParentHandled = NO;
+    gDYYYWardSweepForParent = NO;
+    gDYYYWardChildCIDs = nil;
+    gDYYYWardChildHint = nil;
     // v2.4-2：URL 深链已把目标评论滚到位 → 本次「查看」结束，不再跑脆弱的扫描/滚动。
     if (gDYYYWardURLDirectOK) {
         gDYYYWardURLDirectOK = NO;
@@ -1697,7 +1744,13 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 }
                 // 按行扫描：用公开行数逐行 scrollToRow 复核，覆盖整列（渐进滚动覆盖不到中间/后半段）
                 if (i == 2) {
-                    DYYYWardSweepRows(cidList, contentHint, gen);
+                    // v2.4-4：二级回复优先扫「父评论」（子 cid 根本不在主列表，扫子纯属浪费）；
+                    // 父已在 2.2s 那步被展开过（ParentHandled）就不再重复扫。
+                    if (parentIDs.count > 0 && !gDYYYWardParentHandled) {
+                        DYYYWardSweepParentThenExpand(parentIDs, cidList, contentHint, gen);
+                    } else if (parentIDs.count == 0) {
+                        DYYYWardSweepRows(cidList, contentHint, gen);
+                    }
                 }
                 // 数据源定位：直接按模型数组算下标再滚过去（第 1/5/9 步各试一次，
                 // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
