@@ -714,7 +714,7 @@ static BOOL DYYYWardCIDIntsMatch(id node, NSArray *cidList) {
     if (!node || cidList.count == 0) return NO;
     NSMutableArray *nums = [NSMutableArray arrayWithCapacity:cidList.count];
     for (id c in cidList) {
-        if (![c isKindOfClass:[NSString class]) continue;
+        if (![c isKindOfClass:[NSString class]]) continue;
         const char *s = [(NSString *)c UTF8String];
         if (!s) continue;
         unsigned long long v = strtoull(s, NULL, 10);
@@ -722,7 +722,7 @@ static BOOL DYYYWardCIDIntsMatch(id node, NSArray *cidList) {
     }
     if (nums.count == 0) return NO;
     NSArray *ivs = DYYYWardIntIvars(object_getClass(node));
-    const uint8_t *base = (const uint8_t *)node;
+    const uint8_t *base = (__bridge const uint8_t *)node; // ARC 下 ObjC 指针转 C 指针必须 __bridge
     for (NSValue *iv in ivs) {
         Ivar v = (Ivar)[iv pointerValue];
         ptrdiff_t off = ivar_getOffset(v);
