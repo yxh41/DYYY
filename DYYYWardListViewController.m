@@ -64,6 +64,27 @@ static UIViewController *DYYYWardFindVC(Class cls) {
 
 static UIViewController *DYYYWardFindCommentVC(void);
 
+// v2.4-10 前向声明：宿主调用总闸要用（定义在文件后部）
+static NSArray *DYYYWardListLayerRoots(UIViewController *commentVC);
+static BOOL DYYYWardListLayerFindModel(NSArray *roots, NSArray *cidList, id *outModel);
+
+// v2.4-10：宿主调用总闸——先跑列表层图搜（纯只读：ivar 扫描 + 值匹配，零宿主代码
+// 执行）确认目标 cid 的模型已在已加载数组里，才允许调宿主定位方法。
+// 背景：v2.4-8 校验链复活后深枚举第一次真调宿主方法，真机秒退（Swift runtime
+// trapped / SIGTRAP，@try 拦不住）。v2.4-9 收了白名单（只留 ID 类选择器）和类名闸
+// 仍崩——剩下唯一触发面：宿主 VM 未就绪或 cid 不在其数据时，scrollToCommentWithID:
+// 内部对找不到的 cid 强转/fatalError。模型在已加载数组里 ⇒ 宿主自己的数据源也有它
+// ⇒ 调用才安全。未加载则跳过（由渐进扫描继续加载，下轮再试）。
+static BOOL DYYYWardCIDModelLoaded(NSString *cid) {
+    if (cid.length == 0) return NO;
+    UIViewController *commentVC = DYYYWardFindCommentVC();
+    if (!commentVC) return NO;
+    NSArray *roots = DYYYWardListLayerRoots(commentVC);
+    if (roots.count == 0) return NO;
+    id model = nil;
+    return DYYYWardListLayerFindModel(roots, @[cid], &model);
+}
+
 // 评论区没打开时，借作品页交互控制器主动打开
 static void DYYYWardOpenCommentPanelIfNeeded(void) {
     UIViewController *commentVC = DYYYWardFindCommentVC();
@@ -1321,6 +1342,7 @@ static NSIndexPath *DYYYWardIndexPathForFlatIndex(UIScrollView *scroll, NSIntege
 // v2.4-8 让校验链复活后，列表层直达/数据源定位第一次真正滚起来，必须补这道闸。
 static BOOL DYYYWardIndexPathInBounds(UIScrollView *scroll, NSIndexPath *ip) {
     if (!scroll || !ip) return NO;
+    if (!scroll.window) return NO; // v2.4-10：面板还没上屏/已被移除，别滚
     if (ip.section < 0 || ip.row < 0 || ip.item < 0) return NO;
     if ([scroll isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)scroll;
@@ -1341,7 +1363,9 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
     if (!DYYYWardIndexPathInBounds(scroll, ip)) return NO; // v2.4-9：界检防 Swift trap 秒退
     if ([scroll isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)scroll;
-        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
+        // v2.4-10：定位滚动一律 animated:NO——动画中途宿主数据源变化会让滚动目标
+        // 失效，UIKit/宿主 Swift 内部对失效动画 trap（@try 拦不住）
+        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:NO]; } @catch (NSException *e) { return NO; }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
                 UITableViewCell *cell = [tv cellForRowAtIndexPath:ip];
@@ -1365,7 +1389,8 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
     }
     if ([scroll isKindOfClass:[UICollectionView class]]) {
         UICollectionView *cv = (UICollectionView *)scroll;
-        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES]; } @catch (NSException *e) { return NO; }
+        // v2.4-10：animated:NO，理由同上（防动画中途数据源变化 trap）
+        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:NO]; } @catch (NSException *e) { return NO; }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
                 UICollectionViewCell *cell = [cv cellForItemAtIndexPath:ip];
@@ -1525,6 +1550,11 @@ static NSArray *DYYYWardIDOnlySelectors(NSArray *names) {
 // 于是宿主方法永远调不到。现在遍历所有候选 VC × 所有候选 ivar 名，找到一个能用的就调。
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
+    // v2.4-10：总闸——模型未加载时不调宿主方法（防宿主 Swift trap 秒退，见上方注释）
+    if (!DYYYWardCIDModelLoaded(commentID)) {
+        gDYYYWardHostLocateMethods = @"宿主调用:跳过(模型未加载→防Swift trap)";
+        return;
+    }
     // v2.4-9：白名单只收「名字带 ID/CID」的选择器。scrollToComment:/locateComment:/
     // focusComment:/highlightComment: 收的是评论**模型对象**（v2.3-28 注释即警告），
     // 把 cid 字符串塞进去 → 宿主 Swift 强转失败 fatalError → SIGTRAP 秒退（@try 拦不住）。
@@ -2153,10 +2183,11 @@ static BOOL DYYYWardListLayerJumpCore(NSArray *targetCIDs, NSString *contentHint
     gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:idx%ld/行%ld", (long)idx, (long)total];
     if ([best isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)best;
-        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
+        // v2.4-10：animated:NO，防动画中途数据源变化 trap
+        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:NO]; } @catch (NSException *e) { return NO; }
     } else {
         UICollectionView *cv = (UICollectionView *)best;
-        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES]; } @catch (NSException *e) { return NO; }
+        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:NO]; } @catch (NSException *e) { return NO; }
     }
     gDYYYWardLocatePending = gDYYYWardLocateGen; // 已精确滚到目标，勿再渐进滚动
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
