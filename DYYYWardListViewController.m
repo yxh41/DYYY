@@ -2,6 +2,8 @@
 #import <objc/runtime.h>
 #import <malloc/malloc.h>
 #import <dlfcn.h>
+#import <sys/mman.h> // v2.4-8：mincore——未映射区间返回 ENOMEM 且不 fault 的已映射判定
+#import <unistd.h>   // v2.4-8：sysconf(_SC_PAGESIZE)
 #import "DYYYWardManager.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYUtils.h"
@@ -499,22 +501,31 @@ static BOOL DYYYWardLooksLikeObject(id v);
 // 用裸指针开放寻址哈希表，避免把候选指针当对象（CF/NSValue 包装都可能产生需要解引用的操作）。
 static uintptr_t *gDYYYWardClassSet = NULL;
 static size_t gDYYYWardClassSetCap = 0;
+// v2.4-8：objc_getClassList 拿不到类表（真机实测疑似断点）→ 置 broken，
+// 之后不再重试，改走下方的「镜像 + 继承链」兜底校验。
+static BOOL gDYYYWardClassSetBroken = NO;
+// v2.4-8：LooksLikeObject 全链自检——按环节记拒绝次数 + 一次性探针断点，
+// 失败 toast 带出来，不用再猜是哪一环把真对象拒了。
+static NSInteger gDYYYWardLAORejectZone = 0;  // 可读性判定（zone/dladdr/mincore）拒
+static NSInteger gDYYYWardLAORejectIsa = 0;   // isa 读不出来/为 0
+static NSInteger gDYYYWardLAORejectClass = 0; // isa 不是已注册类
+static NSInteger gDYYYWardLAOProbe = 0;       // 探针断点：0=没探到 1=窗口/对齐 2=可读性 3=isa 4=类表 5=全链通 9=tagged
 
 static size_t DYYYWardClassHash(uintptr_t v) {
     return (size_t)(((v >> 4) ^ (v >> 20)) * 2654435761u);
 }
 
 static void DYYYWardBuildClassSet(void) {
-    if (gDYYYWardClassSet) return;
+    if (gDYYYWardClassSet || gDYYYWardClassSetBroken) return;
     int n = objc_getClassList(NULL, 0);
-    if (n <= 0) return;
+    if (n <= 0) { gDYYYWardClassSetBroken = YES; return; }
     Class *buf = (Class *)malloc(sizeof(Class) * (size_t)n);
-    if (!buf) return;
+    if (!buf) { gDYYYWardClassSetBroken = YES; return; }
     n = objc_getClassList(buf, n);
     size_t cap = 16;
     while (cap < (size_t)n * 4) cap <<= 1;
     uintptr_t *set = (uintptr_t *)calloc(cap, sizeof(uintptr_t));
-    if (!set) { free(buf); return; }
+    if (!set) { free(buf); gDYYYWardClassSetBroken = YES; return; }
     for (int i = 0; i < n; i++) {
         uintptr_t vals[2] = { (uintptr_t)buf[i], (uintptr_t)object_getClass(buf[i]) };
         for (int k = 0; k < 2; k++) {
@@ -533,28 +544,70 @@ static void DYYYWardBuildClassSet(void) {
     gDYYYWardClassSet = set;
 }
 
+// v2.4-8：类表不可用时的兜底「isa 像不像真类」校验（定义在 AddressReadable 之后）
+static BOOL DYYYWardIsaLooksLikeClass(uintptr_t isa);
+
+// v2.4-8：类表不可用时的兜底「isa 像不像真类」校验——
+// ① isa 地址必须可读；② 必须落在某个已加载镜像里（类对象都在镜像 __DATA/__objc，
+//    堆上的假指针/结构体字节不可能稳定指向镜像数据）；③ 从 isa 沿继承链最多 48 跳，
+//    每跳解引用前都重新过可读性判定，能走到根类（nil）才收。
+// 三层同时满足才放行——比类表哈希松一点，但远紧于「只查地址可读」。
+// 注：定义排在 DYYYWardAddressReadable 之后（C 语言先声明后使用）。
 static BOOL DYYYWardIsRegisteredClass(uintptr_t isa) {
-    if (!gDYYYWardClassSet) return NO;
-    size_t cap = gDYYYWardClassSetCap;
-    size_t h = DYYYWardClassHash(isa) & (cap - 1);
-    for (size_t p = 0; p < 64; p++) {
-        uintptr_t cur = gDYYYWardClassSet[(h + p) & (cap - 1)];
-        if (cur == 0) return NO;    // 开放寻址：遇到空槽就是不存在
-        if (cur == isa) return YES;
+    if (gDYYYWardClassSet) {
+        size_t cap = gDYYYWardClassSetCap;
+        size_t h = DYYYWardClassHash(isa) & (cap - 1);
+        for (size_t p = 0; p < 64; p++) {
+            uintptr_t cur = gDYYYWardClassSet[(h + p) & (cap - 1)];
+            if (cur == 0) return NO;    // 开放寻址：遇到空槽就是不存在
+            if (cur == isa) return YES;
+        }
+        return NO;
     }
-    return NO;
+    return DYYYWardIsaLooksLikeClass(isa); // 类表不可用 → 兜底
 }
 
 // 判断某地址「是否落在可读内存区域」——全程不解引用该地址，只查它属于谁：
 // ① libmalloc 的 zone 范围（堆上的对象都在这里）；
-// ② dyld 已加载镜像（字面量字符串、常量对象在 __DATA/__cstring）。
+// ② dyld 已加载镜像（字面量字符串、常量对象在 __DATA/__cstring）；
+// ③ v2.4-8 新增 mincore：对未映射区间返回 ENOMEM 且不触发缺页——堆/栈/镜像全覆盖的
+//    「已映射」判定。前两条在真机上疑似对堆对象失效（v2.4-7 实测 vm:0/对象ivar:0/
+//    数据源0数组/列表层无根 四洞齐飞：非 tagged 堆对象被整批拒掉），mincore 不依赖
+//    zone 内部实现，是这条链的保底。
 // 注：本来想用 mach_vm_read_overwrite 直接做安全读，但 iOS SDK 的 <mach/mach_vm.h>
-// 是 `#error mach_vm.h unsupported`，只能走 libmalloc + dyld 这条路。
+// 是 `#error mach_vm.h unsupported`，只能走 libmalloc + dyld + mincore 这条路。
+static BOOL DYYYWardPageMapped(uintptr_t addr) {
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 16384; // arm64 iOS 页大小 16KB
+    uintptr_t page = addr & ~((uintptr_t)ps - 1);
+    char vec = 0;
+    return mincore((void *)page, (size_t)ps, &vec) == 0; // 未映射 → ENOMEM，不 fault
+}
+
 static BOOL DYYYWardAddressReadable(uintptr_t addr) {
     if (malloc_zone_from_ptr((void *)addr) != NULL) return YES;
     Dl_info info;
     if (dladdr((void *)addr, &info) != 0) return YES;
-    return NO;
+    return DYYYWardPageMapped(addr);
+}
+
+// v2.4-8：类表不可用时的兜底「isa 像不像真类」校验——
+// ① isa 地址必须可读；② 必须落在某个已加载镜像里（类对象都在镜像 __DATA/__objc，
+//    堆上的假指针/结构体字节不可能稳定指向镜像数据）；③ 从 isa 沿继承链最多 48 跳，
+//    每跳解引用前都重新过可读性判定，能走到根类（nil）才收。
+// 三层同时满足才放行——比类表哈希松一点，但远紧于「只查地址可读」。
+static BOOL DYYYWardIsaLooksLikeClass(uintptr_t isa) {
+    if (!isa) return NO;
+    if (!DYYYWardAddressReadable(isa)) return NO;
+    Dl_info info;
+    if (dladdr((void *)isa, &info) == 0 || !info.dli_fbase) return NO;
+    Class c = (Class)isa;
+    for (int hops = 0; hops < 48; hops++) {
+        if (!c) return YES; // 链走到根类 → 像真类
+        if (!DYYYWardAddressReadable((uintptr_t)c)) return NO;
+        c = class_getSuperclass(c); // c 上一跳已验可读，读它的 superclass 字段才安全
+    }
+    return NO; // 48 跳还没到头 → 伪类
 }
 
 // 安全读 8 字节：先确认地址可读，再读，避免把内联字符串/结构体位模式当指针解引用撞 SIGBUS
@@ -576,9 +629,27 @@ static BOOL DYYYWardLooksLikeObject(id v) {
     if (bits & 0x7) return NO;                     // 必须 8 字节对齐
     DYYYWardBuildClassSet();
     uintptr_t isa = 0;
-    if (!DYYYWardSafeReadPtr(bits, &isa)) return NO; // 地址不可读 → 伪对象
-    if (!isa) return NO;
-    return DYYYWardIsRegisteredClass(isa);           // isa 必须是运行时注册过的类
+    if (!DYYYWardSafeReadPtr(bits, &isa)) { gDYYYWardLAORejectZone++; return NO; } // 地址不可读 → 伪对象
+    if (!isa) { gDYYYWardLAORejectIsa++; return NO; }
+    if (!DYYYWardIsRegisteredClass(isa)) { gDYYYWardLAORejectClass++; return NO; } // isa 必须是运行时注册过的类
+    return YES;
+}
+
+// v2.4-8：校验链自检探针——拿评论 VC（必然活着的真对象）手动跑一遍全链，
+// 记录断在哪一环。v2.4-7 实测「vm:0/对象ivar:0/数据源0数组/列表层无根」四洞齐飞，
+// 疑校验链把非 tagged 堆对象整批拒掉；这个探针让下一次失败 toast 直接指出断点，
+// 不用再猜。断点码：0=没探到对象 1=窗口/对齐 2=可读性 3=isa 4=类表 5=全链通 9=tagged。
+static void DYYYWardProbeValidator(void) {
+    UIViewController *vc = DYYYWardFindCommentVC();
+    if (!vc) { gDYYYWardLAOProbe = 0; return; }
+    uintptr_t bits = (uintptr_t)vc;
+    if (bits & 0x8000000000000000ULL) { gDYYYWardLAOProbe = 9; return; }
+    if (bits < 0x100000000ULL || bits > 0x0000FFFFFFFFFFFFULL || (bits & 0x7)) { gDYYYWardLAOProbe = 1; return; }
+    if (!DYYYWardAddressReadable(bits)) { gDYYYWardLAOProbe = 2; return; }
+    uintptr_t isa = 0;
+    if (!DYYYWardSafeReadPtr(bits, &isa) || !isa) { gDYYYWardLAOProbe = 3; return; }
+    if (!DYYYWardIsRegisteredClass(isa)) { gDYYYWardLAOProbe = 4; return; }
+    gDYYYWardLAOProbe = 5;
 }
 
 // type encoding 首字符为 '@' 即对象槽，允许裸 '@'（generic id）——**Swift 存储属性几乎都是裸 '@'**，
@@ -679,6 +750,32 @@ static NSArray *DYYYWardObjectIvars(Class cls) {
         if (t && t[0] == '@') [out addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
     }
     [gDYYYWardGraphIvarsCache setObject:out forKey:key];
+    return out;
+}
+
+// v2.4-8：枚举宿主 VM 用的「深」对象 ivar 表。class_copyIvarList **只返回本类声明的
+// ivar**——继承链上的全看不见（UIViewController 的 _view/_childViewControllers、
+// Aweme 各基类上挂的 vm）。宿主 VM 若声明在父类，浅表枚举直接漏掉。
+// 向上走 5 层继承链，按类缓存；Ivar 指针指向类元数据长期有效。
+static NSArray *DYYYWardObjectIvarsDeep(Class cls) {
+    if (!cls) return nil;
+    static NSMutableDictionary *deepCache = nil;
+    if (!deepCache) deepCache = [NSMutableDictionary dictionary];
+    NSString *key = NSStringFromClass(cls);
+    NSArray *cached = [deepCache objectForKey:key];
+    if (cached) return cached;
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSInteger depth = 0; cls && depth < 5; depth++) {
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        for (unsigned int i = 0; i < ic; i++) {
+            const char *t = ivar_getTypeEncoding(ivars[i]);
+            if (t && t[0] == '@') [out addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
+        }
+        if (ivars) free(ivars);
+        cls = class_getSuperclass(cls);
+    }
+    [deepCache setObject:out forKey:key];
     return out;
 }
 
@@ -1460,17 +1557,21 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
         // 裸 '@' 槽也安全）+ DYYYWardLooksLikeObject（只读 isa + 查已注册类表）；
         // 调用走 DYYYWardInvokeHostLocate（respondsToSelector: + 参数个数/类型校验后才
         // performSelector:）——两层防护下盲调安全。封顶 24 个候选防耗时。
+        // v2.4-8：ivar 表改深表（含 5 层继承链，class_copyIvarList 只看本类）；
+        // 诊断改 tried/seen——「0/0」= 这个类压根没有对象 ivar，「0/37」= 有 37 个
+        // 但校验链把值全拒了（v2.4-7 四洞齐飞疑点的直接证据）。
         if (invoked.length == 0) {
             NSMutableArray *owners = [NSMutableArray arrayWithObject:vc];
             for (UIViewController *ch in vc.childViewControllers) {
                 if (owners.count >= 5) break;
                 if (ch && ch != vc) [owners addObject:ch];
             }
-            NSInteger tried = 0;
+            NSInteger tried = 0, seen = 0;
             for (id owner in owners) {
                 if (invoked.length > 0 || tried >= 24) break;
-                for (NSValue *iv in DYYYWardObjectIvars(object_getClass(owner))) {
+                for (NSValue *iv in DYYYWardObjectIvarsDeep(object_getClass(owner))) {
                     if (tried >= 24) break;
+                    seen++;
                     Ivar v = (Ivar)[iv pointerValue];
                     id val = object_getIvar(owner, v);
                     if (!DYYYWardLooksLikeObject(val)) continue;
@@ -1485,7 +1586,7 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
                 }
             }
             vmCount += tried;
-            if (detail.length < 220) [detail appendFormat:@" 对象ivar:%ld", (long)tried];
+            if (detail.length < 220) [detail appendFormat:@" 对象ivar:%ld/%ld", (long)tried, (long)seen];
         }
         if (invoked.length > 0) break; // 宿主方法已经接受调用，不必再试其它实例
     }
@@ -1518,6 +1619,13 @@ static void DYYYWardShowLocateFailure(void) {
     if (gDYYYWardListJumpDiag.length > 0) {
         jumpMsg = [NSString stringWithFormat:@" %@", gDYYYWardListJumpDiag];
     }
+    // v2.4-8：对象校验链自检——探针断点 + 分环节拒绝次数。
+    // 探针码：0=没探到VC 1=窗口/对齐断 2=可读性断 3=isa断 4=类表断 5=全链通 9=tagged。
+    // 正常应是「探针:5」且 zone/isa/类 三个计数接近 0；若「探针:2/4」+ 类计数几千，
+    // 就是校验链把真对象整批拒了（v2.4-7 四洞齐飞的那个疑点）。
+    NSString *laoMsg = [NSString stringWithFormat:@" 校验:区%ld isa%ld 类%ld 探针:%ld",
+                        (long)gDYYYWardLAORejectZone, (long)gDYYYWardLAORejectIsa,
+                        (long)gDYYYWardLAORejectClass, (long)gDYYYWardLAOProbe];
     NSInteger maxRows = 0; CGFloat off = 0;
     UIViewController *cvc = DYYYWardFindCommentVC();
     if (cvc) {
@@ -1543,8 +1651,8 @@ static void DYYYWardShowLocateFailure(void) {
     if (gDYYYWardParentDiag.length > 0) {
         parentMsg = [NSString stringWithFormat:@" 父:%@", gDYYYWardParentDiag];
     }
-    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@%@ 行:%ld 偏移:%.0f",
-                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, jumpMsg, (long)maxRows, off]];
+    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@%@%@ 行:%ld 偏移:%.0f",
+                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, jumpMsg, laoMsg, (long)maxRows, off]];
 }
 
 // P0：按屏批量扫描（替代 v2.3 的逐行 0.15s）。
@@ -1838,6 +1946,10 @@ static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidL
 
 // 收集列表层搜索根：每个列表的 dataSource + delegate（公开属性）+ 数据源上挂的
 // viewModel/model/listViewModel（ivar 名取值，不过 KVC）+ 评论 VC 本身。
+// v2.4-8：ds/del/commentVC 都是公开 API 的返回值——按构造就是真对象，不再过
+// LooksLikeObject（v2.4-7 实测「无根」：校验链疑把堆对象整批拒掉，公开 API 的
+// 返回值不该再被自家校验卡一道）。它们随后进 GraphMatch，图搜内部对每个节点
+// 的 ivar 值仍然逐层校验，安全边界不撤。
 static NSArray *DYYYWardListLayerRoots(UIViewController *commentVC) {
     NSMutableArray *roots = [NSMutableArray array];
     NSArray *lists = commentVC ? DYYYWardCommentListViews(commentVC) : @[];
@@ -1851,18 +1963,18 @@ static NSArray *DYYYWardListLayerRoots(UIViewController *commentVC) {
             ds = [(UICollectionView *)sv dataSource];
             del = [(UICollectionView *)sv delegate];
         }
-        if (ds && DYYYWardLooksLikeObject(ds) && ds != sv) [roots addObject:ds];
-        if (del && DYYYWardLooksLikeObject(del) && del != sv && del != ds) [roots addObject:del];
+        if (ds && ds != sv) [roots addObject:ds];
+        if (del && del != sv && del != ds) [roots addObject:del];
         for (NSString *k in @[ @"viewModel", @"model", @"listViewModel" ]) {
             id vm = DYYYWardIvarNamed(ds, k); // ds 为 nil 时安全返回 nil
-            if (vm && DYYYWardLooksLikeObject(vm) && vm != ds) {
+            if (vm && vm != ds) {
                 BOOL dup = NO;
                 for (id e in roots) { if (e == vm) { dup = YES; break; } }
                 if (!dup) [roots addObject:vm];
             }
         }
     }
-    if (commentVC && DYYYWardLooksLikeObject(commentVC)) {
+    if (commentVC) {
         BOOL dup = NO;
         for (id e in roots) { if (e == commentVC) { dup = YES; break; } }
         if (!dup) [roots addObject:commentVC];
@@ -1954,8 +2066,11 @@ static BOOL DYYYWardListLayerJumpCore(NSArray *targetCIDs, NSString *contentHint
     if (targetCIDs.count == 0) { gDYYYWardListJumpDiag = @"列表层:无cid"; return NO; }
     UIViewController *commentVC = DYYYWardFindCommentVC();
     if (!commentVC) { gDYYYWardListJumpDiag = @"列表层:评论区未打开"; return NO; }
+    NSArray *lists = DYYYWardCommentListViews(commentVC);
     NSArray *roots = DYYYWardListLayerRoots(commentVC);
-    if (roots.count == 0) { gDYYYWardListJumpDiag = @"列表层:无根"; return NO; }
+    // v2.4-8：无根时带上列表数——列表 0 = 找错了 VC（面板不在这个 VC 的视图树里）；
+    // 列表 >0 却无根 = 根收集逻辑出问题。两者修法完全不同，必须分清。
+    if (roots.count == 0) { gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:无根(列表%ld)", (long)lists.count]; return NO; }
     id model = nil;
     BOOL found = DYYYWardListLayerFindModel(roots, targetCIDs, &model);
     if (!found) { gDYYYWardListJumpDiag = @"列表层:未命中(未加载?)"; return NO; }
@@ -2169,6 +2284,11 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     // v2.4-7：父/列表层诊断段也每次重置，避免上一轮的「父:已点回复」糊到本轮 toast 里
     gDYYYWardParentDiag = nil;
     gDYYYWardListJumpDiag = nil;
+    // v2.4-8：校验链分环节计数每次「查看」重置；探针在 2.2s 块/主循环首步跑
+    gDYYYWardLAORejectZone = 0;
+    gDYYYWardLAORejectIsa = 0;
+    gDYYYWardLAORejectClass = 0;
+    gDYYYWardLAOProbe = 0;
     // v2.4-2：URL 深链已把目标评论滚到位 → 本次「查看」结束，不再跑脆弱的扫描/滚动。
     if (gDYYYWardURLDirectOK) {
         gDYYYWardURLDirectOK = NO;
@@ -2194,6 +2314,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     if (parentIDs.count > 0) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != urlGen) return;
+            DYYYWardProbeValidator(); // v2.4-8：先自检对象校验链，断点进 toast
             if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
                 gDYYYWardLocateDone = gen;
                 return;
@@ -2214,6 +2335,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
             if (gDYYYWardLocateDone == gen) return;
             if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始，旧链作废
             @try {
+                DYYYWardProbeValidator(); // v2.4-8：一级评论路径也自检（二级回复在 2.2s 块已探过，重复跑无害）
                 // 宿主内部定位：第 1/7/13 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
                 if (i == 0 || i == 6 || i == 12) {
                     for (NSString *cid in cidList) {
