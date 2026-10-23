@@ -117,6 +117,9 @@ static id DYYYWardSafeKVC(id obj, NSString *key);
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget);
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
                               NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token);
+static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
+                                NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token); // v2.4-3：collection view 版
+static NSInteger DYYYWardListRowCount(UIScrollView *sv); // v2.4-3：table/collection 通吃行数
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
 static NSInteger gDYYYWardSweepToken = 0; // 扫描令牌：取消时自增，已在排队的旧步骤一检查就自行退出
@@ -321,6 +324,10 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     NSString *probe = DYYYWardContentProbe(contentHint, 10); // 自动裁掉 [看] 等表情短码
     gDYYYWardGraphStrCount = 0;
     NSString *firstCellCls = nil;
+    // v2.4-3：正文命中但 cell 对象图搜不到 cid 的第一格（Swift 新 cell 很常见 cid 不在图里）。
+    // 全列表扫完仍无 cid 命中就认它 —— 正文前缀撞车概率远小于「明明在屏上却报无匹配」。
+    id probeOnlyCell = nil;
+    UIScrollView *probeOnlyList = nil;
 
     for (UIScrollView *scroll in lists) {
         NSArray *cells = nil;
@@ -341,7 +348,11 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                 if (!DYYYWardCellQuickMatch(cell, probe)) continue;
                 if (cidList.count > 0) {
                     NSInteger budget = 1200;
-                    if (!DYYYWardGraphMatch(cell, cidList, nil, 8, &budget)) continue; // 正文撞车，不是这条
+                    if (!DYYYWardGraphMatch(cell, cidList, nil, 8, &budget)) {
+                        // v2.4-3：不再是「正文撞车，不是这条」直接 continue —— 先记下来兜底
+                        if (!probeOnlyCell) { probeOnlyCell = cell; probeOnlyList = scroll; }
+                        continue;
+                    }
                 }
                 DYYYWardScrollAndHighlight(scroll, cell);
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已定位：%@", probe]];
@@ -374,6 +385,13 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                 }
             }
         }
+    }
+
+    // v2.4-3：cid 全都没命中，但有一格正文前缀命中 → 认它（最后兜底，好过直接报失败）
+    if (probeOnlyCell && probeOnlyList) {
+        DYYYWardScrollAndHighlight(probeOnlyList, probeOnlyCell);
+        [DYYYUtils showToast:[NSString stringWithFormat:@"已定位(按正文)：%@", probe]];
+        return YES;
     }
 
     NSString *cidTail = firstCid ? [firstCid substringToIndex:MIN(10, firstCid.length)] : @"(空)";
@@ -1358,10 +1376,119 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
     });
 }
 
+// v2.4-3：table/collection 通吃的行数统计（选「行数最多的列表」扫描用）
+static NSInteger DYYYWardListRowCount(UIScrollView *sv) {
+    if ([sv isKindOfClass:[UITableView class]]) {
+        UITableView *t = (UITableView *)sv;
+        NSInteger c = 0;
+        for (NSInteger s = 0; s < t.numberOfSections; s++) c += [t numberOfRowsInSection:s];
+        return c;
+    }
+    if ([sv isKindOfClass:[UICollectionView class]]) {
+        UICollectionView *cv = (UICollectionView *)sv;
+        NSInteger c = 0;
+        for (NSInteger s = 0; s < cv.numberOfSections; s++) c += [cv numberOfItemsInSection:s];
+        return c;
+    }
+    return 0;
+}
+
+// v2.4-3：UICollectionView 版按屏扫描。新 Swift 评论区的列表是 collection view
+//（cell 类名 AWECommentPanelHeaderSwiftImpl.CommentPanelHeaderNewCell 实测），
+// v2.4-2 的 DYYYWardSweepRows 只挑 UITableView → 扫描整段根本没跑（失败 toast 只剩
+// 可见区比对的那条「无匹配」诊断）。逻辑与 DYYYWardSweepStep 完全同构：
+// 领头行滚到顶 → 0.14s 后整屏 cell 一次性比对 → 下一屏；到底滚最后一格触发分页，重试 3 次判失败。
+static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
+                                NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token) {
+    if (!cv || gDYYYWardLocateDone == gen || total <= 0) return;
+    if (token != gDYYYWardSweepToken) return; // 已被取消（宿主接管/重新起扫），旧链自行退出
+    if (flat >= total) {
+        // 已扫到当前已加载末尾：滚到最后一格触发分页加载，重新读行数，变多就接着扫
+        NSIndexPath *lastIP = nil;
+        for (NSInteger s = cv.numberOfSections - 1; s >= 0; s--) {
+            NSInteger rows = [cv numberOfItemsInSection:s];
+            if (rows > 0) { lastIP = [NSIndexPath indexPathForItem:rows - 1 inSection:s]; break; }
+        }
+        if (lastIP) {
+            @try { [cv scrollToItemAtIndexPath:lastIP atScrollPosition:UICollectionViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+        }
+        @try { [cv setContentOffset:CGPointMake(0, MAX(0, cv.contentSize.height - cv.bounds.size.height)) animated:NO]; } @catch (NSException *e) {}
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardLocateDone == gen || token != gDYYYWardSweepToken) return;
+            NSInteger nowTotal = 0;
+            for (NSInteger s = 0; s < cv.numberOfSections; s++) nowTotal += [cv numberOfItemsInSection:s];
+            if (nowTotal > total) {
+                DYYYWardSweepStepCV(cv, cidList, contentHint, gen, total, nowTotal, 0, token);
+            } else if (pageTry < 2) {
+                DYYYWardSweepStepCV(cv, cidList, contentHint, gen, total, total, pageTry + 1, token);
+            } else {
+                DYYYWardShowLocateFailure(); // 重试 3 次仍无新行，真到底了
+            }
+        });
+        return;
+    }
+    // 用户正在滑就别抢滚动条，等松手再继续
+    if (cv.isDragging || cv.isDecelerating) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DYYYWardSweepStepCV(cv, cidList, contentHint, gen, flat, total, pageTry, token);
+        });
+        return;
+    }
+    NSIndexPath *ip = nil;
+    NSInteger remain = flat;
+    for (NSInteger s = 0; s < cv.numberOfSections; s++) {
+        NSInteger rows = [cv numberOfItemsInSection:s];
+        if (rows > 0 && remain < rows) { ip = [NSIndexPath indexPathForItem:remain inSection:s]; break; }
+        remain -= rows;
+    }
+    if (!ip) return;
+    // 领头行顶到列表顶部（不是 Middle），一屏能覆盖 flat 之后的 6~7 个新行
+    @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionTop animated:NO]; } @catch (NSException *e) { return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gDYYYWardLocateDone == gen || token != gDYYYWardSweepToken) return;
+        NSString *probe = DYYYWardContentProbe(contentHint, 10);
+        NSInteger sectionCount = cv.numberOfSections;
+        NSArray *visible = [cv indexPathsForVisibleRows];
+        NSInteger maxFlat = -1;
+        id hitCell = nil;
+        for (NSIndexPath *vip in visible) {
+            if (vip.section >= sectionCount) continue;
+            NSInteger rowsInSection = [cv numberOfItemsInSection:vip.section];
+            if (vip.row >= rowsInSection) continue;
+            NSInteger fi = vip.row;
+            for (NSInteger s = 0; s < vip.section; s++) fi += [cv numberOfItemsInSection:s];
+            if (fi < flat) continue;                 // 上一屏已经查过
+            if (fi > maxFlat) maxFlat = fi;
+            if (hitCell) continue;
+            id cell = [cv cellForItemAtIndexPath:vip];
+            if (!cell) continue;
+            BOOL quick = (probe.length > 0) && DYYYWardCellQuickMatch(cell, probe);
+            BOOL exact = NO;
+            if (quick) {
+                if (cidList.count == 0) exact = YES;
+                else { NSInteger b = 1200; exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b); }
+            } else if (probe.length == 0 && cidList.count > 0) {
+                NSInteger b = 1500;
+                exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
+            }
+            if (quick || exact) { hitCell = cell; }
+        }
+        if (hitCell) {
+            DYYYWardScrollAndHighlight(cv, hitCell);
+            [DYYYUtils showToast:[NSString stringWithFormat:@"已定位：%@", probe.length > 0 ? probe : @"该评论"]];
+            gDYYYWardLocateDone = gen;
+            return;
+        }
+        NSInteger next = (maxFlat >= flat) ? (maxFlat + 1) : (flat + 1);
+        DYYYWardSweepStepCV(cv, cidList, contentHint, gen, next, total, pageTry, token);
+    });
+}
+
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen) {
     if (gDYYYWardSweepGen == gen) return;      // 本代已经在扫，别叠加第二条扫描链（两条会互相抢滚动）
-    // 多实例：把每个候选评论 VC 里的 table 都算进来，选行数最多的那个（可能是窗口上正在用的那个）
-    UITableView *best = nil; NSInteger total = 0;
+    // 多实例：把每个候选评论 VC 里的 table/collection 都算进来，选行数最多的那个
+    //（v2.4-3 起不再只认 UITableView —— Swift 新评论区列表是 collection view，之前整段扫描没跑）
+    UIScrollView *bestList = nil; NSInteger total = 0;
     NSArray *vcs = DYYYWardAllCommentVCs();
     if (vcs.count == 0) {
         UIViewController *one = DYYYWardFindCommentVC();
@@ -1369,27 +1496,34 @@ static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger
     }
     for (UIViewController *vc in vcs) {
         for (UIScrollView *sv in DYYYWardCommentListViews(vc)) {
-            if (![sv isKindOfClass:[UITableView class]]) continue;
-            UITableView *t = (UITableView *)sv;
-            NSInteger c = 0;
-            for (NSInteger s = 0; s < t.numberOfSections; s++) c += [t numberOfRowsInSection:s];
-            if (c > total) { total = c; best = t; }
+            NSInteger c = DYYYWardListRowCount(sv);
+            if (c > total) { total = c; bestList = sv; }
         }
     }
-    if (!best || total <= 0) return;
+    if (!bestList || total <= 0) return;
     gDYYYWardSweepGen = gen;                  // 告知主循环：已在按行扫描，跳过渐进滚动（防互相打架）
     gDYYYWardSweepToken++;                    // 新令牌：让上一代还在排队的步骤失效
     NSInteger token = gDYYYWardSweepToken;
     // 起点不一定是 0：宿主定位方法常已经把列表带到目标附近（二级回复尤其），
     // 这时从当前可见处往上留一屏重叠再往下扫，比每次从第 0 行重扫既快又更容易命中。
     NSInteger start = 0;
-    NSIndexPath *firstVisible = [best indexPathsForVisibleRows].firstObject;
+    NSArray *visIPs = nil;
+    if ([bestList isKindOfClass:[UITableView class]]) visIPs = [(UITableView *)bestList indexPathsForVisibleRows];
+    else if ([bestList isKindOfClass:[UICollectionView class]]) visIPs = [(UICollectionView *)bestList indexPathsForVisibleRows];
+    NSIndexPath *firstVisible = visIPs.firstObject;
     if (firstVisible) {
         NSInteger fi = firstVisible.row;
-        for (NSInteger s = 0; s < firstVisible.section; s++) fi += [best numberOfRowsInSection:s];
+        for (NSInteger s = 0; s < firstVisible.section; s++) {
+            if ([bestList isKindOfClass:[UITableView class]]) fi += [(UITableView *)bestList numberOfRowsInSection:s];
+            else if ([bestList isKindOfClass:[UICollectionView class]]) fi += [(UICollectionView *)bestList numberOfItemsInSection:s];
+        }
         start = MAX(0, fi - 6);
     }
-    DYYYWardSweepStep(best, cidList, contentHint, gen, start, total, 0, token);
+    if ([bestList isKindOfClass:[UITableView class]]) {
+        DYYYWardSweepStep((UITableView *)bestList, cidList, contentHint, gen, start, total, 0, token);
+    } else {
+        DYYYWardSweepStepCV((UICollectionView *)bestList, cidList, contentHint, gen, start, total, 0, token);
+    }
 }
 
 // 把所有候选列表都滚一屏（评论列表是 6 个候选里的哪个不定，只滚第一个会滚错对象；
@@ -2171,21 +2305,31 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         NSInteger urlGen = gDYYYWardURLGen;
         gDYYYWardURLDirectOK = NO;
         gDYYYWardURLDiag = nil;
-        // 复核延时按「是否带 comment_id」区分：深链宿主自己跳转需要更多时间把目标滚到位
-        NSTimeInterval checkDelay = (commentID.length > 0) ? 1.8 : 1.2;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(checkDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始
-            if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
-                gDYYYWardURLDirectOK = YES;
-                gDYYYWardURLDiag = @"直达到位";
-                // 一级/二级都已可见 → 直接 toast，不再跑兜底
-                [DYYYUtils showToast:@"已定位到该评论"];
-                return;
-            }
-            gDYYYWardURLDiag = @"深链未到位";
-            // 不在位 → 走完整兜底（含二级回复父定位）
-            DYYYWardLocateComment(awemeID, cidList, contentHint, parentIDs);
-        });
+        // v2.4-3：复核改 3 轮阶梯（首轮按是否带 comment_id 取 1.8/1.2s，之后每轮 +1.4s）。
+        // 评论区收起/数据慢时宿主可能 2~4s 才把目标滚到位：首轮就兜底会让扫描把深链的定位成果拽走。
+        NSTimeInterval baseDelay = (commentID.length > 0) ? 1.8 : 1.2;
+        for (NSInteger round = 0; round < 3; round++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((baseDelay + round * 1.4) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始
+                if (gDYYYWardURLDirectOK) return;      // 之前轮已命中
+                if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
+                    gDYYYWardURLDirectOK = YES;
+                    gDYYYWardURLDiag = @"直达到位";
+                    gDYYYWardFailCount = 0;
+                    // 一级/二级都已可见 → 直接 toast，不再跑兜底
+                    [DYYYUtils showToast:@"已定位到该评论"];
+                    return;
+                }
+                gDYYYWardURLDiag = @"深链未到位";
+                if (round < 2) return; // 还有后续复核轮，先不动列表
+                // 3 轮都没到位 → 走完整兜底（含二级回复父定位）
+                DYYYWardLocateComment(awemeID, cidList, contentHint, parentIDs);
+            });
+        }
+        // v2.4-3 关键修复：这里必须 return。缺了它代码会穿透到函数尾部的裸深链（不带
+        // comment_id）再 openURL 一次 —— 表现为「跳两次视频」，且第二次把深链刚展开的
+        // 评论区定位直接冲掉（v2.4-2 用户实测）。
+        return;
     }
 
     if (awemeID.length == 0) {
