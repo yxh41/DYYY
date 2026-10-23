@@ -1448,7 +1448,13 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
         if (gDYYYWardLocateDone == gen || token != gDYYYWardSweepToken) return;
         NSString *probe = DYYYWardContentProbe(contentHint, 10);
         NSInteger sectionCount = cv.numberOfSections;
-        NSArray *visible = [cv indexPathsForVisibleRows];
+        // theos SDK 头文件里 UICollectionView 无 indexPathsForVisibleRows 声明（CI 实测编译错），
+        // 用 visibleCells + indexPathForCell: 等价收集（iOS 6 起就有）
+        NSMutableArray *visible = [NSMutableArray array];
+        for (id c in [cv visibleCells]) {
+            NSIndexPath *vip2 = [cv indexPathForCell:c];
+            if (vip2) [visible addObject:vip2];
+        }
         NSInteger maxFlat = -1;
         id hitCell = nil;
         for (NSIndexPath *vip in visible) {
@@ -1509,7 +1515,16 @@ static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger
     NSInteger start = 0;
     NSArray *visIPs = nil;
     if ([bestList isKindOfClass:[UITableView class]]) visIPs = [(UITableView *)bestList indexPathsForVisibleRows];
-    else if ([bestList isKindOfClass:[UICollectionView class]]) visIPs = [(UICollectionView *)bestList indexPathsForVisibleRows];
+    else if ([bestList isKindOfClass:[UICollectionView class]]) {
+        // theos SDK 无 UICollectionView.indexPathsForVisibleRows 声明 → visibleCells 等价收集
+        NSMutableArray *tmp = [NSMutableArray array];
+        UICollectionView *bcv = (UICollectionView *)bestList;
+        for (id c in [bcv visibleCells]) {
+            NSIndexPath *ip2 = [bcv indexPathForCell:c];
+            if (ip2) [tmp addObject:ip2];
+        }
+        visIPs = tmp;
+    }
     NSIndexPath *firstVisible = visIPs.firstObject;
     if (firstVisible) {
         NSInteger fi = firstVisible.row;
