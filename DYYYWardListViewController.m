@@ -455,44 +455,11 @@ static NSString *gDYYYWardChildHint = nil;
 static BOOL gDYYYWardSweepForParent = NO;   // 当前扫描是在找父评论（命中后点回复而非高亮）
 static BOOL gDYYYWardParentHandled = NO;    // 父已展开/已扫描过，避免重复起父扫描
 
-// 在父 cell 的视图树里找「查看回复/展开回复」类可点元素；命中且未展开就点开并返回 YES（已展开也返回 YES）。
-// 没有可点入口返回 NO，交由后续兜底。只认「短文案 + 含 回复/展开/reply」，避免匹配到评论正文里的词。
-// 点击只走 UIButton 的 sendActionsForControlEvents（等价于真点）；其余情况宁可不点也不盲 performSelector
-// （参数签名未知是 v2.3-20 的崩溃源），交由父评论定位兜底。
-static BOOL DYYYWardExpandRepliesOnCell(UIView *cell) {
-    if (!cell) return NO;
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
-    NSInteger visited = 0;
-    UIView *hit = nil;
-    while (stack.count > 0 && visited < 260) {
-        UIView *cur = [stack lastObject];
-        [stack removeLastObject];
-        visited++;
-        NSString *txt = nil;
-        if ([cur isKindOfClass:[UILabel class]]) txt = [(UILabel *)cur text];
-        if (txt.length == 0) txt = cur.accessibilityLabel;
-        if (txt.length > 0 && txt.length < 40) {
-            BOOL looksExpand = [txt rangeOfString:@"回复"].location != NSNotFound ||
-                               [txt rangeOfString:@"展开"].location != NSNotFound ||
-                               [txt.lowercaseString rangeOfString:@"reply"].location != NSNotFound;
-            if (looksExpand) {
-                if ([txt rangeOfString:@"收起"].location != NSNotFound) return YES; // 已展开：有「收起」入口
-                if (!hit) hit = cur;
-            }
-        }
-        [stack addObjectsFromArray:cur.subviews];
-    }
-    if (!hit) return NO;
-    UIView *v = hit;
-    for (NSInteger up = 0; up < 5 && v; up++) {
-        if ([v isKindOfClass:[UIButton class]]) {
-            [(UIButton *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
-            return YES;
-        }
-        v = v.superview;
-    }
-    return NO;
-}
+// v2.4-15：「在父 cell 上点开回复」的实现整体挪到「父扫描命中后的统一动作」那一段了
+// （见 DYYYWardExpandRepliesOnCell 的实现 + 上方长注释）。挪的原因：它要用 v2.4-13 的
+// Mach 安全读、v2.4-8 的 ivar 扫描（DYYYWardSafeCopy / DYYYWardIvarNamed），
+// 那些定义在本文更后面的位置，C 里必须先声明后使用。
+
 
 // MARK: - 数据源定位
 // 只匹配「可见 cell」的致命短板：目标评论在第几百条时根本不在首屏，滚动几屏也覆盖不到。
@@ -2156,33 +2123,457 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
     });
 }
 
+// MARK: - v2.4-15 展开回复入口：「有展开的能定位到、没展开的不行」的正面修复
+//
+// 老实现（v2.4-4 起）只有两条判定、一条点击：
+//   判定① UILabel.text 含「回复/展开/reply」→ 判定② 沿 superview 找 UIButton → sendActions。
+// 真机「未展开」的 cell 一个都走不通，直接落到「无回复按钮」，子评论从没被加载出来，
+// 后面扫多少行都是白扫 —— 这正好解释用户实测「有展开的能定位到，没展开的还是不行」：
+// 已展开时 cell 里有「收起」，老实现第 480 行 `return YES` 直接跳过点击，而子评论本来就在列表里。
+//
+// 三个漏洞，逐个补：
+//  ① 取文字太窄：只认 UILabel。抖音新评论区的「展开N条回复」多半是 YYLabel / AWE 自定义
+//     label（**不是 UILabel 子类**），text 走自定义 getter → 现在按 selector 取，先用
+//     method_getReturnType 确认返回对象类型，再兜 accessibilityLabel/Value。
+//  ② 点击太窄：只认 UIButton。Swift/AWE 侧大量入口是「普通 UIView + UITapGestureRecognizer」。
+//     → 补两条：任意 UIControl 祖先、手势 target/action、以及无障碍 activate。
+//  ③ 入口不在父 cell 里：分组布局下「展开N条回复」可能是独立的一格（父 cell 的下一格）。
+//     → cell 内找不到就顺带看父 cell 的下一格。
+// 另加一条：点了没生效就换下一个候选再点（最多 2 个），每个候选给 1s 观察窗。
+//
+// 安全边界（一条都不放松）：
+//  · 所有内存读走 v2.4-13 的 Mach 安全读（DYYYWardSafeCopy），读之前就由内核判可读；
+//  · 手势的 target/action 是私有 ivar，读不到（类布局变了）就 fail closed 返回 NO，不猜；
+//  · 调用前用 methodSignature 校验：UIKit 触发手势永远是 (void)xxx:(UIGestureRecognizer *)，恰好 3 个参数，
+//    签名对不上就不调 —— 不会重演 v2.3-20 那种「盲调参数未知的私有方法」的崩溃。
+
+// 这里为什么不用 objc_msgSend 也不用 performSelector:withObject: ？
+//  · performSelector: 的返回类型写死成 id，而手势回调是 void —— ARC 会拿 x0 里的残留值
+//    当对象去 retain/autorelease，等于随机指针解引用。绝对不能用。
+//  · objc_msgSend 强转虽然在 ARC 下通常可用，但每处都要手写精确原型，一旦类型对不上就是
+//    未定义行为，且本机没有 clang 无法第一时间发现。
+// 统一改用「声明一个只含目标方法的协议 + 转换」来取值（返回对象，ARC 语义正确），
+// 以及 NSInvocation 来触发（它能正确区分 void 返回，不碰返回值）。
+@protocol DYYYWardTextGetter <NSObject>
+- (NSString *)text;
+- (NSAttributedString *)attributedText;
+@end
+
+@protocol DYYYWardA11yActivate <NSObject>
+- (BOOL)accessibilityActivate;
+@end
+
+// 取一个视图上的文字。UILabel 走常规字段；非 UILabel（YYLabel/AWE 自定义 label）按 selector 取，
+// 先用 method_getReturnType 确认返回对象类型再调用 —— 返回标量时直接跳过，绝不把整数当对象 retain。
+static NSString *DYYYWardViewText(UIView *v) {
+    if (!v) return nil;
+    NSString *out = nil;
+    if ([v isKindOfClass:[UILabel class]]) {
+        out = [(UILabel *)v text];
+        if (out.length == 0) out = [(UILabel *)v attributedText].string;
+    } else {
+        id<DYYYWardTextGetter> g = (id<DYYYWardTextGetter>)v;
+        SEL selText = NSSelectorFromString(@"text");
+        SEL selAttr = NSSelectorFromString(@"attributedText");
+        // 先 text：返回类型必须是对象，否则跳过（有些宿主类的 text 是结构体/枚举）
+        Method mt = [v respondsToSelector:selText] ? class_getInstanceMethod(object_getClass(v), selText) : NULL;
+        if (mt) {
+            char rt[16];
+            method_getReturnType(mt, rt, sizeof(rt));
+            if (rt[0] == '@') {
+                @try {
+                    NSString *s = [g text];
+                    if ([s isKindOfClass:[NSString class]]) out = s;
+                } @catch (NSException *e) {}
+            }
+        }
+        if (out.length == 0) {
+            Method ma = [v respondsToSelector:selAttr] ? class_getInstanceMethod(object_getClass(v), selAttr) : NULL;
+            if (ma) {
+                char rt[16];
+                method_getReturnType(ma, rt, sizeof(rt));
+                if (rt[0] == '@') {
+                    @try {
+                        NSAttributedString *a = [g attributedText];
+                        if ([a isKindOfClass:[NSAttributedString class]]) out = a.string;
+                    } @catch (NSException *e) {}
+                }
+            }
+        }
+    }
+    if (out.length == 0) out = v.accessibilityLabel;
+    if (out.length == 0) out = v.accessibilityValue;
+    return out;
+}
+
+// 「展开N条回复 / 共N条回复 / 查看N条回复 / N条回复」判定：必须同时出现「回复」类词和
+// 「展开/查看/更多/全部/共/条」类词。单靠「回复」会误中评论正文，单靠「展开」会误中「展开说说」。
+static BOOL DYYYWardLooksLikeExpandText(NSString *t) {
+    if (t.length == 0 || t.length > 40) return NO;
+    if ([t rangeOfString:@"收起"].location != NSNotFound) return NO; // 那是收起入口，点了会折叠
+    NSString *low = t.lowercaseString;
+    BOOL hasReply = [t rangeOfString:@"回复"].location != NSNotFound ||
+                    [t rangeOfString:@"回覆"].location != NSNotFound ||
+                    [low rangeOfString:@"repl"].location != NSNotFound;
+    if (!hasReply) return NO;
+    return [t rangeOfString:@"展开"].location != NSNotFound ||
+           [t rangeOfString:@"查看"].location != NSNotFound ||
+           [t rangeOfString:@"更多"].location != NSNotFound ||
+           [t rangeOfString:@"全部"].location != NSNotFound ||
+           [t rangeOfString:@"共"].location != NSNotFound ||
+           [t rangeOfString:@"条"].location != NSNotFound;
+}
+
+// 已展开判定：cell 里有「收起…回复」这类短文案 → 不必再点，直接找子评论。
+static BOOL DYYYWardCellShowsCollapse(UIView *cell) {
+    if (!cell) return NO;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
+    NSInteger visited = 0;
+    while (stack.count > 0 && visited < 260) {
+        UIView *cur = [stack lastObject];
+        [stack removeLastObject];
+        visited++;
+        NSString *t = DYYYWardViewText(cur);
+        if (t.length > 0 && t.length <= 24 &&
+            [t rangeOfString:@"收起"].location != NSNotFound &&
+            ([t rangeOfString:@"回复"].location != NSNotFound || [t rangeOfString:@"条"].location != NSNotFound)) {
+            return YES;
+        }
+        [stack addObjectsFromArray:cur.subviews];
+    }
+    return NO;
+}
+
+// 按名字取「非对象」ivar 的原始 8 字节（SEL / 裸指针）。SEL 的 encoding 是 ':'，
+// 走不了 object_getIvar —— 只能算偏移 + 安全读。偏移小于 isa 大小就跳过，别把 isa 读出来。
+static BOOL DYYYWardIvarRaw8(id obj, NSString *name, uintptr_t *out) {
+    if (!obj || name.length == 0 || !out) return NO;
+    NSString *wantUnderscore = [@"_" stringByAppendingString:name];
+    Class cls = object_getClass(obj);
+    for (NSInteger depth = 0; cls && depth < 4; depth++) {
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        BOOL hit = NO;
+        for (unsigned int i = 0; i < ic; i++) {
+            const char *n = ivar_getName(ivars[i]);
+            if (!n) continue;
+            NSString *cn = [NSString stringWithUTF8String:n];
+            if (!cn) continue;
+            if (![cn isEqualToString:name] && ![cn isEqualToString:wantUnderscore]) continue;
+            ptrdiff_t off = ivar_getOffset(ivars[i]);
+            uintptr_t raw = 0;
+            if (off >= (ptrdiff_t)sizeof(void *) &&
+                DYYYWardSafeCopy((const void *)((uintptr_t)(__bridge void *)obj + (uintptr_t)off), &raw, sizeof(raw))) {
+                *out = raw;
+                hit = YES;
+            }
+            break;
+        }
+        if (ivars) free(ivars);
+        if (hit) return YES;
+        cls = class_getSuperclass(cls);
+    }
+    return NO;
+}
+
+static BOOL DYYYWardViewHasTapGesture(UIView *v) {
+    for (id gr in v.gestureRecognizers) {
+        if ([gr isKindOfClass:[UITapGestureRecognizer class]]) return YES;
+    }
+    return NO;
+}
+
+// 触发视图上第一个 UITapGestureRecognizer 的 target/action（等价于真点一下）。
+// UIGestureRecognizer 没有公开的 action 列表，只能读私有 ivar：
+//   _targets = NSArray<UIGestureRecognizerTarget *>，元素上是 _target(id) + _action(SEL)。
+// 任一环节读不到/签名对不上 → 返回 NO（不猜、不盲调）。
+static BOOL DYYYWardFireTapGesture(UIView *v) {
+    NSArray *grs = v.gestureRecognizers;
+    if (grs.count == 0) return NO;
+    for (id gr in grs) {
+        if (![gr isKindOfClass:[UITapGestureRecognizer class]]) continue;
+        id targetsObj = DYYYWardIvarNamed(gr, @"targets");
+        if (![targetsObj isKindOfClass:[NSArray class]]) continue;
+        for (id t in (NSArray *)targetsObj) {
+            if (!t) continue;
+            id target = DYYYWardIvarNamed(t, @"target");
+            if (!target) continue;
+            uintptr_t raw = 0;
+            if (!DYYYWardIvarRaw8(t, @"action", &raw)) continue;
+            SEL action = (SEL)raw;
+            if (!action) continue;
+            if (![target respondsToSelector:action]) continue;
+            NSMethodSignature *sig = [target methodSignatureForSelector:action];
+            if (!sig || sig.numberOfArguments != 3) continue; // UIKit 触发手势固定 3 参：self/_cmd/gr
+            // 用 NSInvocation 而不是 performSelector: —— 后者返回类型写死 id，
+            // 遇到 void 的手势回调会把 x0 残留值当对象 retain（随机崩）。
+            @try {
+                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                if (!inv) continue;
+                [inv setTarget:target];
+                [inv setSelector:action];
+                id arg = gr;
+                [inv setArgument:&arg atIndex:2];
+                [inv invoke];
+                return YES;
+            } @catch (NSException *e) { return NO; }
+        }
+    }
+    return NO;
+}
+
+// 这个视图最终会被「点」在哪个对象上：UIControl 祖先 > 带点按手势的祖先 > 自己。
+// 只用于候选去重和决定从哪一层点。
+static UIView *DYYYWardActivationOwner(UIView *v) {
+    UIView *p = v;
+    for (NSInteger i = 0; i < 6 && p; i++) {
+        if ([p isKindOfClass:[UIControl class]]) return p;
+        p = p.superview;
+    }
+    p = v;
+    for (NSInteger i = 0; i < 6 && p; i++) {
+        if (DYYYWardViewHasTapGesture(p)) return p;
+        p = p.superview;
+    }
+    return v;
+}
+
+// 把一个视图变成一次真实点击。三种手段按可靠性排序，任一成功即返回 YES 并写出手法（进诊断）。
+static BOOL DYYYWardActivateView(UIView *v, NSString **how) {
+    if (!v) return NO;
+    // ① UIControl（UIButton / AWE 自定义 control）——最标准，等价于真点
+    UIView *p = v;
+    for (NSInteger i = 0; i < 6 && p; i++) {
+        if ([p isKindOfClass:[UIControl class]]) {
+            @try { [(UIControl *)p sendActionsForControlEvents:UIControlEventTouchUpInside]; }
+            @catch (NSException *e) { return NO; }
+            if (how) *how = @"按钮";
+            return YES;
+        }
+        p = p.superview;
+    }
+    // ② 点按手势（Swift 侧最常见）
+    p = v;
+    for (NSInteger i = 0; i < 6 && p; i++) {
+        if (DYYYWardFireTapGesture(p)) { if (how) *how = @"手势"; return YES; }
+        p = p.superview;
+    }
+    // ③ 无障碍激活（公开能力，不保证宿主实现；返回 NO 就当没试过）
+    p = v;
+    for (NSInteger i = 0; i < 4 && p; i++) {
+        if ([p respondsToSelector:@selector(accessibilityActivate)]) {
+            BOOL ok = NO;
+            @try { ok = [(id<DYYYWardA11yActivate>)p accessibilityActivate]; }
+            @catch (NSException *e) { ok = NO; }
+            if (ok) { if (how) *how = @"无障碍"; return YES; }
+        }
+        p = p.superview;
+    }
+    return NO;
+}
+
+// 在一个视图树里收集「展开回复」候选（按 DYYYWardActivationOwner 去重）
+static void DYYYWardCollectExpandIn(UIView *root, NSMutableArray *out, NSInteger budget) {
+    if (!root || !out) return;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger visited = 0;
+    while (stack.count > 0 && visited < budget) {
+        UIView *cur = [stack lastObject];
+        [stack removeLastObject];
+        visited++;
+        if (DYYYWardLooksLikeExpandText(DYYYWardViewText(cur))) {
+            UIView *owner = DYYYWardActivationOwner(cur);
+            BOOL dup = NO;
+            for (UIView *e in out) { if (e == owner) { dup = YES; break; } }
+            if (!dup) [out addObject:owner];
+        }
+        [stack addObjectsFromArray:cur.subviews];
+    }
+}
+
+static UIScrollView *DYYYWardOwningList(UIView *v) {
+    UIView *cur = v;
+    for (NSInteger i = 0; i < 12 && cur; i++) {
+        if ([cur isKindOfClass:[UICollectionView class]] || [cur isKindOfClass:[UITableView class]]) {
+            return (UIScrollView *)cur;
+        }
+        cur = cur.superview;
+    }
+    return nil;
+}
+
+// 同一 section 里的下一格（只取已上屏的 cell；没有就返回 nil）。
+// 先过 isKindOfClass 再发消息：把非 cell 的 UIView 喂给 indexPathForCell: 在 Swift CV 上会 trap。
+static UIView *DYYYWardNextCell(UIScrollView *list, UIView *cell) {
+    if (!list || !cell) return nil;
+    NSIndexPath *ip = nil;
+    @try {
+        if ([list isKindOfClass:[UICollectionView class]] && [cell isKindOfClass:[UICollectionViewCell class]]) {
+            ip = [(UICollectionView *)list indexPathForCell:(UICollectionViewCell *)cell];
+        } else if ([list isKindOfClass:[UITableView class]] && [cell isKindOfClass:[UITableViewCell class]]) {
+            ip = [(UITableView *)list indexPathForCell:(UITableViewCell *)cell];
+        }
+    } @catch (NSException *e) { return nil; }
+    if (!ip) return nil;
+    NSInteger rows = 0;
+    @try {
+        if ([list isKindOfClass:[UICollectionView class]]) rows = [(UICollectionView *)list numberOfItemsInSection:ip.section];
+        else rows = [(UITableView *)list numberOfRowsInSection:ip.section];
+    } @catch (NSException *e) { return nil; }
+    if (ip.row + 1 >= rows) return nil;
+    NSIndexPath *nx = [NSIndexPath indexPathForItem:ip.row + 1 inSection:ip.section];
+    @try {
+        if ([list isKindOfClass:[UICollectionView class]]) return [(UICollectionView *)list cellForItemAtIndexPath:nx];
+        return [(UITableView *)list cellForRowAtIndexPath:nx];
+    } @catch (NSException *e) { return nil; }
+    return nil;
+}
+
+// 候选收集：先父 cell 内部；一个都没有再看父 cell 的下一格（分组布局的独立「展开」行）。
+// 排序：落在 cell 本身（说明只是正文里带了「回复+展开」字样）的候选排最后。
+static void DYYYWardCollectExpandCandidates(UIView *cell, NSMutableArray *out) {
+    if (!cell || !out) return;
+    DYYYWardCollectExpandIn(cell, out, 300);
+    if (out.count == 0) {
+        UIView *nx = DYYYWardNextCell(DYYYWardOwningList(cell), cell);
+        if (nx) DYYYWardCollectExpandIn(nx, out, 300);
+    }
+    if (out.count > 1) {
+        NSMutableArray *selfOwned = [NSMutableArray array];
+        NSMutableArray *others = [NSMutableArray array];
+        for (UIView *v in out) {
+            if (v == cell) [selfOwned addObject:v];
+            else [others addObject:v];
+        }
+        [out removeAllObjects];
+        [out addObjectsFromArray:others];
+        [out addObjectsFromArray:selfOwned];
+    }
+}
+
+// 注意：v2.4-4 那个「单发版」DYYYWardExpandRepliesOnCell 已被 DYYYWardExpandStep 完全取代
+//（多候选 + 多手法 + 两轮 + 观察窗），这里不再保留单发实现，免得两条点击路互相抢。
+
+// v2.4-15：本轮「父评论 cid」+ 展开轮次。点了没反应时按父 cid 重新把父 cell 找回来再点一轮
+//（第一次点击可能让宿主重建了 cell，之前抓到的候选视图已经脱离视图树，再点等于点空气）。
+static NSArray *gDYYYWardParentIDs = nil;
+static NSInteger gDYYYWardExpandRound = 0;
+
+// 按父 cid/正文在当前可见区重新找回父 cell；找不到返回 nil（不滚动、不猜测）
+static UIView *DYYYWardRefindParentCell(void) {
+    if (gDYYYWardParentIDs.count == 0) return nil;
+    UIViewController *cvc = DYYYWardFindCommentVC();
+    if (!cvc) return nil;
+    for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
+        id c = DYYYWardVisibleTargetCell(sv, gDYYYWardParentIDs, @"");
+        if (c && [c isKindOfClass:[UIView class]] && [(UIView *)c window]) return (UIView *)c;
+    }
+    return nil;
+}
+
+// 子评论一次性查找：宿主定位方法 → 可见区复核。命中即置 LocateDone 并返回 YES。
+static BOOL DYYYWardChildLookupOnce(NSInteger gen) {
+    NSArray *childCids = gDYYYWardChildCIDs ?: @[];
+    NSString *childHint = gDYYYWardChildHint ?: @"";
+    for (NSString *cid in childCids) {
+        DYYYWardTryHostLocateComment(cid);
+        if (gDYYYWardLocateDone == gen) { gDYYYWardFailCount = 0; return YES; }
+    }
+    if (DYYYWardTargetVisibleNow(childCids, childHint)) {
+        gDYYYWardLocateDone = gen;
+        gDYYYWardFailCount = 0;
+        [DYYYUtils showToast:@"已定位到该评论"];
+        return YES;
+    }
+    return NO;
+}
+
+// 子评论总兜底：还找不到就从头按行扫（回复没展开/没加载完时只能这样）
+static void DYYYWardChildLookupFinal(NSInteger gen) {
+    if (gDYYYWardLocateDone == gen) return;
+    if (DYYYWardChildLookupOnce(gen)) return;
+    gDYYYWardSweepGen = 0;
+    DYYYWardSweepRows(gDYYYWardChildCIDs ?: @[], gDYYYWardChildHint ?: @"", gen);
+}
+
+// 候选逐个试：点不动就立刻换下一个；点动了给 1s 观察窗，子评论还没出来再换下一个。
+// 全部试完仍没有 → 走总兜底（按行扫）。这比 v2.4-4「只点一个、点不中就放弃」多两层容错。
+static void DYYYWardExpandStep(NSArray *cands, NSInteger idx, NSInteger gen) {
+    if (gDYYYWardLocateDone == gen) return;
+    if (idx >= (NSInteger)cands.count) {
+        // v2.4-15：第一轮候选全试完还没结果 → 按父 cid 把父 cell 重新找回来再点第二轮
+        //（第一轮点击常让宿主重建 cell，先前抓到的候选视图已脱离视图树，再点等于点空气）
+        if (gDYYYWardExpandRound == 0) {
+            gDYYYWardExpandRound = 1;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (gDYYYWardLocateDone == gen) return;
+                UIView *fresh = DYYYWardRefindParentCell();
+                if (fresh && DYYYWardCellShowsCollapse(fresh)) {
+                    gDYYYWardParentDiag = @"父已展开";
+                    DYYYWardChildLookupFinal(gen);
+                    return;
+                }
+                NSMutableArray *round2 = [NSMutableArray array];
+                if (fresh) DYYYWardCollectExpandCandidates(fresh, round2);
+                if (round2.count > 0) {
+                    gDYYYWardParentDiag = @"再试一轮";
+                    DYYYWardExpandStep(round2, 0, gen);
+                    return;
+                }
+                DYYYWardChildLookupFinal(gen);
+            });
+            return;
+        }
+        DYYYWardChildLookupFinal(gen);
+        return;
+    }
+    id obj = [cands objectAtIndex:(NSUInteger)idx];
+    UIView *v = [obj isKindOfClass:[UIView class]] ? (UIView *)obj : nil;
+    NSString *how = nil;
+    BOOL ok = DYYYWardActivateView(v, &how);
+    if (!ok) {
+        // 这个候选点不动（没有手势/不是 control/无障碍不认）→ 立刻换下一个，不必等
+        if (idx + 1 >= (NSInteger)cands.count) gDYYYWardParentDiag = @"展开入口点不动";
+        DYYYWardExpandStep(cands, idx + 1, gen);
+        return;
+    }
+    gDYYYWardParentDiag = [NSString stringWithFormat:@"点展开(%@)", how ?: @"?"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gDYYYWardLocateDone == gen) return;
+        if (DYYYWardChildLookupOnce(gen)) return;
+        DYYYWardExpandStep(cands, idx + 1, gen); // 点了但子评论没出来 → 换下一个候选
+    });
+}
+
 // v2.4-4：父扫描命中后的统一动作：点开父 cell 的回复 → 1s 后回来定位子评论
 // （宿主方法 → 可见区复核 → 都不中再起子扫描）。不置 LocateDone——子还没找到。
-// v2.4-7：从 DYYYWardParentSweepHit 提取——「点开父评论的回复 → 1s 后定位子评论」。
-// 父扫描命中、可见区命中、列表层直达命中三条父路径共用同一套收尾，行为完全一致。
+// v2.4-7：从 DYYYWardParentSweepHit 提取，父扫描命中/可见区命中/列表层直达命中三条父路径共用。
+// v2.4-15：改成「多候选 + 多手法」；父已展开（有「收起」）时直接找子，不再空点。
 // 前置：调用方必须先置 gDYYYWardParentHandled=YES、gDYYYWardSweepForParent=NO、
 // gDYYYWardChildCIDs/ChildHint（子评论 cid/正文）。
 static void DYYYWardExpandThenFindChild(id cell, NSInteger gen) {
-    BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)cell);
-    gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
-    NSArray *childCids = gDYYYWardChildCIDs ?: @[];
-    NSString *childHint = gDYYYWardChildHint ?: @"";
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (gDYYYWardLocateDone == gen) return;
-        for (NSString *cid in childCids) {
-            DYYYWardTryHostLocateComment(cid);
-            if (gDYYYWardLocateDone == gen) return;
-        }
-        if (DYYYWardTargetVisibleNow(childCids, childHint)) {
-            gDYYYWardLocateDone = gen;
-            gDYYYWardFailCount = 0;
-            [DYYYUtils showToast:@"已定位到该评论"];
-            return;
-        }
-        // 子还不在可见区（回复可能还要展开/加载）→ 重起子扫描
-        gDYYYWardSweepGen = 0;
-        DYYYWardSweepRows(childCids, childHint, gen);
-    });
+    UIView *cellView = [cell isKindOfClass:[UIView class]] ? (UIView *)cell : nil;
+    gDYYYWardExpandRound = 0; // 换了新的父 cell 命中 → 两轮展开额度重新给
+    if (cellView && DYYYWardCellShowsCollapse(cellView)) {
+        gDYYYWardParentDiag = @"父已展开";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DYYYWardChildLookupFinal(gen);
+        });
+        return;
+    }
+    NSMutableArray *cands = [NSMutableArray array];
+    if (cellView) DYYYWardCollectExpandCandidates(cellView, cands);
+    if (cands.count == 0) {
+        gDYYYWardParentDiag = @"无回复入口";
+        // 入口找不到不代表子评论不在（父可能就是展开态，只是文案不同）→ 立刻找一次再扫
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DYYYWardChildLookupFinal(gen);
+        });
+        return;
+    }
+    // 最多试 2 个（多试没收益，只会把时间拉长）
+    while (cands.count > 2) [cands removeLastObject];
+    DYYYWardExpandStep(cands, 0, gen);
 }
 
 static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
@@ -2200,6 +2591,7 @@ static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidL
     if (parentIDs.count == 0) return;
     gDYYYWardChildCIDs = childCidList;
     gDYYYWardChildHint = childContentHint;
+    gDYYYWardParentIDs = parentIDs; // v2.4-15：供「再试一轮」按父 cid 重新找回父 cell
     gDYYYWardSweepForParent = YES;
     NSString *parentProbe = @"";
     for (id t in parentTexts) {
@@ -2526,6 +2918,7 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
         }
     }
     if (pids.count == 0) return NO;
+    gDYYYWardParentIDs = pids; // v2.4-15：供「再试一轮」按父 cid 重新找回父 cell
     gDYYYWardParentDiag = @"按父定位";
     // ① 宿主方法：父 cid 是主列表 id，scrollToCommentWithID: 通常有效
     for (NSString *pid in pids) {
@@ -2573,6 +2966,8 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     gDYYYWardSweepForParent = NO;
     gDYYYWardChildCIDs = nil;
     gDYYYWardChildHint = nil;
+    gDYYYWardParentIDs = nil;   // v2.4-15：父 cid / 展开轮次每次「查看」重置
+    gDYYYWardExpandRound = 0;
     // v2.4-7：父/列表层诊断段也每次重置，避免上一轮的「父:已点回复」糊到本轮 toast 里
     gDYYYWardParentDiag = nil;
     gDYYYWardListJumpDiag = nil;
