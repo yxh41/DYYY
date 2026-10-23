@@ -149,7 +149,10 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
     // v2.4-2：二级回复的父评论 id（replyComment/parentComment/parentCommentModel 等，各版本字段名不一）。
     // 只在该评论确实是「回复」时才取到值，一级评论此项为空。定位二级回复时靠它先定位父评论再展开。
+    // v2.4-5：同时按同序存父评论正文（parentTexts）——Swift 新 cell 的 cid 可能是 Int64 标量，
+    // 对象图搜不到，而 cell 上的 UILabel 文本永远可靠；定位时优先按文本扫父 cell。
     NSMutableArray *parentIDs = [NSMutableArray array];
+    NSMutableArray *parentTexts = [NSMutableArray array];
     {
         NSArray *parentKeys = @[ @"replyComment", @"parentComment", @"parentCommentModel", @"replyToComment",
                                  @"originComment", @"parentModel", @"replyToCommentModel" ];
@@ -158,12 +161,17 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
             @try { p = [comment valueForKey:pk]; } @catch (NSException *e) {}
             if (!p || [p isKindOfClass:[NSNull class]]) continue;
             NSString *pid = DYYYCommentStrForKeys(p, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
-            if (pid.length > 0 && ![parentIDs containsObject:pid]) [parentIDs addObject:pid];
+            if (pid.length > 0 && ![parentIDs containsObject:pid]) {
+                [parentIDs addObject:pid];
+                NSString *ptxt = DYYYCommentStrForKeys(p, @[ @"content", @"text", @"commentContent",
+                                                            @"contentText", @"commentText", @"desc", @"description" ]);
+                [parentTexts addObject:(ptxt ?: @"")];
+            }
         }
         // 兜底：部分版本 reply/parent 的 id 直接是字符串字段
         if (parentIDs.count == 0) {
             NSString *pid = DYYYCommentStrForKeys(comment, @[ @"replyToCommentID", @"parentCommentID", @"parentID", @"rootCommentID" ]);
-            if (pid.length > 0) [parentIDs addObject:pid];
+            if (pid.length > 0) { [parentIDs addObject:pid]; [parentTexts addObject:@""]; }
         }
     }
 
@@ -176,7 +184,10 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     [data setObject:awemeID forKey:@"awemeID"];
     [data setObject:commentID forKey:@"commentID"];
     [data setObject:cidCandidates forKey:@"commentIDs"];
-    if (parentIDs.count > 0) [data setObject:parentIDs forKey:@"parentIDs"];
+    if (parentIDs.count > 0) {
+        [data setObject:parentIDs forKey:@"parentIDs"];
+        [data setObject:parentTexts forKey:@"parentTexts"]; // v2.4-5：与 parentIDs 同序
+    }
     [data setObject:ctStr forKey:@"createTime"];
     [data setObject:content forKey:@"desc"];
     [data setObject:shareURL forKey:@"shareURL"];

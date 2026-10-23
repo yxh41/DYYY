@@ -120,7 +120,7 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
 static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
                                 NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token); // v2.4-3：collection view 版
 static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen); // v2.4-4：父扫描命中后的统一动作
-static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSInteger gen); // v2.4-4
+static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSArray *parentTexts, NSInteger gen); // v2.4-4 / v2.4-5 加 parentTexts
 static NSInteger DYYYWardListRowCount(UIScrollView *sv); // v2.4-3：table/collection 通吃行数
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
@@ -683,6 +683,58 @@ static BOOL DYYYWardSkipIvar(NSString *name) {
     return [skip containsObject:name];
 }
 
+// v2.4-5：标量整数 ivar 缓存（按类）。Swift 模型常把 cid 存成 Int64 存储属性——
+// 那是 'q' 标量 ivar，对象 ivar 扫描（DYYYWardObjectIvars 只收 '@'）根本看不见，
+// 导致「cell 就在屏上、cid 却永远匹配不上」（二级回复父扫描 380 串无命中的根因之一）。
+static NSMutableDictionary *gDYYYWardIntIvarsCache = nil;
+
+static NSArray *DYYYWardIntIvars(Class cls) {
+    if (!cls) return nil;
+    if (!gDYYYWardIntIvarsCache) gDYYYWardIntIvarsCache = [NSMutableDictionary dictionary];
+    NSString *key = NSStringFromClass(cls);
+    NSArray *cached = [gDYYYWardIntIvarsCache objectForKey:key];
+    if (cached) return cached;
+    NSMutableArray *out = [NSMutableArray array];
+    unsigned int ic = 0;
+    Ivar *ivars = class_copyIvarList(cls, &ic);
+    for (unsigned int i = 0; i < ic; i++) {
+        const char *t = ivar_getTypeEncoding(ivars[i]);
+        // 只收 64 位有/无符号整型：cid 是 19 位雪花号，32 位整型装不下
+        if (t && (t[0] == 'q' || t[0] == 'Q')) [out addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
+    }
+    [gDYYYWardIntIvarsCache setObject:out forKey:key];
+    return out;
+}
+
+// v2.4-5：在对象的 64 位整型 ivar 里找「值等于某个 cid」的。
+// 安全边界：node 必经 DYYYWardLooksLikeObject 验证过；ivar 偏移来自运行时元数据；
+// 只按 encoding 确认过的 8 字节字段读。防误中：只认 1e18~1e19 量级（19 位），
+// 时间戳（10/13 位）、点赞/回复计数（远小于 1e18）不可能撞上。
+static BOOL DYYYWardCIDIntsMatch(id node, NSArray *cidList) {
+    if (!node || cidList.count == 0) return NO;
+    NSMutableArray *nums = [NSMutableArray arrayWithCapacity:cidList.count];
+    for (id c in cidList) {
+        if (![c isKindOfClass:[NSString class]) continue;
+        const char *s = [(NSString *)c UTF8String];
+        if (!s) continue;
+        unsigned long long v = strtoull(s, NULL, 10);
+        if (v >= 1000000000000000000ULL && v < 10000000000000000000ULL) [nums addObject:@(v)];
+    }
+    if (nums.count == 0) return NO;
+    NSArray *ivs = DYYYWardIntIvars(object_getClass(node));
+    const uint8_t *base = (const uint8_t *)node;
+    for (NSValue *iv in ivs) {
+        Ivar v = (Ivar)[iv pointerValue];
+        ptrdiff_t off = ivar_getOffset(v);
+        uint64_t raw = 0;
+        memcpy(&raw, base + off, sizeof(uint64_t)); // memcpy 兼容未对齐偏移
+        for (NSNumber *n in nums) {
+            if (raw == [n unsignedLongLongValue]) return YES;
+        }
+    }
+    return NO;
+}
+
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget) {
     if (!node || depth < 0 || *budget <= 0) return NO;
     (*budget)--;
@@ -773,6 +825,8 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
         id val = object_getIvar(node, v);
         if (DYYYWardLooksLikeObject(val) && DYYYWardGraphMatch(val, cidList, probe, depth - 1, budget)) return YES;
     }
+    // v2.4-5：再扫 64 位整型 ivar 里的 cid（Swift Int64 存储属性，对象扫描看不见）
+    if (cidList.count > 0 && DYYYWardCIDIntsMatch(node, cidList)) return YES;
     return NO;
 }
 
@@ -1536,15 +1590,21 @@ static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
     });
 }
 
-// v2.4-4：父评论按屏扫描（二级回复父不在首屏的唯一活路）。probe 传空 → 只按
-// parentIDs 精确匹配，不拿子评论正文去撞父 cell；命中后交给 DYYYWardParentSweepHit。
-static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSInteger gen) {
+// v2.4-4：父评论按屏扫描（二级回复父不在首屏的唯一活路）。
+// v2.4-5：probe 取父评论正文（parentTexts 里第一个非空）——Swift cell 的 cid 可能是
+// Int64 标量，对象图搜不到，而 cell 上的 UILabel 文本永远可靠；cid 仍作辅助匹配。
+// 老插眼记录没有 parentTexts 时退回纯 cid 匹配（v2.4-5 的整型 ivar 扫描也能兜底）。
+static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSArray *parentTexts, NSInteger gen) {
     if (parentIDs.count == 0) return;
     gDYYYWardChildCIDs = childCidList;
     gDYYYWardChildHint = childContentHint;
     gDYYYWardSweepForParent = YES;
-    gDYYYWardParentDiag = @"扫描父评论";
-    DYYYWardSweepRows(parentIDs, @"", gen);
+    NSString *parentProbe = @"";
+    for (id t in parentTexts) {
+        if ([t isKindOfClass:[NSString class]] && [(NSString *)t length] > 0) { parentProbe = (NSString *)t; break; }
+    }
+    gDYYYWardParentDiag = (parentProbe.length > 0) ? @"扫描父评论(按文本)" : @"扫描父评论(仅cid)";
+    DYYYWardSweepRows(parentIDs, parentProbe, gen);
 }
 
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen) {
@@ -1668,7 +1728,7 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
     return NO;
 }
 
-static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint, NSArray *parentIDs) {
+static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint, NSArray *parentIDs, NSArray *parentTexts) {
     (void)awemeID;
     // v2.4-4：二级回复父状态每次「查看」重置
     gDYYYWardParentHandled = NO;
@@ -1747,7 +1807,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                     // v2.4-4：二级回复优先扫「父评论」（子 cid 根本不在主列表，扫子纯属浪费）；
                     // 父已在 2.2s 那步被展开过（ParentHandled）就不再重复扫。
                     if (parentIDs.count > 0 && !gDYYYWardParentHandled) {
-                        DYYYWardSweepParentThenExpand(parentIDs, cidList, contentHint, gen);
+                        DYYYWardSweepParentThenExpand(parentIDs, cidList, contentHint, parentTexts, gen);
                     } else if (parentIDs.count == 0) {
                         DYYYWardSweepRows(cidList, contentHint, gen);
                     }
@@ -2336,6 +2396,14 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 }
             }
         }
+        // v2.4-5：与 parentIDs 同序的父评论正文（按文本扫父 cell 用）；老记录没有此字段
+        NSMutableArray *parentTexts = [NSMutableArray array];
+        id savedPT = [ward objectForKey:@"parentTexts"];
+        if ([savedPT isKindOfClass:[NSArray class]]) {
+            for (id v in (NSArray *)savedPT) {
+                [parentTexts addObject:([v isKindOfClass:[NSString class]] ? v : @"")];
+            }
+        }
         if (awemeID.length == 0) {
             [DYYYUtils showToast:@"无视频信息，已复制链接"];
             NSString *url = [ward objectForKey:@"shareURL"];
@@ -2346,8 +2414,17 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         // 只传 comment=1 只能展开评论区、不能定位到具体某条
         NSString *base = [NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap",
                           [self hostSnssdkScheme], awemeID];
+        // v2.4-5：二级回复改用「父评论 cid」跳深链——子评论不在主列表，宿主就算支持
+        // comment_id 也定位不到它；父评论是主列表里的正经评论，宿主更可能认。
+        // 只跳一次（不新增跳转），定位不到仍走后面的父扫描兜底。
+        NSString *linkCID = (parentIDs.count > 0) ? parentIDs.firstObject : commentID;
         BOOL ok = NO;
-        if (commentID.length > 0) {
+        if (linkCID.length > 0) {
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment_id=%@", base, linkCID]];
+            ok = url && [[UIApplication sharedApplication] openURL:url];
+        }
+        if (!ok && commentID.length > 0 && parentIDs.count > 0) {
+            // 父 cid 跳失败（极端情况）再用子 cid 试一次，仍失败才退 comment=1
             NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment_id=%@", base, commentID]];
             ok = url && [[UIApplication sharedApplication] openURL:url];
         }
@@ -2375,7 +2452,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         gDYYYWardURLDiag = nil;
         // v2.4-3：复核改 3 轮阶梯（首轮按是否带 comment_id 取 1.8/1.2s，之后每轮 +1.4s）。
         // 评论区收起/数据慢时宿主可能 2~4s 才把目标滚到位：首轮就兜底会让扫描把深链的定位成果拽走。
-        NSTimeInterval baseDelay = (commentID.length > 0) ? 1.8 : 1.2;
+        NSTimeInterval baseDelay = (linkCID.length > 0) ? 1.8 : 1.2;
         for (NSInteger round = 0; round < 3; round++) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((baseDelay + round * 1.4) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始
@@ -2391,7 +2468,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 gDYYYWardURLDiag = @"深链未到位";
                 if (round < 2) return; // 还有后续复核轮，先不动列表
                 // 3 轮都没到位 → 走完整兜底（含二级回复父定位）
-                DYYYWardLocateComment(awemeID, cidList, contentHint, parentIDs);
+                DYYYWardLocateComment(awemeID, cidList, contentHint, parentIDs, parentTexts);
             });
         }
         // v2.4-3 关键修复：这里必须 return。缺了它代码会穿透到函数尾部的裸深链（不带

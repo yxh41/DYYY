@@ -48,6 +48,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
 @property (nonatomic, copy) NSString *commentID;
 @property (nonatomic, copy) NSArray *commentIDs; // 所有候选 cid 值，定位时逐个比对
 @property (nonatomic, copy) NSArray *parentIDs; // v2.4-2：二级回复的父评论 id（定位时先定位父再展开）
+@property (nonatomic, copy) NSArray *parentTexts; // v2.4-5：与 parentIDs 同序的父评论正文（按文本扫父 cell）
 @property (nonatomic, copy) NSString *createTime;
 @property (nonatomic, copy) NSString *shareURL;
 @property (nonatomic, copy) NSString *desc;
@@ -80,6 +81,8 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _commentIDs = [savedIDs isKindOfClass:[NSArray class]] ? savedIDs : nil;
         id savedP = [data objectForKey:@"parentIDs"];
         _parentIDs = [savedP isKindOfClass:[NSArray class]] ? savedP : nil;
+        id savedPT = [data objectForKey:@"parentTexts"];
+        _parentTexts = [savedPT isKindOfClass:[NSArray class]] ? savedPT : nil;
         _createTime = [data objectForKey:@"createTime"] ?: @"";
         _shareURL = [data objectForKey:@"shareURL"] ?: @"";
         _desc = [data objectForKey:@"desc"] ?: @"";
@@ -104,6 +107,8 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
         _commentIDs = [savedIDs isKindOfClass:[NSArray class]] ? savedIDs : nil;
         id savedP = [ward objectForKey:@"parentIDs"];
         _parentIDs = [savedP isKindOfClass:[NSArray class]] ? savedP : nil;
+        id savedPT = [ward objectForKey:@"parentTexts"];
+        _parentTexts = [savedPT isKindOfClass:[NSArray class]] ? savedPT : nil;
         _createTime = [ward objectForKey:@"createTime"] ?: @"";
         _shareURL = [ward objectForKey:@"shareURL"] ?: @"";
         _desc = [ward objectForKey:@"desc"] ?: @"";
@@ -443,6 +448,7 @@ static NSString *DYYYWardStringForKeys(id obj, NSArray<NSString *> *keys) {
     [ward setObject:(_commentID ?: @"") forKey:@"commentID"];
     if (_commentIDs.count > 0) [ward setObject:_commentIDs forKey:@"commentIDs"];
     if (_parentIDs.count > 0) [ward setObject:_parentIDs forKey:@"parentIDs"];
+    if (_parentTexts.count > 0) [ward setObject:_parentTexts forKey:@"parentTexts"]; // v2.4-5
     [ward setObject:(_createTime ?: @"") forKey:@"createTime"];
     [ward setObject:_selectedCategory forKey:@"category"];
     [ward setObject:(_noteTextView.text ?: @"") forKey:@"note"];
