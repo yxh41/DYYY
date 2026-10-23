@@ -11,6 +11,10 @@
 #import <mach/mach.h>
 #define DYYY_HAVE_VM_REGION 1
 #endif
+// v2.4-12：信号级兜底——野指针解引用被 SIGSEGV/SIGBUS 处理器拦下后 siglongjmp 回安全点。
+#import <signal.h>
+#import <setjmp.h>
+#import <pthread.h>
 #import "DYYYWardManager.h"
 #import "DYYYWardPanelView.h"
 #import "DYYYUtils.h"
@@ -627,6 +631,11 @@ static BOOL DYYYWardPageMapped(uintptr_t addr) {
                                     VM_REGION_BASIC_INFO_64,
                                     (vm_region_info_t)&info, &count, &objName);
     if (kr != KERN_SUCCESS) { cacheStart = cacheEnd = 0; return NO; }
+    if (objName != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), objName); // 防 port 泄漏
+    // v2.4-12：vm_region_64 在「地址落在区域空洞里」时**不报错**，而是返回后面那个
+    // 区域（region > addr）。直接拿它的保护位当答案会把未映射空洞判成可读 → 崩。
+    // 必须校验 addr 真的落在返回区间内，否则按不可读处理。
+    if ((uintptr_t)region > addr || addr >= (uintptr_t)(region + regionSize)) return NO;
     cacheStart = (uintptr_t)region;
     cacheEnd = (uintptr_t)(region + regionSize);
     cacheReadable = (info.protection & VM_PROT_READ) != 0;
@@ -642,6 +651,71 @@ static BOOL DYYYWardAddressReadable(uintptr_t addr) {
     Dl_info info;
     if (dladdr((void *)addr, &info) != 0) return YES;
     return DYYYWardPageMapped(addr);
+}
+
+// MARK: - v2.4-12：信号级兜底（治「整类」而非「单个垃圾值」）
+//
+// 背景：v2.4-8 起校验链被复活后，扫描会持续撞上非指针数据被当指针的候选值
+// （Swift Double 位模式、结构体字节、内联字符串…）。v2.4-11 修掉了第一个
+// （0x014C6A7100000000），扫描就继续往下撞第二个、第三个——一版修一个，无限续杯。
+// 前几版的思路是「把每个垃圾值识别出来拒掉」，这是治标：无法穷举宿主数据里
+// 所有可能冒充指针的位模式。
+//
+// 本版改为治本：所有裸内存读取一律走 DYYYWardProbeRead8 —— 读之前用 sigsetjmp
+// 埋好安全点，真发生 SIGSEGV/SIGBUS 时处理器把它拦下并 siglongjmp 回安全点，
+// 返回 NO（= 该地址不可读）。**于是野指针解引用最坏结果是「候选被拒」，不再可能崩**。
+// DYYYWardAddressReadable（zone/dladdr/vm_region）保留作廉价的预筛，减少
+// 真正触发信号处理的次数；probe 是最后一道、也是唯一绝对可靠的闸。
+static sigjmp_buf gDYYYWardProbeJmp;
+static volatile sig_atomic_t gDYYYWardProbeArmed = 0;
+static pthread_t gDYYYWardProbeThread;
+static struct sigaction gDYYYWardOldSegv;
+static struct sigaction gDYYYWardOldBus;
+
+static void DYYYWardProbeHandler(int sig) {
+    // 只接管「我们自己在探测线程上主动发起的读取」；其余（别的线程/非探测期故障）
+    // 一律交还原处理器，绝不影响宿主自身的崩溃上报。
+    if (gDYYYWardProbeArmed && pthread_equal(pthread_self(), gDYYYWardProbeThread)) {
+        gDYYYWardProbeArmed = 0;
+        siglongjmp(gDYYYWardProbeJmp, 1);
+    }
+    struct sigaction *old = (sig == SIGBUS) ? &gDYYYWardOldBus : &gDYYYWardOldSegv;
+    if (old->sa_handler != NULL && old->sa_handler != SIG_IGN && old->sa_handler != SIG_DFL) {
+        old->sa_handler(sig); // 链式：交给先前的处理器
+        return;
+    }
+    signal(sig, SIG_DFL); // 恢复默认后重新触发，让系统正常出崩溃报告
+    raise(sig);
+}
+
+static void DYYYWardInstallProbeHandlers(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = DYYYWardProbeHandler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_NODEFER; // 处理期间不自动屏蔽，便于 re-raise
+        sigaction(SIGSEGV, &sa, &gDYYYWardOldSegv);
+        sigaction(SIGBUS, &sa, &gDYYYWardOldBus);
+    });
+}
+
+// 安全读 8 字节：成功返回 YES；地址触发 SIGSEGV/SIGBUS 返回 NO（不崩）。
+// ⚠️ 该区间内只能有纯内存读，不得有 ObjC 调用/对象操作（longjmp 会绕过 ARC 清理）。
+static BOOL DYYYWardProbeRead8(uintptr_t addr, uintptr_t *out) {
+    if (!out) return NO;
+    DYYYWardInstallProbeHandlers();
+    gDYYYWardProbeThread = pthread_self();
+    if (sigsetjmp(gDYYYWardProbeJmp, 1) != 0) {
+        gDYYYWardProbeArmed = 0; // 被拦下：地址不可读
+        return NO;
+    }
+    gDYYYWardProbeArmed = 1;
+    uintptr_t v = *(volatile uintptr_t *)addr; // volatile 防优化掉这次读
+    gDYYYWardProbeArmed = 0;
+    *out = v;
+    return YES;
 }
 
 // v2.4-8：类表不可用时的兜底「isa 像不像真类」校验——
@@ -666,9 +740,10 @@ static BOOL DYYYWardIsaLooksLikeClass(uintptr_t isa) {
 // 安全读 8 字节：先确认地址可读，再读，避免把内联字符串/结构体位模式当指针解引用撞 SIGBUS
 static BOOL DYYYWardSafeReadPtr(uintptr_t addr, uintptr_t *out) {
     if (!out) return NO;
-    if (!DYYYWardAddressReadable(addr)) return NO;
-    *out = *(uintptr_t *)addr;
-    return YES;
+    if (!DYYYWardAddressReadable(addr)) return NO; // 廉价预筛（zone/dladdr/vm_region）
+    // v2.4-12：兜底走信号保护——预筛万一漏放（垃圾位模式、区域空洞等），
+    // 解引用被 SIGSEGV/SIGBUS 拦下后返回 NO，而不是把 App 带走。
+    return DYYYWardProbeRead8(addr, out);
 }
 
 static BOOL DYYYWardLooksLikeObject(id v) {
@@ -897,7 +972,10 @@ static BOOL DYYYWardCIDIntsMatch(id node, NSArray *nums) {
         Ivar v = (Ivar)[iv pointerValue];
         ptrdiff_t off = ivar_getOffset(v);
         uint64_t raw = 0;
-        memcpy(&raw, base + off, sizeof(uint64_t)); // memcpy 兼容未对齐偏移
+        // v2.4-12：走信号保护读（memcpy 兼容未对齐偏移；probe 是 8 字节定长读）
+        uintptr_t got = 0;
+        if (!DYYYWardProbeRead8((uintptr_t)(base + off), &got)) break; // 读不了→整个对象放弃
+        raw = (uint64_t)got;
         for (NSNumber *n in nums) {
             if (raw == [n unsignedLongLongValue]) return YES;
         }
@@ -921,9 +999,14 @@ static BOOL DYYYWardCIDRawScan(id node, NSArray *nums) {
     if (size <= sizeof(void *) + sizeof(uint64_t)) return NO;
     const uint8_t *base = (const uint8_t *)(__bridge const void *)node;
     size_t limit = size - sizeof(uint64_t);
+    // v2.4-12：只探测首尾各一次——对象分配是一整块连续内存，首尾都读得到则中间安全，
+    // 中间照旧走快 memcpy（逐次 sigsetjmp 的开销没必要）。任一端读不到 → 放弃整个对象。
+    uintptr_t guard = 0;
+    if (!DYYYWardProbeRead8((uintptr_t)(base + sizeof(void *)), &guard)) return NO;
+    if (!DYYYWardProbeRead8((uintptr_t)(base + limit), &guard)) return NO;
     for (size_t off = sizeof(void *); off <= limit; off++) {
         uint64_t raw = 0;
-        memcpy(&raw, base + off, sizeof(uint64_t));
+        memcpy(&raw, base + off, sizeof(uint64_t)); // memcpy 兼容未对齐偏移
         for (NSNumber *n in nums) {
             if (raw == [n unsignedLongLongValue]) return YES;
         }
@@ -970,6 +1053,10 @@ static BOOL DYYYWardCIDAsciiScan(id node, NSArray *cidList) {
     const uint8_t *base = (const uint8_t *)(__bridge const void *)node;
     size_t limit = size - sizeof(uint64_t);
     NSInteger followed = 0;
+    // v2.4-12：节点自身槽位区同样只探测首尾（连续分配），中间走快 memcpy
+    uintptr_t guard = 0;
+    if (!DYYYWardProbeRead8((uintptr_t)(base + sizeof(void *)), &guard)) return NO;
+    if (!DYYYWardProbeRead8((uintptr_t)(base + limit), &guard)) return NO;
     for (size_t off = sizeof(void *); off <= limit && followed < 12; off++) {
         uintptr_t raw = 0;
         memcpy(&raw, base + off, sizeof(uintptr_t));
@@ -982,7 +1069,11 @@ static BOOL DYYYWardCIDAsciiScan(id node, NSArray *cidList) {
         size_t got = 0;
         while (got + 8 <= sizeof(buf)) {
             if (!DYYYWardAddressReadable(raw + got)) break; // 每步单独确认，绝不越出可读区
-            memcpy(buf + got, (const void *)(raw + got), 8);
+            // v2.4-12：信号保护读——这里跟的是「像指针的槽值」，语义未知，
+            // 预筛漏放时靠 probe 兜底（不崩，当作读不到）
+            uintptr_t v = 0;
+            if (!DYYYWardProbeRead8(raw + got, &v)) break;
+            memcpy(buf + got, &v, 8);
             got += 8;
         }
         if (got < 15) continue;
