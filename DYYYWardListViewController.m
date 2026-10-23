@@ -601,7 +601,7 @@ static BOOL DYYYWardIsaLooksLikeClass(uintptr_t isa) {
     if (!DYYYWardAddressReadable(isa)) return NO;
     Dl_info info;
     if (dladdr((void *)isa, &info) == 0 || !info.dli_fbase) return NO;
-    Class c = (Class)isa;
+    Class c = (__bridge Class)(void *)isa; // ARC 禁 uintptr_t 直转 Class，必须走 void* + __bridge（v2.4-8 CI 教训）
     for (int hops = 0; hops < 48; hops++) {
         if (!c) return YES; // 链走到根类 → 像真类
         if (!DYYYWardAddressReadable((uintptr_t)c)) return NO;
