@@ -1315,11 +1315,30 @@ static NSIndexPath *DYYYWardIndexPathForFlatIndex(UIScrollView *scroll, NSIntege
     return nil;
 }
 
-// 把数组下标换算成 indexPath 并滚动过去；滚完取 cell 复核，命中才高亮
+// v2.4-9：滚动前的最后一道界检。numberOfSections/Items 的查询与 scrollTo 之间，
+// 宿主 Swift 数据源可能已变（评论面板刚打开时正在加载/分页），越界 index path 会让
+// UICollectionView/UITableView 的 Swift 内部 trap（SIGTRAP，@try 拦不住）→ 秒退。
+// v2.4-8 让校验链复活后，列表层直达/数据源定位第一次真正滚起来，必须补这道闸。
+static BOOL DYYYWardIndexPathInBounds(UIScrollView *scroll, NSIndexPath *ip) {
+    if (!scroll || !ip) return NO;
+    if (ip.section < 0 || ip.row < 0 || ip.item < 0) return NO;
+    if ([scroll isKindOfClass:[UITableView class]]) {
+        UITableView *tv = (UITableView *)scroll;
+        if (ip.section >= tv.numberOfSections) return NO;
+        return ip.row < [tv numberOfRowsInSection:ip.section];
+    }
+    if ([scroll isKindOfClass:[UICollectionView class]]) {
+        UICollectionView *cv = (UICollectionView *)scroll;
+        if (ip.section >= cv.numberOfSections) return NO;
+        return ip.item < [cv numberOfItemsInSection:ip.section];
+    }
+    return NO;
+}
 static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList, NSString *contentHint) {
     if (!scroll || idx < 0) return NO;
     NSIndexPath *ip = DYYYWardIndexPathForFlatIndex(scroll, idx);
     if (!ip) return NO;
+    if (!DYYYWardIndexPathInBounds(scroll, ip)) return NO; // v2.4-9：界检防 Swift trap 秒退
     if ([scroll isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)scroll;
         @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
@@ -1506,9 +1525,13 @@ static NSArray *DYYYWardIDOnlySelectors(NSArray *names) {
 // 于是宿主方法永远调不到。现在遍历所有候选 VC × 所有候选 ivar 名，找到一个能用的就调。
 static void DYYYWardTryHostLocateComment(NSString *commentID) {
     if (commentID.length == 0) return;
-    NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:", @"scrollToComment:",
-                           @"locateComment:", @"focusComment:", @"highlightComment:", @"scrollToCommentWithCID:",
-                           @"locateCommentWithCommentID:", @"scrollToCommentWithCommentID:animated:" ];
+    // v2.4-9：白名单只收「名字带 ID/CID」的选择器。scrollToComment:/locateComment:/
+    // focusComment:/highlightComment: 收的是评论**模型对象**（v2.3-28 注释即警告），
+    // 把 cid 字符串塞进去 → 宿主 Swift 强转失败 fatalError → SIGTRAP 秒退（@try 拦不住）。
+    // v2.4-8 校验链复活后这些调用第一次真正执行，真机实测评论面板秒崩，必须删。
+    NSArray *selNames = @[ @"scrollToCommentWithID:", @"scrollToCommentWithCommentID:",
+                           @"scrollToCommentWithCID:", @"locateCommentWithCommentID:",
+                           @"scrollToCommentWithCommentID:animated:" ];
     NSArray *vcs = DYYYWardAllCommentVCs();
     if (vcs.count == 0) {
         gDYYYWardHostLocateMethods = @"未找到评论VC";
@@ -1576,6 +1599,12 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
                     id val = object_getIvar(owner, v);
                     if (!DYYYWardLooksLikeObject(val)) continue;
                     if (val == owner || val == vc) continue;
+                    // v2.4-9：深枚举只对「评论相关类」试调。v2.4-8 只验了 LooksLikeObject
+                    // 就 performSelector，无关对象（播放控制/数据管理类）上的同名方法
+                    // 语义未知，传 cid 字符串可能触发宿主 Swift trap 秒退（真机实测）。
+                    // 类名闸 + id 类白名单双重收窄；真 VM 类名必含 Comment（面板即评论面板）。
+                    NSString *valCls = NSStringFromClass([val class]);
+                    if (![valCls containsString:@"omment"]) continue;
                     tried++;
                     NSString *d = DYYYWardInvokeHostLocate(val, selNames, commentID);
                     if (d.length > 0) {
@@ -1674,7 +1703,10 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
             if (rows > 0) { lastIP = [NSIndexPath indexPathForRow:rows - 1 inSection:s]; break; }
         }
         if (lastIP) {
-            @try { [t scrollToRowAtIndexPath:lastIP atScrollPosition:UITableViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+            // v2.4-9：界检防查询-滚动竞态（分页期间行数在变）→ Swift trap 秒退
+            if (DYYYWardIndexPathInBounds(t, lastIP)) {
+                @try { [t scrollToRowAtIndexPath:lastIP atScrollPosition:UITableViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+            }
         }
         @try { [t setContentOffset:CGPointMake(0, MAX(0, t.contentSize.height - t.bounds.size.height)) animated:NO]; } @catch (NSException *e) {}
         // 网络分页不是瞬时的（实测 0.7s 常不够），所以同一次到底最多重试 6 次（每次 1.2s）再判失败，
@@ -1712,6 +1744,8 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
         remain -= rows;
     }
     if (!ip) return;
+    // v2.4-9：界检防查询-滚动竞态（分页期间行数在变）→ Swift trap 秒退
+    if (!DYYYWardIndexPathInBounds(t, ip)) return;
     // 领头行顶到列表顶部（不是 Middle），这样一屏能覆盖 flat 之后的 6~7 个新行
     @try { [t scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionTop animated:NO]; } @catch (NSException *e) { return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1793,7 +1827,10 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
             if (rows > 0) { lastIP = [NSIndexPath indexPathForItem:rows - 1 inSection:s]; break; }
         }
         if (lastIP) {
-            @try { [cv scrollToItemAtIndexPath:lastIP atScrollPosition:UICollectionViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+            // v2.4-9：界检防查询-滚动竞态（分页期间行数在变）→ Swift trap 秒退
+            if (DYYYWardIndexPathInBounds(cv, lastIP)) {
+                @try { [cv scrollToItemAtIndexPath:lastIP atScrollPosition:UICollectionViewScrollPositionBottom animated:NO]; } @catch (NSException *e) {}
+            }
         }
         @try { [cv setContentOffset:CGPointMake(0, MAX(0, cv.contentSize.height - cv.bounds.size.height)) animated:NO]; } @catch (NSException *e) {}
         // v2.4-6：分页耐心加到 6 次 × 1.2s（372 条评论的场景 3 次不够）
@@ -1829,6 +1866,8 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
         remain -= rows;
     }
     if (!ip) return;
+    // v2.4-9：界检防查询-滚动竞态（分页期间行数在变）→ Swift trap 秒退
+    if (!DYYYWardIndexPathInBounds(cv, ip)) return;
     // 领头行顶到列表顶部（不是 Middle），一屏能覆盖 flat 之后的 6~7 个新行
     @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionTop animated:NO]; } @catch (NSException *e) { return; }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2105,6 +2144,12 @@ static BOOL DYYYWardListLayerJumpCore(NSArray *targetCIDs, NSString *contentHint
     }
     NSIndexPath *ip = DYYYWardIndexPathForFlatIndex(best, idx);
     if (!ip) { gDYYYWardListJumpDiag = @"列表层:下标换算失败"; return NO; }
+    // v2.4-9：滚前界检——flat 下标按模型数组算，与列表实际段/行布局可能有偏差
+    // （段头、加载中 cell、分页竞态），越界会让宿主 CV 的 Swift 内部 trap 秒退
+    if (!DYYYWardIndexPathInBounds(best, ip)) {
+        gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:下标越界(s%ld,i%ld)", (long)ip.section, (long)ip.item];
+        return NO;
+    }
     gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:idx%ld/行%ld", (long)idx, (long)total];
     if ([best isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)best;
