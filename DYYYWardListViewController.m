@@ -121,6 +121,7 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
                                 NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token); // v2.4-3：collection view 版
 static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen); // v2.4-4：父扫描命中后的统一动作
 static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidList, NSString *childContentHint, NSArray *parentTexts, NSInteger gen); // v2.4-4 / v2.4-5 加 parentTexts
+static BOOL DYYYWardListLayerJump(NSArray *cidList, NSString *contentHint, NSInteger gen, NSInteger urlGen); // v2.4-7：列表层直达（一级评论用）
 static NSInteger DYYYWardListRowCount(UIScrollView *sv); // v2.4-3：table/collection 通吃行数
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen);
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
@@ -464,6 +465,15 @@ static NSInteger gDYYYWardLocateGen = 0;
 static NSInteger gDYYYWardLocateDone = 0;
 static NSInteger gDYYYWardLocatePending = 0; // 数据源已精确滚到目标下标，勿再滚动列表（否则把定位到的评论滚走）
 static NSString *gDYYYWardDataSourceDiag = nil;
+// v2.4-7：列表层直达（DYYYWardListLayerJump）诊断
+static NSString *gDYYYWardListJumpDiag = nil;
+// v2.4-7：Int64/裸扫/ASCII 扫的 depth 门。cell 根搜默认 5（cell 自身 depth 8、
+// 直接模型 7、内嵌结构体 6+）；列表层直达时模型离 dataSource 根只有 2~4 层，
+// 由 DYYYWardListLayerJump 临时降到 1，用完即恢复。
+static NSInteger gDYYYWardRawScanMinDepth = 5;
+// v2.4-7：图搜命中时记录「cid 藏在哪个对象实例里」（数值/裸扫/ASCII 三处命中点赋值）。
+// 字符串/NSNumber 相等命中不赋值（那种命中拿不到模型指针）→ 调用方回退按数组内容搜。
+static id gDYYYWardGraphHitNode = nil;
 
 // ⚠️ 本段一律禁用裸 valueForKey:。在陌生宿主对象上做 KVC，遇到结构体/裸指针/数组/位域
 // 类型的属性会直接 SIGSEGV/SIGBUS，@try/@catch 抓不住信号（v2.3-19 就是这样闪退的）。
@@ -764,6 +774,66 @@ static BOOL DYYYWardCIDRawScan(id node, NSArray *nums) {
     return NO;
 }
 
+// v2.4-7：cid 的 ASCII 字节序列搜索。Swift String 把评论 id 存成字符串时，
+// 字符数据在堆上裸缓冲区（不是对象，没有 isa），对象图遍历（LooksLikeObject 拒收）
+// 和数值裸扫（存的不是数值）都看不见——只剩「跟进实例区里像堆指针的槽、按字节搜」
+// 这一条路。这是对象图/Int64/结构体裸扫全部失手后的最后兜底。
+// 安全边界：槽值先过地址窗口（4GB~256TB、8 对齐）+ DYYYWardAddressReadable
+// （libmalloc zone / dyld 镜像，全程不解引用候选地址本身）；读的时候每 8 字节
+// 一步、每步重新过 AddressReadable，任何一步不可读立即停，绝不越出已确认可读区；
+// 只 memcmp 字节，不解引用、不执行任何代码。cid 要求 >=15 位（19 位雪花号，
+// 短数字串在堆数据里极易误中）。最多跟进 12 个指针槽/节点，防止成本爆炸。
+static BOOL DYYYWardBytesContains(const uint8_t *hay, size_t hayLen, const uint8_t *needle, size_t needleLen) {
+    if (!hay || !needle || needleLen == 0 || hayLen < needleLen) return NO;
+    for (size_t i = 0; i + needleLen <= hayLen; i++) {
+        if (memcmp(hay + i, needle, needleLen) == 0) return YES;
+    }
+    return NO;
+}
+
+static BOOL DYYYWardCIDAsciiScan(id node, NSArray *cidList) {
+    if (!node || cidList.count == 0) return NO;
+    NSMutableArray *pats = [NSMutableArray array];
+    for (id c in cidList) {
+        if (![c isKindOfClass:[NSString class]]) continue;
+        NSString *s = (NSString *)c;
+        if (s.length < 15) continue;
+        const char *u = [s UTF8String];
+        if (!u) continue;
+        size_t n = strlen(u);
+        if (n < 15 || n > 32) continue;
+        [pats addObject:[NSData dataWithBytes:u length:n]];
+    }
+    if (pats.count == 0) return NO;
+    Class cls = object_getClass(node);
+    size_t size = class_getInstanceSize(cls);
+    if (size <= sizeof(void *) + sizeof(uint64_t)) return NO;
+    const uint8_t *base = (const uint8_t *)(__bridge const void *)node;
+    size_t limit = size - sizeof(uint64_t);
+    NSInteger followed = 0;
+    for (size_t off = sizeof(void *); off <= limit && followed < 12; off++) {
+        uintptr_t raw = 0;
+        memcpy(&raw, base + off, sizeof(uintptr_t));
+        if (raw < 0x100000000ULL) continue;          // 用户态窗口粗筛（与 LooksLikeObject 同款判据）
+        if (raw > 0x0000FFFFFFFFFFFFULL) continue;   // 超窗口 = 内联字符串/结构体位模式，非指针
+        if (raw & 0x7) continue;                     // 8 对齐
+        if (!DYYYWardAddressReadable(raw)) continue; // 起始地址确认可读（不解引用）
+        followed++;
+        uint8_t buf[128];
+        size_t got = 0;
+        while (got + 8 <= sizeof(buf)) {
+            if (!DYYYWardAddressReadable(raw + got)) break; // 每步单独确认，绝不越出可读区
+            memcpy(buf + got, (const void *)(raw + got), 8);
+            got += 8;
+        }
+        if (got < 15) continue;
+        for (NSData *p in pats) {
+            if (DYYYWardBytesContains(buf, got, (const uint8_t *)p.bytes, p.length)) return YES;
+        }
+    }
+    return NO;
+}
+
 // v2.4-6 诊断用：cell 字段概况（类名 + 前几个 ivar 名/类型编码，编码截断）。
 // 父/子扫描把加载的行全扫遍仍不命中时，这条信息直接说明 cell 到底怎么存数据
 // （对象 ivar / 内嵌结构体 / 根本没有模型），下一版精准修，不用继续猜。
@@ -879,11 +949,19 @@ static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInt
     }
     // v2.4-5：再扫 64 位整型 ivar 里的 cid（Swift Int64 存储属性，对象扫描看不见）
     // v2.4-6：再整个实例区原样搜（内嵌结构体模型，声明既非 '@' 也非 'q' 时唯一的路）。
-    // depth>=5 才做裸扫：cell 自身(8)/直接模型(7)/内嵌结构体都在这个范围，
-    // 深层子视图（label 等）不存 cid，逐个裸扫纯属浪费。
-    if (cidList.count > 0 && depth >= 5) {
+    // v2.4-7：depth 门改全局 gDYYYWardRawScanMinDepth（默认 5，列表层直达临时降到 1）；
+    // 命中时把「cid 藏在哪个对象实例里」记到 gDYYYWardGraphHitNode（列表层直达要拿模型指针算下标）。
+    // ASCII 堆搜索（Swift String 堆存储）同门触发，预算 >100 才跑（尾部不值得再花成本）。
+    if (cidList.count > 0 && depth >= gDYYYWardRawScanMinDepth) {
         NSArray *nums = DYYYWardCIDNums(cidList);
-        if (nums && (DYYYWardCIDIntsMatch(node, nums) || DYYYWardCIDRawScan(node, nums))) return YES;
+        if (nums && (DYYYWardCIDIntsMatch(node, nums) || DYYYWardCIDRawScan(node, nums))) {
+            gDYYYWardGraphHitNode = node;
+            return YES;
+        }
+        if (*budget > 100 && DYYYWardCIDAsciiScan(node, cidList)) {
+            gDYYYWardGraphHitNode = node;
+            return YES;
+        }
     }
     return NO;
 }
@@ -1071,8 +1149,11 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
             id item = [arr objectAtIndex:i];
             if (!item || [item isKindOfClass:[NSNull class]]) continue;
             // 值搜优先：不依赖模型字段名，直接在模型图里按 cid/正文找（与可见 cell 同一套判定）
-            if (cidList.count > 0) { NSInteger bg = 150; if (DYYYWardGraphMatch(item, cidList, nil, 3, &bg)) return (NSInteger)i; }
-            if (probe.length > 0) { NSInteger bg = 150; if (DYYYWardGraphMatch(item, @[], probe, 3, &bg)) return (NSInteger)i; }
+            // v2.4-7：depth 3→8——v2.4-5/6 的 Int64/裸扫门是 depth>=5，depth 3 时它们
+            // 从来没在数据源路径上跑过（只跑了字符串比对），Swift 模型 cid 是标量时必败。
+            // 预算 200/项封顶：这是按屏扫描之外的兜底路径，不能为它把主线程卡住。
+            if (cidList.count > 0) { NSInteger bg = 200; if (DYYYWardGraphMatch(item, cidList, nil, 8, &bg)) return (NSInteger)i; }
+            if (probe.length > 0) { NSInteger bg = 200; if (DYYYWardGraphMatch(item, @[], probe, 8, &bg)) return (NSInteger)i; }
             NSString *cid = DYYYWardCIDOfModel(item);
             if (cid.length == 0) {
                 for (NSString *k in wrapKeys) {
@@ -1101,13 +1182,13 @@ static NSInteger DYYYWardIndexInArray(NSArray *arr, NSArray *cidList, NSString *
     return NSNotFound;
 }
 
-// 把数组下标换算成 indexPath 并滚动过去；滚完取 cell 复核，命中才高亮
-static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList, NSString *contentHint) {
-    if (!scroll || idx < 0) return NO;
-    NSIndexPath *ip = nil;
+// 把「模型数组里的扁平下标」换算成 indexPath（table/CV 通用，分段感知）。
+// 行数只用公开 API 问（不调 dataSource 回调）；段数封顶 8 防异常表。
+// v2.4-7：从 DYYYWardScrollListToIndex 提取出来，供列表层直达的父/子两条路径共用。
+static NSIndexPath *DYYYWardIndexPathForFlatIndex(UIScrollView *scroll, NSInteger idx) {
+    if (!scroll || idx < 0) return nil;
     if ([scroll isKindOfClass:[UITableView class]]) {
         UITableView *tv = (UITableView *)scroll;
-        // 只用 UITableView 公开 API 问行数（不调 dataSource 的回调方法，副作用/崩溃风险都更小）
         NSInteger sections = tv.numberOfSections;
         if (sections < 1) sections = 1;
         if (sections > 8) sections = 8;
@@ -1115,10 +1196,35 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
         for (NSInteger s = 0; s < sections; s++) {
             NSInteger rows = 0;
             if (s < tv.numberOfSections) rows = [tv numberOfRowsInSection:s];
-            if (rows > 0 && remain < rows) { ip = [NSIndexPath indexPathForRow:remain inSection:s]; break; }
+            if (rows > 0 && remain < rows) return [NSIndexPath indexPathForRow:remain inSection:s];
             remain -= rows;
         }
-        if (!ip) return NO;
+        return nil;
+    }
+    if ([scroll isKindOfClass:[UICollectionView class]]) {
+        UICollectionView *cv = (UICollectionView *)scroll;
+        NSInteger sections = cv.numberOfSections;
+        if (sections < 1) sections = 1;
+        if (sections > 8) sections = 8;
+        NSInteger remain = idx;
+        for (NSInteger s = 0; s < sections; s++) {
+            NSInteger items = 0;
+            if (s < cv.numberOfSections) items = [cv numberOfItemsInSection:s];
+            if (items > 0 && remain < items) return [NSIndexPath indexPathForItem:remain inSection:s];
+            remain -= items;
+        }
+        return nil;
+    }
+    return nil;
+}
+
+// 把数组下标换算成 indexPath 并滚动过去；滚完取 cell 复核，命中才高亮
+static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArray *cidList, NSString *contentHint) {
+    if (!scroll || idx < 0) return NO;
+    NSIndexPath *ip = DYYYWardIndexPathForFlatIndex(scroll, idx);
+    if (!ip) return NO;
+    if ([scroll isKindOfClass:[UITableView class]]) {
+        UITableView *tv = (UITableView *)scroll;
         @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
@@ -1143,22 +1249,24 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
     }
     if ([scroll isKindOfClass:[UICollectionView class]]) {
         UICollectionView *cv = (UICollectionView *)scroll;
-        NSInteger sections = cv.numberOfSections;
-        if (sections < 1) sections = 1;
-        if (sections > 8) sections = 8;
-        NSInteger remain = idx;
-        for (NSInteger s = 0; s < sections; s++) {
-            NSInteger items = 0;
-            if (s < cv.numberOfSections) items = [cv numberOfItemsInSection:s];
-            if (items > 0 && remain < items) { ip = [NSIndexPath indexPathForItem:remain inSection:s]; break; }
-            remain -= items;
-        }
-        if (!ip) return NO;
         @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES]; } @catch (NSException *e) { return NO; }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @try {
                 UICollectionViewCell *cell = [cv cellForItemAtIndexPath:ip];
-                if (cell) { DYYYWardScrollAndHighlight(cv, cell); [DYYYUtils showToast:@"已定位到该评论"]; }
+                if (!cell) return;
+                // v2.4-7：CV 分支原来滚完只高亮、不复核也不置 done（table 分支却两者都做）——
+                // 下标来自模型数组本就可信，补上与 table 一致的按值复核，命中才收尾。
+                BOOL hit = NO;
+                NSInteger budget = 400;
+                if (cidList.count > 0) hit = DYYYWardGraphMatch(cell, cidList, nil, 4, &budget);
+                if (!hit) {
+                    NSString *p = DYYYWardContentProbe(contentHint, 10);
+                    if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
+                }
+                if (!hit) return;
+                DYYYWardScrollAndHighlight(cv, cell);
+                [DYYYUtils showToast:@"已定位到该评论"];
+                gDYYYWardLocateDone = gDYYYWardLocateGen;
             } @catch (NSException *e) {}
         });
         return YES;
@@ -1346,6 +1454,39 @@ static void DYYYWardTryHostLocateComment(NSString *commentID) {
             }
             break;
         }
+        // v2.4-7：6 个固定名全 miss（Swift 面板的 vm 名不固定——实测 vm:0 的真因：
+        // 类名对得上、vm 名一个都不对）→ 枚举 VC 及其子 VC 的**全部对象 ivar**，
+        // 每个候选都当过签名校验的宿主 VM 试白名单。取值走 object_getIvar（不发消息，
+        // 裸 '@' 槽也安全）+ DYYYWardLooksLikeObject（只读 isa + 查已注册类表）；
+        // 调用走 DYYYWardInvokeHostLocate（respondsToSelector: + 参数个数/类型校验后才
+        // performSelector:）——两层防护下盲调安全。封顶 24 个候选防耗时。
+        if (invoked.length == 0) {
+            NSMutableArray *owners = [NSMutableArray arrayWithObject:vc];
+            for (UIViewController *ch in vc.childViewControllers) {
+                if (owners.count >= 5) break;
+                if (ch && ch != vc) [owners addObject:ch];
+            }
+            NSInteger tried = 0;
+            for (id owner in owners) {
+                if (invoked.length > 0 || tried >= 24) break;
+                for (NSValue *iv in DYYYWardObjectIvars(object_getClass(owner))) {
+                    if (tried >= 24) break;
+                    Ivar v = (Ivar)[iv pointerValue];
+                    id val = object_getIvar(owner, v);
+                    if (!DYYYWardLooksLikeObject(val)) continue;
+                    if (val == owner || val == vc) continue;
+                    tried++;
+                    NSString *d = DYYYWardInvokeHostLocate(val, selNames, commentID);
+                    if (d.length > 0) {
+                        invoked = d;
+                        if (detail.length < 200) [detail appendFormat:@" ivarVM已调用(%@:%@)", d, NSStringFromClass([val class])];
+                        break;
+                    }
+                }
+            }
+            vmCount += tried;
+            if (detail.length < 220) [detail appendFormat:@" 对象ivar:%ld", (long)tried];
+        }
         if (invoked.length > 0) break; // 宿主方法已经接受调用，不必再试其它实例
     }
     // 精简诊断：VC 实例数 / 命中 vm 的实例数 + 细节（避免 toast 被撑爆）
@@ -1373,6 +1514,10 @@ static void DYYYWardShowLocateFailure(void) {
     if (gDYYYWardDataSourceDiag.length > 0) {
         dsMsg = [NSString stringWithFormat:@" %@", gDYYYWardDataSourceDiag];
     }
+    NSString *jumpMsg = @""; // v2.4-7：列表层直达结果
+    if (gDYYYWardListJumpDiag.length > 0) {
+        jumpMsg = [NSString stringWithFormat:@" %@", gDYYYWardListJumpDiag];
+    }
     NSInteger maxRows = 0; CGFloat off = 0;
     UIViewController *cvc = DYYYWardFindCommentVC();
     if (cvc) {
@@ -1398,8 +1543,8 @@ static void DYYYWardShowLocateFailure(void) {
     if (gDYYYWardParentDiag.length > 0) {
         parentMsg = [NSString stringWithFormat:@" 父:%@", gDYYYWardParentDiag];
     }
-    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@ 行:%ld 偏移:%.0f",
-                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, (long)maxRows, off]];
+    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@%@ 行:%ld 偏移:%.0f",
+                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, jumpMsg, (long)maxRows, off]];
 }
 
 // P0：按屏批量扫描（替代 v2.3 的逐行 0.15s）。
@@ -1630,10 +1775,11 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
 
 // v2.4-4：父扫描命中后的统一动作：点开父 cell 的回复 → 1s 后回来定位子评论
 // （宿主方法 → 可见区复核 → 都不中再起子扫描）。不置 LocateDone——子还没找到。
-static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
-    (void)list;
-    gDYYYWardSweepForParent = NO;
-    gDYYYWardParentHandled = YES;
+// v2.4-7：从 DYYYWardParentSweepHit 提取——「点开父评论的回复 → 1s 后定位子评论」。
+// 父扫描命中、可见区命中、列表层直达命中三条父路径共用同一套收尾，行为完全一致。
+// 前置：调用方必须先置 gDYYYWardParentHandled=YES、gDYYYWardSweepForParent=NO、
+// gDYYYWardChildCIDs/ChildHint（子评论 cid/正文）。
+static void DYYYWardExpandThenFindChild(id cell, NSInteger gen) {
     BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)cell);
     gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
     NSArray *childCids = gDYYYWardChildCIDs ?: @[];
@@ -1656,6 +1802,13 @@ static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
     });
 }
 
+static void DYYYWardParentSweepHit(id cell, UIScrollView *list, NSInteger gen) {
+    (void)list;
+    gDYYYWardSweepForParent = NO;
+    gDYYYWardParentHandled = YES;
+    DYYYWardExpandThenFindChild(cell, gen);
+}
+
 // v2.4-4：父评论按屏扫描（二级回复父不在首屏的唯一活路）。
 // v2.4-5：probe 取父评论正文（parentTexts 里第一个非空）——Swift cell 的 cid 可能是
 // Int64 标量，对象图搜不到，而 cell 上的 UILabel 文本永远可靠；cid 仍作辅助匹配。
@@ -1671,6 +1824,222 @@ static void DYYYWardSweepParentThenExpand(NSArray *parentIDs, NSArray *childCidL
     }
     gDYYYWardParentDiag = (parentProbe.length > 0) ? @"扫描父评论(按文本)" : @"扫描父评论(仅cid)";
     DYYYWardSweepRows(parentIDs, parentProbe, gen);
+}
+
+// MARK: - v2.4-7 列表层直达（换根搜：从 cell 图换到列表数据层）
+//
+// 之前所有搜索都从 cell 出发，但 cell 只有屏上 ~10 个，模型全在列表数据层——
+// 92 条已加载评论的模型在 dataSource/delegate 的对象图里。逐屏扫 cell 既慢又脆
+// （二级回复父扫描「扫尽 92 行不命中」的真因：cid 不在 cell 可达图，cell 只有
+// 8 个 ivar、viewmodel 是 cell 级 VM）。本链路换根：从列表的 dataSource/delegate
+// （公开属性直接取，不爬 responder 链）和评论 VC 作根跑图搜，命中模型对象指针后
+// 按**指针相等**在候选数组里算下标，scrollToItem/Row 一跳到位——已加载里有目标
+// 就一次命中，不必翻屏；顺带能在目标未加载时给出明确诊断。
+
+// 收集列表层搜索根：每个列表的 dataSource + delegate（公开属性）+ 数据源上挂的
+// viewModel/model/listViewModel（ivar 名取值，不过 KVC）+ 评论 VC 本身。
+static NSArray *DYYYWardListLayerRoots(UIViewController *commentVC) {
+    NSMutableArray *roots = [NSMutableArray array];
+    NSArray *lists = commentVC ? DYYYWardCommentListViews(commentVC) : @[];
+    for (UIScrollView *sv in lists) {
+        if (![sv isKindOfClass:[UIScrollView class]]) continue;
+        id ds = nil, del = nil;
+        if ([sv isKindOfClass:[UITableView class]]) {
+            ds = [(UITableView *)sv dataSource];
+            del = [(UITableView *)sv delegate];
+        } else if ([sv isKindOfClass:[UICollectionView class]]) {
+            ds = [(UICollectionView *)sv dataSource];
+            del = [(UICollectionView *)sv delegate];
+        }
+        if (ds && DYYYWardLooksLikeObject(ds) && ds != sv) [roots addObject:ds];
+        if (del && DYYYWardLooksLikeObject(del) && del != sv && del != ds) [roots addObject:del];
+        for (NSString *k in @[ @"viewModel", @"model", @"listViewModel" ]) {
+            id vm = DYYYWardIvarNamed(ds, k); // ds 为 nil 时安全返回 nil
+            if (vm && DYYYWardLooksLikeObject(vm) && vm != ds) {
+                BOOL dup = NO;
+                for (id e in roots) { if (e == vm) { dup = YES; break; } }
+                if (!dup) [roots addObject:vm];
+            }
+        }
+    }
+    if (commentVC && DYYYWardLooksLikeObject(commentVC)) {
+        BOOL dup = NO;
+        for (id e in roots) { if (e == commentVC) { dup = YES; break; } }
+        if (!dup) [roots addObject:commentVC];
+    }
+    return roots;
+}
+
+// 在列表层对象图里找「cid 藏在哪个对象实例里」。临时把裸扫门降到 1
+// （模型离 dataSource 根只有 2~4 层，默认门 5 会整段瞎），用完即恢复。
+// 命中节点由数值/裸扫/ASCII 三处命中点记到 gDYYYWardGraphHitNode；
+// 字符串/NSNumber 相等命中拿不到模型指针（hitNode 为 nil），调用方回退按数组内容搜。
+static BOOL DYYYWardListLayerFindModel(NSArray *roots, NSArray *cidList, id *outModel) {
+    if (outModel) *outModel = nil;
+    if (roots.count == 0 || cidList.count == 0) return NO;
+    NSInteger savedGate = gDYYYWardRawScanMinDepth;
+    gDYYYWardRawScanMinDepth = 1;
+    BOOL found = NO;
+    @try {
+        for (id root in roots) {
+            if (!DYYYWardLooksLikeObject(root)) continue;
+            NSInteger budget = 500;
+            gDYYYWardGraphHitNode = nil;
+            if (DYYYWardGraphMatch(root, cidList, nil, 5, &budget)) { found = YES; break; }
+        }
+    } @catch (NSException *e) {
+        found = NO;
+    }
+    gDYYYWardRawScanMinDepth = savedGate; // 任何路径都恢复，别让门漏回去
+    if (found && outModel) *outModel = gDYYYWardGraphHitNode;
+    return found;
+}
+
+// v2.4-7：广口收集候选数组——不靠 ivar 名启发式（Swift 字段名不在白名单，
+// 「数据源0数组」的真因之一），任何 '@' ivar 只要是规模合理的 NSArray 就要。
+// 内容命中由图搜/指针相等把关，伪数组只花时间不错判。封顶防爆。
+static NSArray *DYYYWardListLayerArrays(id obj) {
+    if (!obj) return @[];
+    NSMutableArray *out = [NSMutableArray array];
+    Class cls = object_getClass(obj);
+    for (NSInteger depth = 0; cls && depth < 3 && out.count < 16; depth++) {
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        for (unsigned int i = 0; i < ic && out.count < 16; i++) {
+            const char *t = ivar_getTypeEncoding(ivars[i]);
+            if (!DYYYWardIvarTypeIsDeclaredObject(t)) continue;
+            id v = object_getIvar(obj, ivars[i]); // 不发消息，裸 '@' 槽安全
+            if (!DYYYWardLooksLikeObject(v)) continue;
+            if (![v isKindOfClass:[NSArray class]]) continue;
+            NSUInteger c = [(NSArray *)v count];
+            if (c == 0 || c > 5000) continue;
+            BOOL dup = NO;
+            for (NSArray *exist in out) { if (exist == (NSArray *)v) { dup = YES; break; } }
+            if (!dup) [out addObject:v];
+        }
+        if (ivars) free(ivars);
+        cls = class_getSuperclass(cls);
+    }
+    return out;
+}
+
+// 在候选数组里按**指针相等**找模型下标（数组元素就是模型本身；极快且零误判）。
+// 元素是包装对象（section/wrapper）时，往下看一层对象 ivar 是否指向同一模型。
+static NSInteger DYYYWardIndexOfModelInArrays(NSArray *arrays, id model) {
+    if (arrays.count == 0 || !model) return NSNotFound;
+    for (NSArray *arr in arrays) {
+        if (![arr isKindOfClass:[NSArray class]]) continue;
+        NSUInteger n = arr.count;
+        if (n == 0 || n > 5000) continue;
+        for (NSUInteger i = 0; i < n; i++) {
+            @autoreleasepool {
+                id e = [arr objectAtIndex:i];
+                if (e == model) return (NSInteger)i; // 指针比对，不发消息
+                if (!e || !DYYYWardLooksLikeObject(e)) continue;
+                for (NSValue *iv in DYYYWardObjectIvars(object_getClass(e))) {
+                    Ivar v = (Ivar)[iv pointerValue];
+                    if (object_getIvar(e, v) == model) return (NSInteger)i;
+                }
+            }
+        }
+    }
+    return NSNotFound;
+}
+
+// v2.4-7：列表层直达核心。根搜命中模型 → 指针相等算下标 → 滚动 → 0.7s 复核。
+// isParent=YES 时滚到的是父评论：复核命中后不置 done，而是点开回复、1s 后
+// 回来定位子评论（二级回复全流程收尾，与父扫描命中走同一条 ExpandThenFindChild）。
+// 返回 YES = 已发起滚动（复核在 0.7s 后的 block 里，命中才收尾）。
+static BOOL DYYYWardListLayerJumpCore(NSArray *targetCIDs, NSString *contentHint, NSInteger gen, NSInteger urlGen, BOOL isParent, NSArray *childCidList) {
+    if (targetCIDs.count == 0) { gDYYYWardListJumpDiag = @"列表层:无cid"; return NO; }
+    UIViewController *commentVC = DYYYWardFindCommentVC();
+    if (!commentVC) { gDYYYWardListJumpDiag = @"列表层:评论区未打开"; return NO; }
+    NSArray *roots = DYYYWardListLayerRoots(commentVC);
+    if (roots.count == 0) { gDYYYWardListJumpDiag = @"列表层:无根"; return NO; }
+    id model = nil;
+    BOOL found = DYYYWardListLayerFindModel(roots, targetCIDs, &model);
+    if (!found) { gDYYYWardListJumpDiag = @"列表层:未命中(未加载?)"; return NO; }
+    // 候选数组：所有根对象的广口收集，指针去重
+    NSMutableArray *arrays = [NSMutableArray array];
+    for (id root in roots) {
+        for (NSArray *a in DYYYWardListLayerArrays(root)) {
+            BOOL dup = NO;
+            for (NSArray *exist in arrays) { if (exist == a) { dup = YES; break; } }
+            if (!dup) [arrays addObject:a];
+        }
+    }
+    NSInteger idx = NSNotFound;
+    if (model) idx = DYYYWardIndexOfModelInArrays(arrays, model);
+    if (idx == NSNotFound) {
+        // 回退：按数组内容搜（cid 图搜/正文）。v2.4-7 起 depth 8，Int64/裸扫真正生效
+        for (NSArray *a in arrays) {
+            NSInteger i2 = DYYYWardIndexInArray(a, targetCIDs, contentHint);
+            if (i2 != NSNotFound) { idx = i2; break; }
+        }
+    }
+    if (idx == NSNotFound) { gDYYYWardListJumpDiag = @"列表层:命中模型但算不出下标"; return NO; }
+    // 选行数最多的列表滚（评论区可能同时存在多个列表实例）
+    UIScrollView *best = nil; NSInteger total = 0;
+    for (UIScrollView *sv in DYYYWardCommentListViews(commentVC)) {
+        NSInteger c = DYYYWardListRowCount(sv);
+        if (c > total) { total = c; best = sv; }
+    }
+    if (!best || total <= 0 || idx >= total) {
+        gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:idx%ld超行数%ld", (long)idx, (long)total];
+        return NO;
+    }
+    NSIndexPath *ip = DYYYWardIndexPathForFlatIndex(best, idx);
+    if (!ip) { gDYYYWardListJumpDiag = @"列表层:下标换算失败"; return NO; }
+    gDYYYWardListJumpDiag = [NSString stringWithFormat:@"列表层:idx%ld/行%ld", (long)idx, (long)total];
+    if ([best isKindOfClass:[UITableView class]]) {
+        UITableView *tv = (UITableView *)best;
+        @try { [tv scrollToRowAtIndexPath:ip atScrollPosition:UITableViewScrollPositionMiddle animated:YES]; } @catch (NSException *e) { return NO; }
+    } else {
+        UICollectionView *cv = (UICollectionView *)best;
+        @try { [cv scrollToItemAtIndexPath:ip atScrollPosition:UICollectionViewScrollPositionCenteredVertically animated:YES]; } @catch (NSException *e) { return NO; }
+    }
+    gDYYYWardLocatePending = gDYYYWardLocateGen; // 已精确滚到目标，勿再渐进滚动
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gDYYYWardLocatePending == gen) gDYYYWardLocatePending = 0; // 复核失败则放行主循环继续兜底
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gDYYYWardLocateDone == gen) return;
+        if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始，旧链作废
+        @try {
+            id cell = nil;
+            if ([best isKindOfClass:[UITableView class]]) cell = [(UITableView *)best cellForRowAtIndexPath:ip];
+            else cell = [(UICollectionView *)best cellForItemAtIndexPath:ip];
+            if (!cell) return;
+            // 按值复核（cid 或正文片段），不因此否定——下标来自模型数组本就可信
+            BOOL hit = NO;
+            NSInteger budget = 400;
+            if (targetCIDs.count > 0) hit = DYYYWardGraphMatch(cell, targetCIDs, nil, 4, &budget);
+            if (!hit && contentHint.length > 0) {
+                NSString *p = DYYYWardContentProbe(contentHint, 10);
+                if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
+            }
+            if (!hit) return;
+            DYYYWardScrollAndHighlight(best, cell);
+            if (isParent) {
+                // 父路径：不置 done——点开回复，1s 后回来定位子评论
+                gDYYYWardParentHandled = YES;
+                gDYYYWardChildCIDs = childCidList ?: @[];
+                gDYYYWardChildHint = contentHint ?: @"";
+                gDYYYWardListJumpDiag = @"列表层:命中父,已展开";
+                DYYYWardExpandThenFindChild(cell, gen);
+            } else {
+                [DYYYUtils showToast:@"已定位到该评论"];
+                gDYYYWardLocateDone = gen;
+                gDYYYWardFailCount = 0;
+            }
+        } @catch (NSException *e) {}
+    });
+    return YES;
+}
+
+// v2.4-7：一级评论的列表层直达（二级回复的父评论在 LocateParentThenExpand 里直接走 Core）。
+static BOOL DYYYWardListLayerJump(NSArray *cidList, NSString *contentHint, NSInteger gen, NSInteger urlGen) {
+    return DYYYWardListLayerJumpCore(cidList, contentHint, gen, urlGen, NO, nil);
 }
 
 static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger gen) {
@@ -1746,7 +2115,9 @@ static void DYYYWardScrollCommentList(BOOL up) {
 
 // 先按父评论定位，再点开「回复」，最后把子 cid 交给宿主定位/扫描。
 // parentIDs 为空（老插眼记录没有）直接返回 NO，不拿子 cid 去冒充父。
-static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList, NSString *contentHint, NSInteger gen) {
+// v2.4-7：加 urlGen 参数（列表层直达的 0.7s 复核 block 要校验「还是本次查看」），
+// 并在 ① 宿主方法 与 ② 可见区之间插入「列表层直达跳父评论」。
+static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList, NSString *contentHint, NSInteger gen, NSInteger urlGen) {
     if (parentIDs.count == 0) return NO;
     NSMutableArray *pids = [NSMutableArray array];
     for (id p in parentIDs) {
@@ -1761,6 +2132,10 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
         DYYYWardTryHostLocateComment(pid);
         if (gDYYYWardLocateDone == gen) return YES;
     }
+    // ①.5 v2.4-7：列表层直达跳父评论——从 dataSource/delegate 根搜到父模型指针，
+    // 按指针相等算下标一跳到位（已加载 92 条里有父评论就不必逐屏扫 92 行）。
+    // 滚到后点开回复、1s 后回来定位子评论，整条二级回复链在这里一步到位。
+    if (DYYYWardListLayerJumpCore(pids, nil, gen, urlGen, YES, cidList)) return YES;
     // ② 直接可见区找父评论（便宜、不滚动）：命中就展开回复
     UIViewController *cvc = DYYYWardFindCommentVC();
     if (cvc) {
@@ -1768,20 +2143,10 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
             id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
             if (pc && [pc isKindOfClass:[UIView class]]) {
                 gDYYYWardParentHandled = YES;
-                BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)pc);
-                gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != gen) return;
-                    for (NSString *cid in cidList) {
-                        DYYYWardTryHostLocateComment(cid);
-                        if (gDYYYWardLocateDone == gen) return;
-                    }
-                    if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
-                        gDYYYWardLocateDone = gen;
-                        return;
-                    }
-                    if (gDYYYWardSweepGen != gen) DYYYWardSweepRows(cidList, contentHint, gen);
-                });
+                // ExpandThenFindChild 从 globals 取子评论 cid/正文，先灌进去
+                gDYYYWardChildCIDs = cidList;
+                gDYYYWardChildHint = contentHint ?: @"";
+                DYYYWardExpandThenFindChild(pc, gen); // v2.4-7：与父扫描命中共用收尾（点回复→1s 后定位子）
                 return YES;
             }
         }
@@ -1801,6 +2166,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     gDYYYWardSweepForParent = NO;
     gDYYYWardChildCIDs = nil;
     gDYYYWardChildHint = nil;
+    // v2.4-7：父/列表层诊断段也每次重置，避免上一轮的「父:已点回复」糊到本轮 toast 里
+    gDYYYWardParentDiag = nil;
+    gDYYYWardListJumpDiag = nil;
     // v2.4-2：URL 深链已把目标评论滚到位 → 本次「查看」结束，不再跑脆弱的扫描/滚动。
     if (gDYYYWardURLDirectOK) {
         gDYYYWardURLDirectOK = NO;
@@ -1830,7 +2198,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 gDYYYWardLocateDone = gen;
                 return;
             }
-            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen)) return;
+            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen, urlGen)) return;
             // 没命中就继续走下面的常规兜底（不 return，让主循环照常跑）
         });
     }
@@ -1887,8 +2255,12 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
                 // 注意：按行扫描一旦接管（gDYYYWardSweepGen==gen），就绝不能再让数据源定位去 scrollToRow，
                 // 否则两边抢滚动位置——实测表现为「扫描到一半被拽回顶部附近」，扫描永远走不完（v2.3-26 偏移停在 991 的真因）。
+                // v2.4-7：i==1 先走新的「列表层直达」（dataSource/delegate 根搜 + 指针相等算下标，
+                // 比旧的名字启发式数组发现广，且 Int64/裸扫真正生效）；一级评论专属，
+                // 二级回复的父评论在 2.2s 块里已走过父直达。跳过了才退旧数据源定位。
                 if ((i == 1 || i == 5 || i == 9) && gDYYYWardSweepGen != gen) {
-                    DYYYWardLocateViaDataSource(cidList, contentHint);
+                    BOOL jumped = (i == 1 && parentIDs.count == 0) ? DYYYWardListLayerJump(cidList, contentHint, gen, urlGen) : NO;
+                    if (!jumped) DYYYWardLocateViaDataSource(cidList, contentHint);
                     if (gDYYYWardLocateDone == gen) return;
                 }
                 if (i == 3) {
