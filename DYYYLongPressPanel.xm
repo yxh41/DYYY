@@ -147,6 +147,25 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
         if (v.length > 0 && ![cidCandidates containsObject:v]) [cidCandidates addObject:v];
     }
     NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
+    // v2.4-2：二级回复的父评论 id（replyComment/parentComment/parentCommentModel 等，各版本字段名不一）。
+    // 只在该评论确实是「回复」时才取到值，一级评论此项为空。定位二级回复时靠它先定位父评论再展开。
+    NSMutableArray *parentIDs = [NSMutableArray array];
+    {
+        NSArray *parentKeys = @[ @"replyComment", @"parentComment", @"parentCommentModel", @"replyToComment",
+                                 @"originComment", @"parentModel", @"replyToCommentModel" ];
+        for (NSString *pk in parentKeys) {
+            id p = nil;
+            @try { p = [comment valueForKey:pk]; } @catch (NSException *e) {}
+            if (!p || [p isKindOfClass:[NSNull class]]) continue;
+            NSString *pid = DYYYCommentStrForKeys(p, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
+            if (pid.length > 0 && ![parentIDs containsObject:pid]) [parentIDs addObject:pid];
+        }
+        // 兜底：部分版本 reply/parent 的 id 直接是字符串字段
+        if (parentIDs.count == 0) {
+            NSString *pid = DYYYCommentStrForKeys(comment, @[ @"replyToCommentID", @"parentCommentID", @"parentID", @"rootCommentID" ]);
+            if (pid.length > 0) [parentIDs addObject:pid];
+        }
+    }
 
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
     [data setObject:@"评论" forKey:@"type"];
@@ -157,6 +176,7 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
     [data setObject:awemeID forKey:@"awemeID"];
     [data setObject:commentID forKey:@"commentID"];
     [data setObject:cidCandidates forKey:@"commentIDs"];
+    if (parentIDs.count > 0) [data setObject:parentIDs forKey:@"parentIDs"];
     [data setObject:ctStr forKey:@"createTime"];
     [data setObject:content forKey:@"desc"];
     [data setObject:shareURL forKey:@"shareURL"];

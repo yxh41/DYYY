@@ -121,6 +121,11 @@ static void DYYYWardSweepRows(NSArray *cidList, NSString *contentHint, NSInteger
 static NSInteger gDYYYWardSweepGen = 0; // 正在按行扫描的 gen（扫描期间跳过渐进滚动，防两者互相打架）
 static NSInteger gDYYYWardSweepToken = 0; // 扫描令牌：取消时自增，已在排队的旧步骤一检查就自行退出
 static NSInteger gDYYYWardFailCount = 0; // 连续定位失败次数：第 1 次只报人话，第 2 次才附完整诊断
+// v2.4-2：URL 直达复核/兜底扫描的代号。只有最新一次「查看」发起的这一代才有效；
+// 上一代还在排队的 dispatch_after 步骤一看到不等就自行作废，防止旧链把新评论拽走。
+static NSInteger gDYYYWardURLGen = 0;
+static BOOL gDYYYWardURLDirectOK = NO; // comment_id 深链复核通过（宿主已把目标评论滚到位）
+static NSString *gDYYYWardURLDiag = nil; // 深链复核结果（直达到位/未到位），失败 toast 里带出来
 
 // v2.3-23：旧的「按字段名猜 cid」(DYYYWardCIDOf / DYYYWardCommentIDOfCell) 已删除，
 // 改用 DYYYWardGraphMatch 在 cell 对象图里按值搜（见下方），不再依赖任何私有字段名——
@@ -375,6 +380,51 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     gDYYYWardLocateDiag = [NSString stringWithFormat:@"%ld列表可见%ld条无匹配 cid:%@ 内容:%@ 扫描%ld串 首cell:%@",
                            (long)lists.count, (long)totalVisible, cidTail, probe ?: @"(空)",
                            (long)gDYYYWardGraphStrCount, firstCellCls ?: @"(无)"];
+    return NO;
+}
+
+// MARK: - v2.4-2：二级回复「父评论先定位」（实现见 DYYYWardLocateParentThenExpand，定义在宿主定位/扫描函数之后）
+// 二级回复（cid 是子评论 id）在主评论列表里根本不存在，scrollToCommentWithID: 也常只认主列表 id。
+// 思路：定位父评论 → 父 cell 上找「查看回复/展开」按钮点开 → 再让宿主定位/扫描子评论。
+// 父评论 id 来自插眼时存的 parentIDs（不存在就跳过，绝不拿子 cid 去冒充父）。
+static NSString *gDYYYWardParentDiag = nil; // 父评论定位状态（诊断用）
+
+// 在父 cell 的视图树里找「查看回复/展开回复」类可点元素；命中且未展开就点开并返回 YES（已展开也返回 YES）。
+// 没有可点入口返回 NO，交由后续兜底。只认「短文案 + 含 回复/展开/reply」，避免匹配到评论正文里的词。
+// 点击只走 UIButton 的 sendActionsForControlEvents（等价于真点）；其余情况宁可不点也不盲 performSelector
+// （参数签名未知是 v2.3-20 的崩溃源），交由父评论定位兜底。
+static BOOL DYYYWardExpandRepliesOnCell(UIView *cell) {
+    if (!cell) return NO;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
+    NSInteger visited = 0;
+    UIView *hit = nil;
+    while (stack.count > 0 && visited < 260) {
+        UIView *cur = [stack lastObject];
+        [stack removeLastObject];
+        visited++;
+        NSString *txt = nil;
+        if ([cur isKindOfClass:[UILabel class]]) txt = [(UILabel *)cur text];
+        if (txt.length == 0) txt = cur.accessibilityLabel;
+        if (txt.length > 0 && txt.length < 40) {
+            BOOL looksExpand = [txt rangeOfString:@"回复"].location != NSNotFound ||
+                               [txt rangeOfString:@"展开"].location != NSNotFound ||
+                               [txt.lowercaseString rangeOfString:@"reply"].location != NSNotFound;
+            if (looksExpand) {
+                if ([txt rangeOfString:@"收起"].location != NSNotFound) return YES; // 已展开：有「收起」入口
+                if (!hit) hit = cur;
+            }
+        }
+        [stack addObjectsFromArray:cur.subviews];
+    }
+    if (!hit) return NO;
+    UIView *v = hit;
+    for (NSInteger up = 0; up < 5 && v; up++) {
+        if ([v isKindOfClass:[UIButton class]]) {
+            [(UIButton *)v sendActionsForControlEvents:UIControlEventTouchUpInside];
+            return YES;
+        }
+        v = v.superview;
+    }
     return NO;
 }
 
@@ -720,6 +770,97 @@ static NSString *DYYYWardCIDOfModel(id obj) {
         }
     }
     return nil;
+}
+
+// MARK: - v2.4-2：评论区「目标是否已在位」复核
+// 用途：① URL 深链(comment_id)跳转后确认宿主是不是已经把目标评论滚到位（到位就不再跑脆弱的扫描）；
+//      ② 二级回复：cid 在主列表不存在，先看它是不是在「已展开的回复列表」里在位，再决定是否按父评论兜底。
+// 只查可见 cell 的字符串文本（UILabel/text/accessibilityLabel/ivar），不做全图匹配，也不做任何滚动。
+static BOOL DYYYWardCellTextsContain(NSString *txt, NSString *probe) {
+    if (txt.length == 0 || probe.length == 0) return NO;
+    return [txt rangeOfString:probe].location != NSNotFound;
+}
+
+static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *contentHint) {
+    if (!cell || ![cell isKindOfClass:[UIView class]]) return NO;
+    NSString *probe = DYYYWardContentProbe(contentHint, 10);
+    if (cidList.count == 0 && probe.length == 0) return NO;
+    UIView *root = (UIView *)cell;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger visited = 0;
+    while (stack.count > 0 && visited < 200) {
+        UIView *cur = [stack lastObject];
+        [stack removeLastObject];
+        visited++;
+        // 无障碍标签里的 cid/正文（最省，且 iOS 上宿主不少 cell 会把整条评论塞进 accessibilityLabel）
+        NSString *acc = cur.accessibilityLabel;
+        if (acc.length > 0 && acc.length < 4000) {
+            if (cidList.count > 0) {
+                for (id c in cidList) {
+                    if ([c isKindOfClass:[NSString class]] && ((NSString *)c).length > 4 &&
+                        [acc rangeOfString:(NSString *)c].location != NSNotFound) return YES;
+                }
+            }
+            if (DYYYWardCellTextsContain(acc, probe)) return YES;
+        }
+        if ([cur isKindOfClass:[UILabel class]]) {
+            NSString *s = [(UILabel *)cur text];
+            if (s.length == 0) s = [(UILabel *)cur attributedText].string;
+            if (s.length > 0 && s.length < 4000) {
+                if (cidList.count > 0) {
+                    for (id c in cidList) {
+                        if ([c isKindOfClass:[NSString class]] && ((NSString *)c).length > 4 &&
+                            [s isEqualToString:(NSString *)c]) return YES;
+                    }
+                }
+                if (DYYYWardCellTextsContain(s, probe)) return YES;
+            }
+        } else if ([cur isKindOfClass:[UITextView class]]) {
+            NSString *s = [(UITextView *)cur text];
+            if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) return YES;
+        }
+        [stack addObjectsFromArray:cur.subviews];
+    }
+    return NO;
+}
+
+// 取某个列表当前可见 cell 里「看起来就是目标评论」的那一格；没有就返回 nil。不做任何滚动。
+static id DYYYWardVisibleTargetCell(UIScrollView *list, NSArray *cidList, NSString *contentHint) {
+    if (!list) return nil;
+    NSArray *cells = nil;
+    if ([list isKindOfClass:[UITableView class]]) cells = [(UITableView *)list visibleCells];
+    else if ([list isKindOfClass:[UICollectionView class]]) cells = [(UICollectionView *)list visibleCells];
+    for (id c in cells) {
+        if (DYYYWardCellLooksTargeted(c, cidList, contentHint)) return c;
+    }
+    return nil;
+}
+
+// 看目标评论是否已在「可见区」就位：命中即返回 YES（不改滚动位置）。
+// 正文优先（便宜、且不受字段名影响）；只有正文短/缺失才用 cid 做全图精确确认。
+static BOOL DYYYWardTargetVisibleNow(NSArray *cidList, NSString *contentHint) {
+    if (cidList.count == 0 && contentHint.length == 0) return NO;
+    UIViewController *cvc = DYYYWardFindCommentVC();
+    if (!cvc || !cvc.view) return NO;
+    NSString *probe = DYYYWardContentProbe(contentHint, 10);
+    for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
+        NSArray *cells = nil;
+        if ([sv isKindOfClass:[UITableView class]]) cells = [(UITableView *)sv visibleCells];
+        else cells = [(UICollectionView *)sv visibleCells];
+        for (id cell in cells) {
+            if (![cell isKindOfClass:[UIView class]]) continue;
+            if (probe.length > 0 && DYYYWardCellQuickMatch(cell, probe)) {
+                if (cidList.count == 0) return YES;
+                NSInteger b = 1200;
+                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b)) return YES; // 正文撞车（回复常抄原文），再验 cid
+            }
+            if (probe.length == 0 && cidList.count > 0) {
+                NSInteger b = 1500;
+                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b)) return YES;
+            }
+        }
+    }
+    return NO;
 }
 
 // 取出对象里「名字像模型数组缓存」的 NSArray ivar（沿继承链向上最多 3 层）。
@@ -1109,8 +1250,16 @@ static void DYYYWardShowLocateFailure(void) {
     }
     BOOL hostInvoked = [gDYYYWardHostLocateMethods containsString:@"已调用"];
     NSString *prefix = hostInvoked ? @"已请求宿主定位" : @"评论定位失败";
-    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@ 行:%ld 偏移:%.0f",
-                          prefix, reason, hostMsg, dsMsg, (long)maxRows, off]];
+    NSString *urlMsg = @"";
+    if (gDYYYWardURLDiag.length > 0) {
+        urlMsg = [NSString stringWithFormat:@" 深链:%@", gDYYYWardURLDiag];
+    }
+    NSString *parentMsg = @"";
+    if (gDYYYWardParentDiag.length > 0) {
+        parentMsg = [NSString stringWithFormat:@" 父:%@", gDYYYWardParentDiag];
+    }
+    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@ 行:%ld 偏移:%.0f",
+                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, (long)maxRows, off]];
 }
 
 // P0：按屏批量扫描（替代 v2.3 的逐行 0.15s）。
@@ -1263,12 +1412,85 @@ static void DYYYWardScrollCommentList(BOOL up) {
     }
 }
 
-static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint) {
+// 先按父评论定位，再点开「回复」，最后把子 cid 交给宿主定位/扫描。
+// parentIDs 为空（老插眼记录没有）直接返回 NO，不拿子 cid 去冒充父。
+static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList, NSString *contentHint, NSInteger gen) {
+    if (parentIDs.count == 0) return NO;
+    NSMutableArray *pids = [NSMutableArray array];
+    for (id p in parentIDs) {
+        if ([p isKindOfClass:[NSString class]] && ((NSString *)p).length > 0 && ![pids containsObject:(NSString *)p]) {
+            [pids addObject:(NSString *)p];
+        }
+    }
+    if (pids.count == 0) return NO;
+    gDYYYWardParentDiag = @"按父定位";
+    // ① 宿主方法：父 cid 是主列表 id，scrollToCommentWithID: 通常有效
+    for (NSString *pid in pids) {
+        DYYYWardTryHostLocateComment(pid);
+        if (gDYYYWardLocateDone == gen) return YES;
+    }
+    // ② 直接可见区找父评论（便宜、不滚动）：命中就展开回复
+    UIViewController *cvc = DYYYWardFindCommentVC();
+    if (cvc) {
+        for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
+            id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
+            if (pc && [pc isKindOfClass:[UIView class]]) {
+                BOOL opened = DYYYWardExpandRepliesOnCell((UIView *)pc);
+                gDYYYWardParentDiag = opened ? @"已点回复" : @"无回复按钮";
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != gen) return;
+                    for (NSString *cid in cidList) {
+                        DYYYWardTryHostLocateComment(cid);
+                        if (gDYYYWardLocateDone == gen) return;
+                    }
+                    if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
+                        gDYYYWardLocateDone = gen;
+                        return;
+                    }
+                    if (gDYYYWardSweepGen != gen) DYYYWardSweepRows(cidList, contentHint, gen);
+                });
+                return YES;
+            }
+        }
+    }
+    // ③ 父评论不在可见区：用 parentIDs 做一轮按行扫描/数据源定位，滚到父 cell 后再展开。
+    //    这里只做一次同步尝试（DYYYWardHighlightComment），命中即展开；不命中就返回 NO 交给原有兜底。
+    if (DYYYWardHighlightComment(pids, nil)) {
+        gDYYYWardLocateDone = gen;
+        gDYYYWardParentDiag = @"父已定位";
+        // 父已高亮在可见区 → 再找一次父 cell 点回复
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardLocateDone != gen || gDYYYWardURLGen != gen) return;
+            UIViewController *cvc2 = DYYYWardFindCommentVC();
+            if (!cvc2) return;
+            for (UIScrollView *sv in DYYYWardCommentListViews(cvc2)) {
+                id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
+                if (pc && [pc isKindOfClass:[UIView class]]) {
+                    DYYYWardExpandRepliesOnCell((UIView *)pc);
+                    return;
+                }
+            }
+        });
+        return YES;
+    }
+    gDYYYWardParentDiag = @"父不在可见区";
+    return NO;
+}
+
+static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString *contentHint, NSArray *parentIDs) {
     (void)awemeID;
+    // v2.4-2：URL 深链已把目标评论滚到位 → 本次「查看」结束，不再跑脆弱的扫描/滚动。
+    if (gDYYYWardURLDirectOK) {
+        gDYYYWardURLDirectOK = NO;
+        gDYYYWardURLGen++;
+        gDYYYWardFailCount = 0;
+        return;
+    }
     // 上一次已经定位成功 → 失败计数归零（「连点两次才给诊断」只在连续失败时生效）
     if (gDYYYWardLocateGen > 0 && gDYYYWardLocateDone == gDYYYWardLocateGen) gDYYYWardFailCount = 0;
     gDYYYWardLocateGen++;
     NSInteger gen = gDYYYWardLocateGen;
+    NSInteger urlGen = gDYYYWardURLGen; // 捕获本次「查看」的代号，供所有延迟步骤校验
 
     // 详情页起来后，如果评论区没自动开，就主动打开
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1276,6 +1498,20 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
             DYYYWardOpenCommentPanelIfNeeded();
         } @catch (NSException *e) {}
     });
+
+    // v2.4-2：二级回复（cid 是子评论）不在主列表，宿主方法常只认主列表 id。
+    // 有 parentIDs 时先走「父评论定位 → 展开回复 → 再定位子评论」路径，命中即结束；没命中才退到原有兜底。
+    if (parentIDs.count > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != urlGen) return;
+            if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
+                gDYYYWardLocateDone = gen;
+                return;
+            }
+            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen)) return;
+            // 没命中就继续走下面的常规兜底（不 return，让主循环照常跑）
+        });
+    }
 
     // 滚动搜索：评论列表分页加载，目标评论常不在首屏可见区（cid 与内容匹配都只看 visibleCells）。
     // 每 1s 一步：先试宿主内部定位方法（抖音自身支持跳指定评论），
@@ -1286,6 +1522,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         NSTimeInterval delay = 2.6 + i * 0.9;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen) return;
+            if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始，旧链作废
             @try {
                 // 宿主内部定位：第 1/7/13 步各试一次（评论 VC 起来后才可靠，避免过多盲调副作用）
                 if (i == 0 || i == 6 || i == 12) {
@@ -1887,6 +2124,16 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
             }
         }
         if (commentID.length > 0 && ![cidList containsObject:commentID]) [cidList addObject:commentID];
+        // v2.4-2：父评论 id（二级回复定位用）；老插眼记录没有此字段，直接为空
+        NSMutableArray *parentIDs = [NSMutableArray array];
+        id savedP = [ward objectForKey:@"parentIDs"];
+        if ([savedP isKindOfClass:[NSArray class]]) {
+            for (id v in (NSArray *)savedP) {
+                if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+                    if (![parentIDs containsObject:(NSString *)v]) [parentIDs addObject:(NSString *)v];
+                }
+            }
+        }
         if (awemeID.length == 0) {
             [DYYYUtils showToast:@"无视频信息，已复制链接"];
             NSString *url = [ward objectForKey:@"shareURL"];
@@ -1916,8 +2163,29 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
             [DYYYUtils showToast:@"已复制视频链接"];
             return;
         }
-        DYYYWardLocateComment(awemeID, cidList, contentHint);
-        return;
+        // v2.4-2：URL 直达优先。深链跳完后延时复核目标是否已在可见区：
+        //   在位 → 直接结束（不再跑脆弱扫描，这是最稳的定位方式，和 YYDS 的「直达」等价）；
+        //   不在位 → 才调 DYYYWardLocateComment 做兜底（宿主定位/数据源/按行扫描）。
+        // 用 gDYYYWardURLGen 代号：连点两次「查看」时，前一次还在排队的复核/扫描步骤自行作废。
+        gDYYYWardURLGen++;
+        NSInteger urlGen = gDYYYWardURLGen;
+        gDYYYWardURLDirectOK = NO;
+        gDYYYWardURLDiag = nil;
+        // 复核延时按「是否带 comment_id」区分：深链宿主自己跳转需要更多时间把目标滚到位
+        NSTimeInterval checkDelay = (commentID.length > 0) ? 1.8 : 1.2;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(checkDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (gDYYYWardURLGen != urlGen) return; // 新一次「查看」已开始
+            if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
+                gDYYYWardURLDirectOK = YES;
+                gDYYYWardURLDiag = @"直达到位";
+                // 一级/二级都已可见 → 直接 toast，不再跑兜底
+                [DYYYUtils showToast:@"已定位到该评论"];
+                return;
+            }
+            gDYYYWardURLDiag = @"深链未到位";
+            // 不在位 → 走完整兜底（含二级回复父定位）
+            DYYYWardLocateComment(awemeID, cidList, contentHint, parentIDs);
+        });
     }
 
     if (awemeID.length == 0) {
