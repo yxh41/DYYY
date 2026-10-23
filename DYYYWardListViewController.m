@@ -981,9 +981,13 @@ static NSArray *DYYYWardIntIvars(Class cls) {
     return out;
 }
 
-// v2.4-5/6 共用：把 cid 字符串列表转成 19 位量级（1e18~1e19）的 uint64 数值列表。
-// 只认这个量级：时间戳（10/13 位）、点赞/回复计数远小于 1e18，用户态指针高位必为 0，
-// 都不可能等于 19 位雪花号 → 数值比对零误中。非 19 位的 cid（异常数据）直接不参与。
+// v2.4-5/6 共用：把 cid 字符串列表转成雪花号量级的 uint64 数值列表。
+// v2.4-14：量级从「只认 19 位（1e18~1e19）」放宽到 1e15~1e20。
+// 原因：二级回复的父评论 id 未必是 19 位（实测有 18 位），旧口径下 nums 为 nil，
+// CIDIntsMatch / CIDRawScan 整段被跳过 —— 而那是 Swift 模型 cid 存成 Int64 时
+// 唯一能命中的手段。
+// 放宽后仍零误中：arm64 iOS 用户态指针 < 2^48 ≈ 2.81e14，任何 >= 1e15 的值不可能
+// 是指针；时间戳 10/13 位（<1e13）、点赞/回复计数都远小于 1e15。
 static NSArray *DYYYWardCIDNums(NSArray *cidList) {
     if (cidList.count == 0) return nil;
     NSMutableArray *nums = [NSMutableArray arrayWithCapacity:cidList.count];
@@ -992,7 +996,7 @@ static NSArray *DYYYWardCIDNums(NSArray *cidList) {
         const char *s = [(NSString *)c UTF8String];
         if (!s) continue;
         unsigned long long v = strtoull(s, NULL, 10);
-        if (v >= 1000000000000000000ULL && v < 10000000000000000000ULL) [nums addObject:@(v)];
+        if (v >= 1000000000000000ULL && v < 100000000000000000000ULL) [nums addObject:@(v)];
     }
     return nums.count > 0 ? nums : nil;
 }
@@ -1321,6 +1325,19 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
             if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) return YES;
         }
         [stack addObjectsFromArray:cur.subviews];
+    }
+    // v2.4-14：文本匹配全部落空后，对 cell 对象本身跑 cid 数值/裸扫。
+    //
+    // 这是「扫尽 305 行 CommentNewCell 仍无命中」的真因：Swift 评论模型把 cid 存成
+    // Int64 存储属性（或内嵌结构体），**cell 的 UILabel 里根本没有 cid 字符串**，
+    // 上面那套文本匹配永远不可能中；而 v2.4-5/6 就写好的 CIDIntsMatch（'q' 标量
+    // ivar 数值比对）/ CIDRawScan（整个实例区 8 字节裸搜）从来只被 DYYYWardGraphMatch
+    // 调用，cell 这条最直接的路径一次都没接过——等于把唯一能命中的手段关在门外。
+    //
+    // 两个函数内部都自带 tagged 刹车 + v2.4-13 的 Mach 安全读，直接调即可。
+    if (cidList.count > 0) {
+        NSArray *nums = DYYYWardCIDNums(cidList);
+        if (nums.count > 0 && (DYYYWardCIDIntsMatch(cell, nums) || DYYYWardCIDRawScan(cell, nums))) return YES;
     }
     return NO;
 }
@@ -1973,11 +1990,17 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
             if (!cell) continue;
             BOOL quick = (probe.length > 0) && DYYYWardCellQuickMatch(cell, probe);
             BOOL exact = NO;
-            // 有正文时走便宜路径；只有正文太短/缺失（probe 为空）才不得不做昂贵的全图 cid 搜索
+            // v2.4-14：cid 全图搜不再要求「正文没匹配上」才跑。
+            // 旧逻辑是「有正文时走便宜路径，只有正文太短/缺失（probe 为空）才做昂贵的
+            // 全图 cid 搜索」——只要插眼时存到了正文（probe 非空）而 cell 文本又没命中
+            // （正文被表情短码/[看] 破坏、换行截断，或父评论根本不是这条正文），
+            // GraphMatch 就一次都不跑，cid 这条独立的路被白白跳过。
+            // 「扫尽 305 行无命中」就是这么来的。quick 命中仍照旧只做确认性全图（省时间），
+            // 未命中则必须靠 cid 兜底。
             if (quick) {
                 if (cidList.count == 0) exact = YES;
                 else { NSInteger b = 1200; exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b); }
-            } else if (probe.length == 0 && cidList.count > 0) {
+            } else if (cidList.count > 0) {
                 NSInteger b = 1500;
                 exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
             }
@@ -2101,10 +2124,16 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
             if (!cell) continue;
             BOOL quick = (probe.length > 0) && DYYYWardCellQuickMatch(cell, probe);
             BOOL exact = NO;
+            // v2.4-14：cid 全图搜不再要求「正文没匹配上」才跑。
+            // 旧逻辑是 `else if (probe.length == 0 && cidList.count > 0)`——只要插眼时
+            // 存到了正文（probe 非空）而 cell 文本又没命中（正文被表情短码/[看] 破坏、
+            // 换行截断、或父评论根本不是这条正文），GraphMatch 就一次都不跑，
+            // cid 这条独立的路被白白跳过 → 「扫尽 305 行无命中」就是这么来的。
+            // quick 命中仍照旧只做确认性全图（省时间），未命中则必须靠 cid 兜底。
             if (quick) {
                 if (cidList.count == 0) exact = YES;
                 else { NSInteger b = 1200; exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b); }
-            } else if (probe.length == 0 && cidList.count > 0) {
+            } else if (cidList.count > 0) {
                 NSInteger b = 1500;
                 exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
             }
@@ -2483,7 +2512,10 @@ static void DYYYWardScrollCommentList(BOOL up) {
 // parentIDs 为空（老插眼记录没有）直接返回 NO，不拿子 cid 去冒充父。
 // v2.4-7：加 urlGen 参数（列表层直达的 0.7s 复核 block 要校验「还是本次查看」），
 // 并在 ① 宿主方法 与 ② 可见区之间插入「列表层直达跳父评论」。
-static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList, NSString *contentHint, NSInteger gen, NSInteger urlGen) {
+// v2.4-14：parentTexts 也参与「可见区直接找父」——v2.4-5 起父正文只喂给了
+// DYYYWardSweepParentThenExpand（按屏扫描），可见区这条最便宜的路径一直传 nil，
+// 等于把文本匹配关掉、只按 cid 找，白白多滚一屏。
+static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList, NSString *contentHint, NSInteger gen, NSInteger urlGen, NSArray *parentTexts) {
     if (parentIDs.count == 0) return NO;
     NSMutableArray *pids = [NSMutableArray array];
     for (id p in parentIDs) {
@@ -2502,11 +2534,18 @@ static BOOL DYYYWardLocateParentThenExpand(NSArray *parentIDs, NSArray *cidList,
     // 按指针相等算下标一跳到位（已加载 92 条里有父评论就不必逐屏扫 92 行）。
     // 滚到后点开回复、1s 后回来定位子评论，整条二级回复链在这里一步到位。
     if (DYYYWardListLayerJumpCore(pids, nil, gen, urlGen, YES, cidList)) return YES;
-    // ② 直接可见区找父评论（便宜、不滚动）：命中就展开回复
+    // ② 直接可见区找父评论（便宜、不滚动）：命中就展开回复。
+    // v2.4-14：probe 传父评论正文（parentTexts 第一个非空）——cid 可能是 Swift
+    // Int64 标量匹配不上，而 cell 上的 UILabel 文本永远可靠；没有正文才退回纯 cid。
+    NSString *parentProbe = @"";
+    for (id t in parentTexts) {
+        if ([t isKindOfClass:[NSString class]] && [(NSString *)t length] > 0) { parentProbe = (NSString *)t; break; }
+    }
+    if (parentProbe.length > 0) gDYYYWardParentDiag = @"可见区找父(按文本)";
     UIViewController *cvc = DYYYWardFindCommentVC();
     if (cvc) {
         for (UIScrollView *sv in DYYYWardCommentListViews(cvc)) {
-            id pc = DYYYWardVisibleTargetCell(sv, pids, nil);
+            id pc = DYYYWardVisibleTargetCell(sv, pids, parentProbe);
             if (pc && [pc isKindOfClass:[UIView class]]) {
                 gDYYYWardParentHandled = YES;
                 // ExpandThenFindChild 从 globals 取子评论 cid/正文，先灌进去
@@ -2570,7 +2609,7 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 gDYYYWardLocateDone = gen;
                 return;
             }
-            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen, urlGen)) return;
+            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen, urlGen, parentTexts)) return;
             // 没命中就继续走下面的常规兜底（不 return，让主循环照常跑）
         });
     }
