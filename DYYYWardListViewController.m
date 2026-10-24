@@ -3442,17 +3442,18 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     NSString *avatarURL = [ward objectForKey:@"avatarURL"];
     if (avatarURL.length > 0) [self loadAvatar:avatarURL into:avatar];
 
-    // 头像点击 → 进入该用户主页（所有插眼类型通用：视频/评论插眼存的是作者，主页插眼存的是该用户本身）
+    // 头像点击 → 进入该用户主页（所有插眼类型通用：视频/主页插眼存的是作者本身或该用户，
+    // 评论插眼存的是评论作者；旧评论插眼记录没存 secUid/uid 时点头像会 toast 无主页信息）。
+    // v2.4-19：手势 + tag 901 必须无条件挂上——旧评论插眼（secUid/uid 为空）的头像若没挂手势、
+    // tag 又不是 901，点头像会穿透 shouldReceiveTouch 落到 cardTapped → 打开视频而非主页（用户实测）。
     NSString *secUid = [ward objectForKey:@"secUid"];
     if (![secUid isKindOfClass:[NSString class]]) secUid = @"";
     NSString *uid = [ward objectForKey:@"uid"];
     if (![uid isKindOfClass:[NSString class]]) uid = @"";
-    if (secUid.length > 0 || uid.length > 0) {
-        avatar.tag = 901; // 与 cardTap 的 shouldReceiveTouch 配合，区分头像区域，避免和「打开插眼」重复触发
-        avatar.userInteractionEnabled = YES;
-        [avatar addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(avatarTapped:)]];
-        objc_setAssociatedObject(avatar, "wardUser", @{@"secUid":secUid, @"uid":uid}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    avatar.tag = 901; // 与 cardTap 的 shouldReceiveTouch 配合：tag 901 区域不触发「打开插眼」
+    avatar.userInteractionEnabled = YES;
+    [avatar addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(avatarTapped:)]];
+    objc_setAssociatedObject(avatar, "wardUser", @{@"secUid":secUid, @"uid":uid}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // 昵称
     UILabel *name = [[UILabel alloc] initWithFrame:CGRectMake(60, 12, card.bounds.size.width - 72, 20)];
