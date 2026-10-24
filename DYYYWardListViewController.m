@@ -296,7 +296,10 @@ static NSString *DYYYWardContentProbe(NSString *content, NSInteger maxLen) {
     if (a.location != NSNotFound) cut = MIN(cut, a.location);
     if (b.location != NSNotFound) cut = MIN(cut, b.location);
     if (cut >= 4) base = [base substringToIndex:cut];
-    if (base.length > (NSUInteger)maxLen) base = [base substringToIndex:(NSUInteger)maxLen];
+    // v2.4-17：probe 至少 16 字（调用方多传 10），太短的子串极易在别的评论里撞车 → 乱找；
+    // 拉长探针能压住假阳性，且对真实评论（含自身正文）匹配几乎无影响。
+    NSUInteger cap = MAX((NSUInteger)maxLen, (NSUInteger)16);
+    if (base.length > cap) base = [base substringToIndex:cap];
     if (base.length < 4) base = [content substringToIndex:MIN((NSUInteger)4, content.length)];
     return base.length >= 4 ? base : nil;
 }
@@ -3002,10 +3005,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != urlGen) return;
             DYYYWardProbeValidator(); // v2.4-8：先自检对象校验链，断点进 toast
-            if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
-                gDYYYWardLocateDone = gen;
-                return;
-            }
+            // v2.4-17：二级回复的子评论在未展开时不在主列表——提前查「子是否可见」只会误中别的
+            // 可见评论（CID 裸扫 / 10字正文子串撞车）= 用户说的「乱找了一个」。二级回复直接走
+            // 父定位→展开→再找子；父已展开时 DYYYWardCellShowsCollapse 内部已直接找子，等价且不误中。
             if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen, urlGen, parentTexts)) return;
             // 没命中就继续走下面的常规兜底（不 return，让主循环照常跑）
         });
