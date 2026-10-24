@@ -112,20 +112,32 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
         // 取不到会导致插眼记录的 desc 为空 → 后面的「内容兜底匹配」直接失效
         content = DYYYCommentStrForKeys(comment, @[ @"content", @"text", @"commentContent",
                                                     @"contentText", @"commentText", @"desc", @"description" ]);
+        // v2.4-18：抖音评论模型（AWE 系）里用户字段是 "user"，"author" 只是部分旧版；
+        // 只试 author 会导致评论插眼的 uid/secUid/昵称/头像全空——v2.4-16 的「点头像进主页」
+        // 对评论插眼因此失效（永远「无用户主页信息」）。
         id author = nil;
-        @try { author = [comment valueForKey:@"author"]; } @catch (NSException *e) {}
+        for (NSString *ak in @[ @"user", @"author" ]) {
+            @try {
+                id v = [comment valueForKey:ak];
+                if (v && ![v isKindOfClass:[NSNull class]]) { author = v; break; }
+            } @catch (NSException *e) {}
+        }
         if (author) {
             NSString *n = DYYYCommentWardSafeStr(author, @"nickname");
             if (n.length > 0) nick = n;
             uid = DYYYCommentWardSafeStr(author, @"uid");
             secUid = DYYYCommentWardSafeStr(author, @"secUid");
-            @try {
-                id av = [author valueForKey:@"avatarMedium"];
-                if (av && [av respondsToSelector:@selector(originURLList)]) {
-                    NSArray *l = [av originURLList];
-                    if (l.count > 0) avatar = l.firstObject ?: @"";
-                }
-            } @catch (NSException *e) {}
+            // v2.4-18：头像多 key 兜底（avatarThumb 是 AWEUserModel 标准小头档，avatarMedium 旧字段，
+            // avatarLarge 大图兜底）；URL 列表 originURLList 为主，urlList 兜底
+            for (NSString *avk in @[ @"avatarThumb", @"avatarMedium", @"avatarLarge" ]) {
+                id av = nil;
+                @try { av = [author valueForKey:avk]; } @catch (NSException *e) {}
+                if (!av || [av isKindOfClass:[NSNull class]]) continue;
+                NSArray *l = nil;
+                if ([av respondsToSelector:@selector(originURLList)]) l = [av originURLList];
+                if (l.count == 0 && [av respondsToSelector:@selector(urlList)]) l = [av urlList];
+                if (l.count > 0) { avatar = l.firstObject ?: @""; break; }
+            }
         }
         id ct = nil;
         @try { ct = [comment valueForKey:@"createTime"]; } @catch (NSException *e) {}

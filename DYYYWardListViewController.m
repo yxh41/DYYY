@@ -169,6 +169,10 @@ static NSInteger gDYYYWardFailCount = 0; // 连续定位失败次数：第 1 次
 static NSInteger gDYYYWardURLGen = 0;
 static BOOL gDYYYWardURLDirectOK = NO; // comment_id 深链复核通过（宿主已把目标评论滚到位）
 static NSString *gDYYYWardURLDiag = nil; // 深链复核结果（直达到位/未到位），失败 toast 里带出来
+// v2.4-18：本次「查看」的插眼人身份（secUid 优先，缺失退 uid 数字串）。
+// 仅作「短探针双条件确认」的辅助信号——同作者可能有多条评论，绝不单独宣告命中。
+// openWard: 评论分支置入，下一次查看覆盖；老插眼记录没存 secUid 则为空（双条件自动退化为旧行为）。
+static NSString *gDYYYWardAuthorPat = @"";
 
 // v2.3-23：旧的「按字段名猜 cid」(DYYYWardCIDOf / DYYYWardCommentIDOfCell) 已删除，
 // 改用 DYYYWardGraphMatch 在 cell 对象图里按值搜（见下方），不再依赖任何私有字段名——
@@ -1252,6 +1256,15 @@ static NSString *DYYYWardCIDOfModel(id obj) {
 // MARK: - v2.4-2：评论区「目标是否已在位」复核
 // 用途：① URL 深链(comment_id)跳转后确认宿主是不是已经把目标评论滚到位（到位就不再跑脆弱的扫描）；
 //      ② 二级回复：cid 在主列表不存在，先看它是不是在「已展开的回复列表」里在位，再决定是否按父评论兜底。
+// v2.4-18：作者身份确认——在 cell 对象图里搜插眼人 secUid/uid 字符串（GraphMatch 复用，
+// probe 走 containsString；secUid "MS4wLjAB…" 全网唯一，命中即该模型属于插眼人）。
+// 只作确认信号，绝不单独宣告命中：同作者可有多条评论，单独命中 = 乱找。
+static BOOL DYYYWardCellAuthorMatch(id cell, NSString *authorPat) {
+    if (!cell || authorPat.length < 12) return NO;
+    NSInteger b = 600;
+    return DYYYWardGraphMatch(cell, nil, authorPat, 6, &b);
+}
+
 // 只查可见 cell 的字符串文本（UILabel/text/accessibilityLabel/ivar），不做全图匹配，也不做任何滚动。
 static BOOL DYYYWardCellTextsContain(NSString *txt, NSString *probe) {
     if (txt.length == 0 || probe.length == 0) return NO;
@@ -1262,6 +1275,11 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
     if (!cell || ![cell isKindOfClass:[UIView class]]) return NO;
     NSString *probe = DYYYWardContentProbe(contentHint, 10);
     if (cidList.count == 0 && probe.length == 0) return NO;
+    // v2.4-18：正文探针被表情短码截断到很短时（实测诊断有 探针:4），containsString 极易在
+    // 别人的评论里撞车 =「乱找了一个」。插眼人身份（secUid）可用时，短探针命中必须再加
+    // 作者确认（双条件）。老记录 secUid 为空 → needAuthor=NO，行为与旧版一致。
+    NSString *authorPat = gDYYYWardAuthorPat;
+    BOOL needAuthor = (probe.length > 0 && probe.length < 8 && authorPat.length >= 12);
     UIView *root = (UIView *)cell;
     NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
     NSInteger visited = 0;
@@ -1278,7 +1296,9 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
                         [acc rangeOfString:(NSString *)c].location != NSNotFound) return YES;
                 }
             }
-            if (DYYYWardCellTextsContain(acc, probe)) return YES;
+            if (DYYYWardCellTextsContain(acc, probe)) {
+                if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
+            }
         }
         if ([cur isKindOfClass:[UILabel class]]) {
             NSString *s = [(UILabel *)cur text];
@@ -1290,11 +1310,15 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
                             [s isEqualToString:(NSString *)c]) return YES;
                     }
                 }
-                if (DYYYWardCellTextsContain(s, probe)) return YES;
+                if (DYYYWardCellTextsContain(s, probe)) {
+                    if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
+                }
             }
         } else if ([cur isKindOfClass:[UITextView class]]) {
             NSString *s = [(UITextView *)cur text];
-            if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) return YES;
+            if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) {
+                if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
+            }
         }
         [stack addObjectsFromArray:cur.subviews];
     }
@@ -3690,6 +3714,13 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 [parentTexts addObject:([v isKindOfClass:[NSString class]] ? v : @"")];
             }
         }
+        // v2.4-18：插眼人身份，供「短探针双条件确认」防乱找用（secUid 优先，缺失退 15 位以上数字 uid；
+        // 老插眼记录没存 secUid 则为空 → 双条件自动退化为旧行为）
+        NSString *aSec = [ward objectForKey:@"secUid"];
+        if (![aSec isKindOfClass:[NSString class]]) aSec = @"";
+        NSString *aUid = [ward objectForKey:@"uid"];
+        if (![aUid isKindOfClass:[NSString class]]) aUid = @"";
+        gDYYYWardAuthorPat = (aSec.length >= 12) ? aSec : ((aUid.length >= 15) ? aUid : @"");
         if (awemeID.length == 0) {
             [DYYYUtils showToast:@"无视频信息，已复制链接"];
             NSString *url = [ward objectForKey:@"shareURL"];
