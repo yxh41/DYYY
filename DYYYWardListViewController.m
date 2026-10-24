@@ -3416,6 +3416,18 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     NSString *avatarURL = [ward objectForKey:@"avatarURL"];
     if (avatarURL.length > 0) [self loadAvatar:avatarURL into:avatar];
 
+    // 头像点击 → 进入该用户主页（所有插眼类型通用：视频/评论插眼存的是作者，主页插眼存的是该用户本身）
+    NSString *secUid = [ward objectForKey:@"secUid"];
+    if (![secUid isKindOfClass:[NSString class]]) secUid = @"";
+    NSString *uid = [ward objectForKey:@"uid"];
+    if (![uid isKindOfClass:[NSString class]]) uid = @"";
+    if (secUid.length > 0 || uid.length > 0) {
+        avatar.tag = 901; // 与 cardTap 的 shouldReceiveTouch 配合，区分头像区域，避免和「打开插眼」重复触发
+        avatar.userInteractionEnabled = YES;
+        [avatar addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(avatarTapped:)]];
+        objc_setAssociatedObject(avatar, "wardUser", @{@"secUid":secUid, @"uid":uid}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
     // 昵称
     UILabel *name = [[UILabel alloc] initWithFrame:CGRectMake(60, 12, card.bounds.size.width - 72, 20)];
     name.text = [ward objectForKey:@"nickname"] ?: @"未知用户";
@@ -3519,10 +3531,30 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     [self openWard:self.filteredWards[idx]];
 }
 
-// 按钮区域不触发卡片跳转，避免与 编辑/复制/删除 重复响应
+// 按钮区域不触发卡片跳转，避免与 编辑/复制/删除 重复响应；头像区域交给头像手势，卡片手势不响应
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     if ([touch.view isKindOfClass:[UIButton class]]) return NO;
+    if (touch.view.tag == 901) return NO; // 点头像只走 avatarTapped:，不让 cardTapped 也跳「打开插眼」
     return YES;
+}
+
+// 插眼卡片头像点击 → 打开对应抖音用户主页（复用宿主 snssdk scheme 的 user/profile 路由）
+- (void)avatarTapped:(UITapGestureRecognizer *)gesture {
+    NSDictionary *info = objc_getAssociatedObject(gesture.view, "wardUser");
+    if (![info isKindOfClass:[NSDictionary class]]) return;
+    NSString *secUid = info[@"secUid"] ?: @"";
+    NSString *uid = info[@"uid"] ?: @"";
+    NSString *idValue = secUid.length > 0 ? secUid : uid;
+    if (idValue.length == 0) { [DYYYUtils showToast:@"无用户主页信息"]; return; }
+    [self resignSearchKeyboard];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://user/profile/%@", [self hostSnssdkScheme], idValue]];
+    if (url && [[UIApplication sharedApplication] openURL:url]) return;
+    // scheme 调不起时兜底：复制主页链接（浏览器/宿主 webview 可打开）
+    NSString *share = secUid.length > 0
+        ? [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid]
+        : [NSString stringWithFormat:@"https://www.douyin.com/share/user/%@", uid];
+    [UIPasteboard generalPasteboard].string = share;
+    [DYYYUtils showToast:@"已复制主页链接"];
 }
 
 - (void)actionTapped:(UIButton *)sender event:(UIEvent *)event {
