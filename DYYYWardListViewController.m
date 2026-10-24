@@ -152,6 +152,7 @@ static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
 // SIGSEGV，@try 抓不住。key 不存在时 valueForKey: 会抛 NSUnknownKeyException，也被挡掉。
 static id DYYYWardSafeKVC(id obj, NSString *key);
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget);
+static BOOL DYYYWardAuthorGateOK(id cell); // v2.4-20：作者双条件闸（定义在 CellAuthorMatch 之后）
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
                               NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token);
 static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
@@ -173,6 +174,10 @@ static NSString *gDYYYWardURLDiag = nil; // 深链复核结果（直达到位/�
 // 仅作「短探针双条件确认」的辅助信号——同作者可能有多条评论，绝不单独宣告命中。
 // openWard: 评论分支置入，下一次查看覆盖；老插眼记录没存 secUid 则为空（双条件自动退化为旧行为）。
 static NSString *gDYYYWardAuthorPat = @"";
+// v2.4-20：作者闸过/拒计数，进失败诊断 toast——真机复测时看闸是否真的在拦
+// （过=作者确认过目标，拒=挡掉的疑似乱找：回复引用目标 cid、抄原文等）。
+static NSInteger gDYYYWardGatePass = 0;
+static NSInteger gDYYYWardGateReject = 0;
 
 // v2.3-23：旧的「按字段名猜 cid」(DYYYWardCIDOf / DYYYWardCommentIDOfCell) 已删除，
 // 改用 DYYYWardGraphMatch 在 cell 对象图里按值搜（见下方），不再依赖任何私有字段名——
@@ -401,6 +406,9 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                         continue;
                     }
                 }
+                // v2.4-20：probe+cid 双命中仍可能是乱找——回复评论抄目标原文且把目标 cid 当
+                // 父评论引用，两个条件都能过。作者双条件闸挡掉「同文同 cid 不同人」。
+                if (!DYYYWardAuthorGateOK(cell)) continue;
                 DYYYWardScrollAndHighlight(scroll, cell);
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已定位：%@", probe]];
                 return YES;
@@ -413,6 +421,9 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                 if (![cell isKindOfClass:[UIView class]]) continue;
                 NSInteger budget = 1500;
                 if (DYYYWardGraphMatch(cell, cidList, nil, 8, &budget)) {
+                    // v2.4-20：cid 只比对的最大乱找源——回复评论的对象图里就有目标 cid
+                    // （父评论引用）。过作者闸：不是插眼人发的就拒，继续扫下一格。
+                    if (!DYYYWardAuthorGateOK(cell)) continue;
                     DYYYWardScrollAndHighlight(scroll, cell);
                     [DYYYUtils showToast:@"已定位到该评论"];
                     return YES;
@@ -426,6 +437,8 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
                 if (![cell isKindOfClass:[UIView class]]) continue;
                 NSInteger budget = 1500;
                 if (DYYYWardGraphMatch(cell, @[], probe, 8, &budget)) {
+                    // v2.4-20：正文片段兜底同样过作者闸（回复抄原文是主要假阳性源）
+                    if (!DYYYWardAuthorGateOK(cell)) continue;
                     DYYYWardScrollAndHighlight(scroll, cell);
                     [DYYYUtils showToast:@"已定位到该评论"];
                     return YES;
@@ -435,7 +448,9 @@ static BOOL DYYYWardHighlightComment(NSArray *cidList, NSString *contentHint) {
     }
 
     // v2.4-3：cid 全都没命中，但有一格正文前缀命中 → 认它（最后兜底，好过直接报失败）
-    if (probeOnlyCell && probeOnlyList) {
+    // v2.4-20：该兜底也要过作者闸——「正文撞车但 cid 对不上」的格子若不是插眼人发的，
+    // 认它就是把乱找当成功。过不了闸就老实报失败（乱找比找不到更误导）。
+    if (probeOnlyCell && probeOnlyList && DYYYWardAuthorGateOK(probeOnlyCell)) {
         DYYYWardScrollAndHighlight(probeOnlyList, probeOnlyCell);
         [DYYYUtils showToast:[NSString stringWithFormat:@"已定位(按正文)：%@", probe]];
         return YES;
@@ -1265,6 +1280,18 @@ static BOOL DYYYWardCellAuthorMatch(id cell, NSString *authorPat) {
     return DYYYWardGraphMatch(cell, nil, authorPat, 6, &b);
 }
 
+// v2.4-20：目标命中前的作者双条件闸（Highlight/TargetVisibleNow/扫描步/直达复核 共用）。
+// 老插眼记录没存 secUid/uid → authorPat 为空 → 一律放行（与旧版一致，零回归）。
+// 记过/拒计数供真机诊断。核心动机：cid 命中 ≠ 就是这条——回复评论会把目标 cid 当父评论
+// 引用（其对象图里能搜到目标 cid），还常抄目标原文，probe+cid 双双命中 = 乱找；
+// 作者身份是唯一能区分「这条是插眼人自己发的」与「别人回复/引用了它」的信号。
+static BOOL DYYYWardAuthorGateOK(id cell) {
+    if (gDYYYWardAuthorPat.length < 12) return YES;
+    if (DYYYWardCellAuthorMatch(cell, gDYYYWardAuthorPat)) { gDYYYWardGatePass++; return YES; }
+    gDYYYWardGateReject++;
+    return NO;
+}
+
 // 只查可见 cell 的字符串文本（UILabel/text/accessibilityLabel/ivar），不做全图匹配，也不做任何滚动。
 static BOOL DYYYWardCellTextsContain(NSString *txt, NSString *probe) {
     if (txt.length == 0 || probe.length == 0) return NO;
@@ -1275,11 +1302,10 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
     if (!cell || ![cell isKindOfClass:[UIView class]]) return NO;
     NSString *probe = DYYYWardContentProbe(contentHint, 10);
     if (cidList.count == 0 && probe.length == 0) return NO;
-    // v2.4-18：正文探针被表情短码截断到很短时（实测诊断有 探针:4），containsString 极易在
-    // 别人的评论里撞车 =「乱找了一个」。插眼人身份（secUid）可用时，短探针命中必须再加
-    // 作者确认（双条件）。老记录 secUid 为空 → needAuthor=NO，行为与旧版一致。
-    NSString *authorPat = gDYYYWardAuthorPat;
-    BOOL needAuthor = (probe.length > 0 && probe.length < 8 && authorPat.length >= 12);
+    // v2.4-20：本函数只服务「父评论」搜索（VisibleTargetCell 的两个调用方 2495/2970 都是父路径）。
+    // v2.4-18 曾在此加「短探针需作者确认」——但父评论作者≠插眼人（回复的对象通常是别人），
+    // 该闸会把短正文的父评论误拒 =「找不到」回归，已移除。作者闸只加在目标（子/一级评论）
+    // 命中点：HighlightComment / TargetVisibleNow / 扫描步 / 直达复核。
     UIView *root = (UIView *)cell;
     NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
     NSInteger visited = 0;
@@ -1296,9 +1322,7 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
                         [acc rangeOfString:(NSString *)c].location != NSNotFound) return YES;
                 }
             }
-            if (DYYYWardCellTextsContain(acc, probe)) {
-                if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
-            }
+            if (DYYYWardCellTextsContain(acc, probe)) return YES;
         }
         if ([cur isKindOfClass:[UILabel class]]) {
             NSString *s = [(UILabel *)cur text];
@@ -1310,15 +1334,11 @@ static BOOL DYYYWardCellLooksTargeted(id cell, NSArray *cidList, NSString *conte
                             [s isEqualToString:(NSString *)c]) return YES;
                     }
                 }
-                if (DYYYWardCellTextsContain(s, probe)) {
-                    if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
-                }
+                if (DYYYWardCellTextsContain(s, probe)) return YES;
             }
         } else if ([cur isKindOfClass:[UITextView class]]) {
             NSString *s = [(UITextView *)cur text];
-            if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) {
-                if (!needAuthor || DYYYWardCellAuthorMatch(cell, authorPat)) return YES; // v2.4-18 双条件
-            }
+            if (s.length > 0 && s.length < 4000 && DYYYWardCellTextsContain(s, probe)) return YES;
         }
         [stack addObjectsFromArray:cur.subviews];
     }
@@ -1364,13 +1384,14 @@ static BOOL DYYYWardTargetVisibleNow(NSArray *cidList, NSString *contentHint) {
         for (id cell in cells) {
             if (![cell isKindOfClass:[UIView class]]) continue;
             if (probe.length > 0 && DYYYWardCellQuickMatch(cell, probe)) {
-                if (cidList.count == 0) return YES;
+                if (cidList.count == 0) { if (DYYYWardAuthorGateOK(cell)) return YES; } // v2.4-20
                 NSInteger b = 1200;
-                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b)) return YES; // 正文撞车（回复常抄原文），再验 cid
+                // v2.4-20：cid 复核通过后仍过作者闸（回复引用目标 cid + 抄原文会双双命中）
+                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b) && DYYYWardAuthorGateOK(cell)) return YES;
             }
             if (probe.length == 0 && cidList.count > 0) {
                 NSInteger b = 1500;
-                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b)) return YES;
+                if (DYYYWardGraphMatch(cell, cidList, nil, 8, &b) && DYYYWardAuthorGateOK(cell)) return YES; // v2.4-20
             }
         }
     }
@@ -1558,6 +1579,7 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
                     if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
                 }
                 if (!hit) return;
+                if (!DYYYWardAuthorGateOK(cell)) return; // v2.4-20：模型数组下标滚到的格子也要过作者闸
                 DYYYWardScrollAndHighlight(tv, cell);
                 [DYYYUtils showToast:@"已定位到该评论"];
                 gDYYYWardLocateDone = gDYYYWardLocateGen;
@@ -1583,6 +1605,7 @@ static BOOL DYYYWardScrollListToIndex(UIScrollView *scroll, NSInteger idx, NSArr
                     if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
                 }
                 if (!hit) return;
+                if (!DYYYWardAuthorGateOK(cell)) return; // v2.4-20：CV 分支同 table，过作者闸
                 DYYYWardScrollAndHighlight(cv, cell);
                 [DYYYUtils showToast:@"已定位到该评论"];
                 gDYYYWardLocateDone = gDYYYWardLocateGen;
@@ -1897,8 +1920,15 @@ static void DYYYWardShowLocateFailure(void) {
     if (gDYYYWardParentDiag.length > 0) {
         parentMsg = [NSString stringWithFormat:@" 父:%@", gDYYYWardParentDiag];
     }
-    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@%@%@%@ 行:%ld 偏移:%.0f",
-                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, jumpMsg, laoMsg, safeMsg,
+    // v2.4-20：作者双条件闸计数。过=作者确认过目标；拒=挡掉的疑似乱找（回复引用目标 cid /
+    // 抄原文）。若「过0 拒N」= 目标自己都没过闸（secUid 不在 cell 对象图里 → 闸误伤真目标），
+    // 下一版要把作者确认改从模型层取；若「过1 拒N」= 闸正常工作，乱找被挡。
+    NSString *gateMsg = @"";
+    if (gDYYYWardGatePass > 0 || gDYYYWardGateReject > 0) {
+        gateMsg = [NSString stringWithFormat:@" 作者闸:过%ld/拒%ld", (long)gDYYYWardGatePass, (long)gDYYYWardGateReject];
+    }
+    [DYYYUtils showToast:[NSString stringWithFormat:@"%@：%@%@%@%@%@%@%@%@%@ 行:%ld 偏移:%.0f",
+                          prefix, reason, urlMsg, parentMsg, hostMsg, dsMsg, jumpMsg, laoMsg, safeMsg, gateMsg,
                           (long)maxRows, off]];
 }
 
@@ -2000,7 +2030,10 @@ static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *conten
                 NSInteger b = 1500;
                 exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
             }
-            if (quick || exact) { hitCell = cell; }
+            // v2.4-20：目标（非父）命中过作者双条件闸——回复引用目标 cid + 抄原文会
+            // quick+exact 双双命中；作者不符即拒，继续扫后面的格子（真目标可能在下方）。
+            if ((quick || exact) && !gDYYYWardSweepForParent && !DYYYWardAuthorGateOK(cell)) { /* 拒，继续 */ }
+            else if (quick || exact) { hitCell = cell; }
         }
         if (hitCell) {
             if (gDYYYWardSweepForParent) { // v2.4-4：父扫描命中 → 点开回复再回来找子评论
@@ -2133,7 +2166,10 @@ static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString
                 NSInteger b = 1500;
                 exact = DYYYWardGraphMatch(cell, cidList, nil, 8, &b);
             }
-            if (quick || exact) { hitCell = cell; }
+            // v2.4-20：目标（非父）命中过作者双条件闸——回复引用目标 cid + 抄原文会
+            // quick+exact 双双命中；作者不符即拒，继续扫后面的格子（真目标可能在下方）。
+            if ((quick || exact) && !gDYYYWardSweepForParent && !DYYYWardAuthorGateOK(cell)) { /* 拒，继续 */ }
+            else if (quick || exact) { hitCell = cell; }
         }
         if (hitCell) {
             if (gDYYYWardSweepForParent) { // v2.4-4：父扫描命中 → 点开回复再回来找子评论
@@ -2835,6 +2871,8 @@ static BOOL DYYYWardListLayerJumpCore(NSArray *targetCIDs, NSString *contentHint
                 if (p.length > 0) { NSInteger b2 = 1500; hit = DYYYWardGraphMatch(cell, @[], p, 8, &b2); }
             }
             if (!hit) return;
+            // v2.4-20：一级/子目标过作者闸；父路径（isParent）不过——父评论作者≠插眼人
+            if (!isParent && !DYYYWardAuthorGateOK(cell)) return;
             DYYYWardScrollAndHighlight(best, cell);
             if (isParent) {
                 // 父路径：不置 done——点开回复，1s 后回来定位子评论
@@ -3003,6 +3041,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
     gDYYYWardLAORejectIsa = 0;
     gDYYYWardLAORejectClass = 0;
     gDYYYWardLAOProbe = 0;
+    // v2.4-20：作者闸计数每次「查看」重置（真机复测看 过/拒 分布判断闸是否生效）
+    gDYYYWardGatePass = 0;
+    gDYYYWardGateReject = 0;
     // v2.4-2：URL 深链已把目标评论滚到位 → 本次「查看」结束，不再跑脆弱的扫描/滚动。
     if (gDYYYWardURLDirectOK) {
         gDYYYWardURLDirectOK = NO;
@@ -3722,6 +3763,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         NSString *aUid = [ward objectForKey:@"uid"];
         if (![aUid isKindOfClass:[NSString class]]) aUid = @"";
         gDYYYWardAuthorPat = (aSec.length >= 12) ? aSec : ((aUid.length >= 15) ? aUid : @"");
+        // v2.4-20：深链复核（TargetVisibleNow）在 LocateComment 之前跑，闸计数在这里也重置一次
+        gDYYYWardGatePass = 0;
+        gDYYYWardGateReject = 0;
         if (awemeID.length == 0) {
             [DYYYUtils showToast:@"无视频信息，已复制链接"];
             NSString *url = [ward objectForKey:@"shareURL"];
