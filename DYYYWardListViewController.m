@@ -2967,6 +2967,10 @@ static void DYYYWardScrollCommentList(BOOL up) {
     }
 }
 
+// v2.4-21 起整条「父定位→展开→找子」链停用（用户拍板放弃未加载/未展开的二级回复定位：
+// 连续多轮实测，展开入口点不中/子评论不加载/宿主深链高亮父评论造成「乱找」观感，投入产出比
+// 已经为负）。函数体保留备查，不再被调用；二级回复改走 DYYYWardLocateComment 开头的
+// 「在位即定位（TargetVisibleNow+作者闸）/ 不在位即明确放弃」策略。
 // 先按父评论定位，再点开「回复」，最后把子 cid 交给宿主定位/扫描。
 // parentIDs 为空（老插眼记录没有）直接返回 NO，不拿子 cid 去冒充父。
 // v2.4-7：加 urlGen 参数（列表层直达的 0.7s 复核 block 要校验「还是本次查看」），
@@ -3064,18 +3068,30 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         } @catch (NSException *e) {}
     });
 
-    // v2.4-2：二级回复（cid 是子评论）不在主列表，宿主方法常只认主列表 id。
-    // 有 parentIDs 时先走「父评论定位 → 展开回复 → 再定位子评论」路径，命中即结束；没命中才退到原有兜底。
+    // v2.4-21：用户拍板放弃「未加载/未展开的二级回复」定位（连续多轮实测：父定位→展开→找子
+    // 要么点不中展开入口、要么子评论根本不加载；且深链传父 cid 会让宿主把父评论高亮/滚到位，
+    // 子定位失败后那个高亮还挂着 = 用户看到的「乱找了一个」）。新策略：
+    //   ① 子评论已展开在位 → TargetVisibleNow（v2.4-20 起带作者闸，不会假阳性）立即定位；
+    //   ② 两轮检测都不在位 = 未展开/未加载 → 明确放弃并提示手动展开，不长跑 18 步扫描。
+    // 一级评论（parentIDs 为空）完全不受影响，照常走下面的常规兜底。
     if (parentIDs.count > 0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != urlGen) return;
-            DYYYWardProbeValidator(); // v2.4-8：先自检对象校验链，断点进 toast
-            // v2.4-17：二级回复的子评论在未展开时不在主列表——提前查「子是否可见」只会误中别的
-            // 可见评论（CID 裸扫 / 10字正文子串撞车）= 用户说的「乱找了一个」。二级回复直接走
-            // 父定位→展开→再找子；父已展开时 DYYYWardCellShowsCollapse 内部已直接找子，等价且不误中。
-            if (DYYYWardLocateParentThenExpand(parentIDs, cidList, contentHint, gen, urlGen, parentTexts)) return;
-            // 没命中就继续走下面的常规兜底（不 return，让主循环照常跑）
-        });
+        for (NSInteger r = 0; r < 2; r++) {
+            NSTimeInterval rd = (r == 0) ? 2.8 : 4.2; // 给评论区打开/展开留时间，两轮
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(rd * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (gDYYYWardLocateDone == gen || gDYYYWardURLGen != urlGen) return;
+                DYYYWardProbeValidator(); // v2.4-8：先自检对象校验链
+                if (DYYYWardTargetVisibleNow(cidList, contentHint)) {
+                    gDYYYWardLocateDone = gen;
+                    gDYYYWardFailCount = 0;
+                    [DYYYUtils showToast:@"已定位到该评论"];
+                    return;
+                }
+                if (r == 1) {
+                    [DYYYUtils showToast:@"未展开的二级回复暂不支持定位，请先展开该回复再查看"];
+                }
+            });
+        }
+        return; // 二级回复不走主循环（省掉 10 秒白扫 + 乱找面）
     }
 
     // 滚动搜索：评论列表分页加载，目标评论常不在首屏可见区（cid 与内容匹配都只看 visibleCells）。
@@ -3114,18 +3130,9 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
                 }
                 // 按行扫描：用公开行数逐行 scrollToRow 复核，覆盖整列（渐进滚动覆盖不到中间/后半段）
                 if (i == 2) {
-                    // v2.4-4：二级回复优先扫「父评论」（子 cid 根本不在主列表，扫子纯属浪费）；
-                    // 父已在 2.2s 那步被展开过（ParentHandled）就不再重复扫。
-                    if (parentIDs.count > 0 && !gDYYYWardParentHandled) {
-                        DYYYWardSweepParentThenExpand(parentIDs, cidList, contentHint, parentTexts, gen);
-                    } else if (parentIDs.count == 0) {
-                        DYYYWardSweepRows(cidList, contentHint, gen);
-                    }
-                }
-                // v2.4-6：父扫描中途失败（加载行数不够/扫完没命中）后，主循环的渐进滚动会继续
-                // 触发宿主分页；等新评论加载出来（i==6/12）再重起一次父扫描，从当前可见处接着扫。
-                if ((i == 6 || i == 12) && parentIDs.count > 0 && !gDYYYWardParentHandled && gDYYYWardSweepGen != gen) {
-                    DYYYWardSweepParentThenExpand(parentIDs, cidList, contentHint, parentTexts, gen);
+                    // v2.4-21：二级回复已在函数开头单独处理（在位即定位/不在位即放弃并 return），
+                    // 主循环现在只服务一级评论，直接按行扫。
+                    DYYYWardSweepRows(cidList, contentHint, gen);
                 }
                 // 数据源定位：直接按模型数组算下标再滚过去（第 1/5/9 步各试一次，
                 // 扫数组较贵，不必每步都做）。命中后由 0.7s 后的复核去置 done。
@@ -3776,18 +3783,13 @@ static void DYYYWardLocateComment(NSString *awemeID, NSArray *cidList, NSString 
         // 只传 comment=1 只能展开评论区、不能定位到具体某条
         NSString *base = [NSString stringWithFormat:@"%@://aweme/detail/%@?refer=web&gd_label=click_wap",
                           [self hostSnssdkScheme], awemeID];
-        // v2.4-5：二级回复改用「父评论 cid」跳深链——子评论不在主列表，宿主就算支持
-        // comment_id 也定位不到它；父评论是主列表里的正经评论，宿主更可能认。
-        // 只跳一次（不新增跳转），定位不到仍走后面的父扫描兜底。
-        NSString *linkCID = (parentIDs.count > 0) ? parentIDs.firstObject : commentID;
+        // v2.4-21：深链改传「子评论 cid」。放弃父展开链路后，传父 cid 的唯一效果就是让宿主
+        // 把父评论滚到位并高亮（子定位又已放弃 = 红框挂在错误评论上 = 用户截图的「乱找」观感）。
+        // 传子 cid：宿主若认（打开评论详情页）白赚，不认就当只开评论区，不会留下错误高亮。
+        NSString *linkCID = commentID;
         BOOL ok = NO;
         if (linkCID.length > 0) {
             NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment_id=%@", base, linkCID]];
-            ok = url && [[UIApplication sharedApplication] openURL:url];
-        }
-        if (!ok && commentID.length > 0 && parentIDs.count > 0) {
-            // 父 cid 跳失败（极端情况）再用子 cid 试一次，仍失败才退 comment=1
-            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@&comment_id=%@", base, commentID]];
             ok = url && [[UIApplication sharedApplication] openURL:url];
         }
         if (!ok) {
