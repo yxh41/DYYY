@@ -153,6 +153,7 @@ static NSArray *DYYYWardCommentListViews(UIViewController *commentVC) {
 static id DYYYWardSafeKVC(id obj, NSString *key);
 static BOOL DYYYWardGraphMatch(id node, NSArray *cidList, NSString *probe, NSInteger depth, NSInteger *budget);
 static BOOL DYYYWardAuthorGateOK(id cell); // v2.4-20：作者双条件闸（定义在 CellAuthorMatch 之后）
+static CGRect DYYYWardContentColumnRect(UIView *cellView); // v2.4-22：精准框取框矩形（定义在 DYYYWardViewText 之后）
 static void DYYYWardSweepStep(UITableView *t, NSArray *cidList, NSString *contentHint, NSInteger gen,
                               NSInteger flat, NSInteger total, NSInteger pageTry, NSInteger token);
 static void DYYYWardSweepStepCV(UICollectionView *cv, NSArray *cidList, NSString *contentHint, NSInteger gen,
@@ -238,9 +239,11 @@ static NSArray *DYYYWardAllCommentVCs(void) {
     return out;
 }
 
-// 滚动到 cell 并高亮（P3：左侧 4pt 竖向色条 + 整框细描边，呼吸两次后保留约 3s 再淡出）。
+// 滚动到 cell 并高亮（P3：左侧 4pt 竖向色条 + 细描边，呼吸两次后保留约 3s 再淡出）。
 // 密集列表里整框描边不够醒目，左侧色条能一眼扫到；呼吸用 keyframe 做，
 // 避免 repeat 动画与最后一次淡出抢同一属性（会出现高亮不消失/瞬间闪掉）。
+// v2.4-22：改「精准框」——框 cell 内容列（DYYYWardContentColumnRect）而不是整个 cell：
+// 旧实现框 cellView.bounds，头像/留白/底部操作行全包进去，用户观感「一大块红框」。
 static void DYYYWardScrollAndHighlight(UIScrollView *scroll, id cell) {
     if (!scroll || !cell) return;
     UIView *cellView = (UIView *)cell;
@@ -261,14 +264,17 @@ static void DYYYWardScrollAndHighlight(UIScrollView *scroll, id cell) {
         }
     }
     UIColor *tint = [UIColor colorWithRed:1.0 green:0.35 blue:0.35 alpha:1.0];
-    UIView *highlight = [[UIView alloc] initWithFrame:cellView.bounds];
+    CGRect frame = DYYYWardContentColumnRect(cellView); // v2.4-22：内容列精准框（取不到退整框）
+    UIView *highlight = [[UIView alloc] initWithFrame:frame];
     highlight.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    highlight.backgroundColor = [UIColor clearColor];
+    highlight.backgroundColor = [tint colorWithAlphaComponent:0.07]; // v2.4-22：极淡红填充，框位醒目不糊字
     highlight.userInteractionEnabled = NO;
     highlight.tag = 20261022;
     highlight.layer.borderColor = [tint colorWithAlphaComponent:0.85].CGColor;
     highlight.layer.borderWidth = 1.5;
-    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 4, CGRectGetHeight(cellView.bounds))];
+    highlight.layer.cornerRadius = 6.0;  // v2.4-22：圆角细框，不再是「一大块方砖」
+    highlight.layer.masksToBounds = YES; // 把左竖条一起裁进圆角
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 4, CGRectGetHeight(frame))];
     bar.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleRightMargin;
     bar.backgroundColor = tint;
     bar.tag = 20261023;
@@ -2267,6 +2273,56 @@ static NSString *DYYYWardViewText(UIView *v) {
     if (out.length == 0) out = v.accessibilityLabel;
     if (out.length == 0) out = v.accessibilityValue;
     return out;
+}
+
+// v2.4-22：定位高亮「精准框」的取框矩形。评论 cell 是整行（头像+昵称+正文+时间+操作行），
+// 整行描边在窄屏上就是「一大块」。这里框 cell 的「内容列」：
+//   左边界 = cell 内最左「有文字」视图的左沿（昵称/正文/时间/展开入口都贴在内容列左沿；
+//            UIImageView 显式排除——头像是图片视图且可能带用户名 accessibilityLabel，
+//            不排除会被它把左沿拽回头像位置，框又变回一大块）；
+//   右/上/下 = 固定小内缩。
+// 兜底链（任何命中路径都有框，零回归）：
+//   ① 一个文本视图都没有（纯 cid 命中的 Swift cell 可能没有可见文本）→ 固定经验左内缩 52pt；
+//   ② 内容列算废了（宽/高过低）→ 退整个 cell bounds（= v2.4-21 及以前的行为）。
+static CGRect DYYYWardContentColumnRect(UIView *cellView) {
+    CGRect bounds = cellView.bounds;
+    if (bounds.size.width <= 0 || bounds.size.height <= 0) return bounds;
+    CGFloat leftEdge = CGFLOAT_MAX;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:cellView];
+    NSInteger visited = 0;
+    while (stack.count > 0 && visited < 300) {
+        UIView *cur = [stack lastObject];
+        [stack removeLastObject];
+        visited++;
+        // 跳过：cell 自身、图片视图（头像/徽章）、不可见视图（隐藏或全透明）
+        if (cur != cellView && ![cur isKindOfClass:[UIImageView class]] && !cur.hidden && cur.alpha > 0.01) {
+            if (DYYYWardViewText(cur).length > 0) {
+                CGRect r = [cur convertRect:cur.bounds toView:cellView];
+                // 只认「像文本行」的视图：够宽、在 cell 水平范围内（滤掉溢出/裁剪的子视图）
+                if (r.size.width >= 20 && r.size.height >= 8 &&
+                    r.origin.x >= -0.5 && CGRectGetMaxX(r) <= bounds.size.width + 0.5) {
+                    if (r.origin.x < leftEdge) leftEdge = r.origin.x;
+                }
+            }
+        }
+        [stack addObjectsFromArray:cur.subviews];
+    }
+    CGFloat leftInset;
+    if (leftEdge < CGFLOAT_MAX) {
+        leftInset = MAX(leftEdge - 6.0, 0.0);   // 文本左沿再让 6pt 呼吸位
+        CGFloat cap = bounds.size.width * 0.4;  // 防抖：左内缩不超过 40% 宽
+        if (leftInset > cap) leftInset = cap;
+    } else {
+        leftInset = MIN(52.0, bounds.size.width * 0.25); // 无文本视图：按头像列经验值
+    }
+    CGFloat rightInset = MIN(12.0, bounds.size.width * 0.1);
+    CGRect col = bounds;
+    col.origin.x += leftInset;
+    col.size.width -= (leftInset + rightInset);
+    col.origin.y += 2.0;
+    col.size.height -= 4.0;
+    if (col.size.width < 48 || col.size.height < 16) return bounds; // 算废了退整框
+    return col;
 }
 
 // 「展开N条回复 / 共N条回复 / 查看N条回复 / N条回复」判定：必须同时出现「回复」类词和
