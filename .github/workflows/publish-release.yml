@@ -1,13 +1,8 @@
 name: publish release
 
+# 只保留手动触发：build deb 成功后不再自动创建 Release（用户约定：不自动发行）。
+# 想发布时到 Actions -> publish release -> Run workflow，填含 artifact 的 build run ID。
 on:
-  workflow_run:
-    workflows:
-      - build deb
-    types:
-      - completed
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -31,9 +26,6 @@ permissions:
 
 jobs:
   source:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       has_artifact: ${{ steps.resolve.outputs.has_artifact }}
@@ -48,7 +40,7 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           ARTIFACT_NAME_INPUT: ${{ inputs.artifact_name }}
         run: |
           set -euo pipefail
@@ -80,12 +72,7 @@ jobs:
           fi
 
           if [[ -z "$artifact_name" || "$artifact_name" == "null" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
-              echo "has_artifact=false" >> "$GITHUB_OUTPUT"
-              echo "Build run ${SOURCE_RUN_ID} produced no artifact; nothing to publish."
-              exit 0
-            fi
-            echo "Unable to resolve artifact name for run ${SOURCE_RUN_ID}" >&2
+            echo "Unable to resolve artifact name for run ${SOURCE_RUN_ID} (that build run has no artifact)" >&2
             exit 1
           fi
 
