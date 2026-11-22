@@ -1029,33 +1029,8 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
     }
 }
 
-// 递归拼视图树：类名 + frame + 背景色 + 透明度/隐藏/tag + 所属 VC（调试用）
-static void DYYYAppendViewTree(UIView *view, NSMutableString *out, NSInteger depth) {
-    if (!view)
-        return;
-    for (NSInteger i = 0; i < depth; i++)
-        [out appendString:@"  "];
-    NSString *vc = @"";
-    UIResponder *next = [view nextResponder];
-    if ([next isKindOfClass:[UIViewController class]])
-        vc = [NSString stringWithFormat:@" [vc:%@]", NSStringFromClass([next class])];
-    NSString *bg = @"";
-    UIColor *c = view.backgroundColor;
-    if (c) {
-        CGFloat r = 0, g = 0, b = 0, a = 0;
-        if ([c getRed:&r green:&g blue:&b alpha:&a] && a > 0.01)
-            bg = [NSString stringWithFormat:@" bg=(%.2f,%.2f,%.2f,%.2f)", r, g, b, a];
-    }
-    CGRect f = view.frame;
-    [out appendFormat:@"%@%@ {%.0f,%.0f,%.0f,%.0f}%@%@%@%@\n",
-                      NSStringFromClass([view class]), vc,
-                      f.origin.x, f.origin.y, f.size.width, f.size.height, bg,
-                      (view.alpha < 0.99) ? [NSString stringWithFormat:@" a=%.2f", view.alpha] : @"",
-                      view.hidden ? @" HIDDEN" : @"",
-                      (view.tag != 0) ? [NSString stringWithFormat:@" tag=%ld", (long)view.tag] : @""];
-    for (UIView *sub in view.subviews)
-        DYYYAppendViewTree(sub, out, depth + 1);
-}
+// 摇一摇导出视图树：复用本文件已有的 DYYYAppendViewTree（含类名/frame/text/a11y 等）
+static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger depth);
 
 + (NSString *)describeViewTree:(UIView *)root {
     NSMutableString *out = [NSMutableString string];
@@ -2369,7 +2344,22 @@ static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger
         }
     }
 
-    [buffer appendFormat:@"%@<%@: %p> frame={%.1f,%.1f,%.1f,%.1f} alpha=%.2f hidden=%d uie=%d tag=%ld a11y=\"%@\"%@\n",
+    // v2.4-23：补背景色与所属 VC（调试毛玻璃/不透明遮挡时最关键的两项）
+    NSString *bgStr = @"";
+    UIColor *bgColor = view.backgroundColor;
+    if (bgColor) {
+        CGFloat br = 0, bg2 = 0, bb = 0, ba = 0;
+        if ([bgColor getRed:&br green:&bg2 blue:&bb alpha:&ba] && ba > 0.01) {
+            bgStr = [NSString stringWithFormat:@" bg=(%.2f,%.2f,%.2f,%.2f)", br, bg2, bb, ba];
+        }
+    }
+    NSString *vcStr = @"";
+    UIResponder *nextResp = [view nextResponder];
+    if ([nextResp isKindOfClass:[UIViewController class]]) {
+        vcStr = [NSString stringWithFormat:@" vc=%@", NSStringFromClass([nextResp class])];
+    }
+
+    [buffer appendFormat:@"%@<%@: %p> frame={%.1f,%.1f,%.1f,%.1f} alpha=%.2f hidden=%d uie=%d tag=%ld a11y=\"%@\"%@%@%@\n",
      indent,
      className,
      view,
@@ -2379,7 +2369,9 @@ static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger
      view.userInteractionEnabled,
      (long)view.tag,
      DYYYSafeDescription(accessibility),
-     extra];
+     extra,
+     bgStr,
+     vcStr];
 
     for (UIView *subview in view.subviews) {
         DYYYAppendViewTree(subview, buffer, depth + 1);
