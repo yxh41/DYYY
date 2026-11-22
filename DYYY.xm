@@ -6569,6 +6569,47 @@ static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
             for (NSString *line in layers)
                 [o appendFormat:@"#   lay %@\n", line];
         }
+
+        // 枚举所有行：哪一行高度不是整屏、偏移从第几行开始累积，一次导出即可定位。
+        // 同时探测吸附实现位置（scrollViewWillEndDragging 在表还是 delegate 上），为下一步修法选路子。
+        SEL snapSel = @selector(scrollViewWillEndDragging:withVelocity:targetContentOffset:);
+        [o appendFormat:@"#   snap table=%@ delegate=%@ rowH=%.1f est=%.1f hfr=%@\n",
+                        [tv respondsToSelector:snapSel] ? @"Y" : @"N",
+                        (tv.delegate && [tv.delegate respondsToSelector:snapSel]) ? @"Y" : @"N",
+                        tv.rowHeight, tv.estimatedRowHeight,
+                        (tv.delegate && [tv.delegate respondsToSelector:@selector(tableView:heightForRowAtIndexPath:)]) ? @"Y" : @"N"];
+        NSInteger secs = MIN((NSInteger)[tv numberOfSections], 2);
+        NSInteger totalRows = 0;
+        for (NSInteger s = 0; s < secs; s++)
+            totalRows += (NSInteger)[tv numberOfRowsInSection:s];
+        CGFloat tableH = tv.frame.size.height;
+        if (totalRows > 0 && totalRows <= 200 && tableH > 1.0) {
+            [o appendFormat:@"#   rows secs=%ld n=%ld\n", (long)secs, (long)totalRows];
+            NSInteger shown = 0;
+            NSInteger driftRows = 0;
+            for (NSInteger s = 0; s < secs; s++) {
+                NSInteger rows = (NSInteger)[tv numberOfRowsInSection:s];
+                for (NSInteger i = 0; i < rows; i++) {
+                    NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:s];
+                    CGRect r = [tv rectForRowAtIndexPath:ip];
+                    CGFloat m = fmod(r.origin.y, tableH);
+                    BOOL hOK = fabs(r.size.height - tableH) < 1.0;
+                    BOOL yOK = (m < 0.6 || m > tableH - 0.6);
+                    if (!hOK || !yOK)
+                        driftRows++;
+                    BOOL middle = (i >= 3 && i < rows - 2);
+                    if (!(!hOK || !yOK) && middle)
+                        continue;
+                    if (shown >= 26)
+                        continue;
+                    shown++;
+                    [o appendFormat:@"#   row s%ld i%ld y=%.1f h=%.1f @%.1f %@%@\n",
+                                    (long)s, (long)i, r.origin.y, r.size.height, m,
+                                    hOK ? @"h=OK" : @"h!=tbl", yOK ? @" y=OK" : @" y=DRIFT"];
+                }
+            }
+            [o appendFormat:@"#   drift rows=%ld of %ld\n", (long)driftRows, (long)totalRows];
+        }
     }
 
     NSMutableArray *tables = [NSMutableArray array];
