@@ -6697,6 +6697,107 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 
 %end
 
+// MARK: - v2.4-24 全屏详情页行高基准修正
+// 症状：开启「全屏」后，从部分入口（直播间、作者直播中/带直播卡的主页作品）进详情页，视频上下错位。
+// 根因（上游 3.0.2 在抖音 41.2.0 上定位）：详情页的行高 / 翻页吸附基准全部来自 fixedCellHeight
+//   与 originalTableViewHeight（进页面时记下的原生表高 =「屏高 - 底栏」）。DYYY 全屏只把表的 frame
+//   撑到了屏高，这两个基准还是撑高前的旧值 → 行高与表高不一致，翻页按旧值吸附，偏差逐页累积。
+// 修法：把基准高度从一开始就提到屏高（仅全屏开启时走这条），让行高、表高、吸附偏移三者一致。
+static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
+    if (!DYYYGetBool(@"DYYYEnableFullScreen"))
+        return orig;
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+    CGFloat diff = screenH - orig;
+    // 只在「比屏高小一个底栏量级」时接管；已是屏高、或异常值（0/负数/超大）一律原样放行。
+    return (orig > 1.0 && diff > 1.0 && diff < 160.0) ? screenH : orig;
+}
+
+@interface AWEDetailFeedScrollDelegateContainer : NSObject
+@end
+@interface AWEUserProfileAdDataLayer : NSObject
+@end
+@interface AWEUserProFileAdVideoDataController : NSObject
+@end
+@interface AWEUserProfileAdVideoDataController : NSObject
+@end
+@interface AWELivePostWorkLiveCardLayoutController : NSObject
+@end
+@interface AWELivePostWorkLiveCardLayoutDataLayer : NSObject
+@end
+
+// 独立组：不能挂进 AutoPlay 组（那个组只在开「自动播放」时 %init，会让修复失效）。
+%group DYYYDetailHeightGroup
+
+%hook AWEAwemeDetailTableViewController
+// 关键路径 1：详情页表控制器自己算的行高基准
+- (CGFloat)fixedCellHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+%end
+
+// 关键路径 2：接管架构下 tableView 的真实 delegate 链（AWEDetailFeedListContainer → UIContainer → 本类）
+%hook AWEDetailFeedScrollDelegateContainer
+- (CGFloat)fixedCellHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+%end
+
+// 关键路径 3：从直播间 / 带直播卡的主页进详情时，普通视频行高不走 fixedCellHeight，
+// 走 originalTableViewHeight（进页面时记下的原生表高，翻页偏移也按它算）。
+%hook AWEUserProfileAdDataLayer
+- (CGFloat)originalTableViewHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (void)setOriginalTableViewHeight:(CGFloat)height {
+    %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+%hook AWEUserProFileAdVideoDataController
+- (CGFloat)originalTableViewHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (void)updateOriginalTableViewHeight:(CGFloat)height {
+    %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+// 上游笔误的双保险：正常拼写变体，不存在则静默跳过
+%hook AWEUserProfileAdVideoDataController
+- (CGFloat)originalTableViewHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (void)updateOriginalTableViewHeight:(CGFloat)height {
+    %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+%hook AWELivePostWorkLiveCardLayoutController
+- (CGFloat)originalTableViewHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (void)setOriginalTableViewHeight:(CGFloat)height {
+    %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+// 关键路径 4：作者正在直播时，「直播卡布局」用 normalHeight 算行高与翻页偏移，
+// 其来源是 normalTableViewHeightProvider()（一个返回「屏高 - 底栏」的 block），
+// 所以只改 originalTableViewHeight 不生效，必须同时接管 normalHeight。
+%hook AWELivePostWorkLiveCardLayoutDataLayer
+- (CGFloat)normalHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (CGFloat)originalTableViewHeight {
+    return DYYYDetailFullCellHeight(%orig);
+}
+- (void)setOriginalTableViewHeight:(CGFloat)height {
+    %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+%end
+
 %group AutoPlay
 
 %hook AWEAwemeDetailTableViewController
@@ -14049,6 +14150,9 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
           Class wSwiftImpl = objc_getClass("AWECommentInputViewSwiftImpl.CommentInputContainerView");
           %init(CommentInputContainerView = wSwiftImpl);
         });
+        // v2.4-24：全屏详情页行高基准修正。与「自动播放」开关无关，必须无条件初始化，
+        // 所以不能挂在 AutoPlay 组里（那个组只在开自动播放时才 %init）。
+        %init(DYYYDetailHeightGroup);
         BOOL isAutoPlayEnabled = DYYYGetBool(@"DYYYEnableAutoPlay");
         if (isAutoPlayEnabled) {
             %init(AutoPlay);
