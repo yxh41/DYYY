@@ -10186,6 +10186,25 @@ static Class tabBarButtonClass = nil;
 }
 %end
 
+// 首页/关注 feed 的行高来源是 delegate（BSTTableViewDelegateOptProxy，诊断实测 hfr=Y、rowH=-1）。
+// 全屏模式把表撑到了屏高 844，但行高仍是宿主算的「屏高−底栏」= 761，
+// 于是翻页吸附按 844 步进而内容按 761 排 → 每翻一页多跑 83pt，越翻越离谱（真机实测 89 行全 761）。
+// 这里让行高与表高一致，从源头消掉累积误差；只接管「表已经撑满整屏」的情况，其余原样放行。
+%hook BSTTableViewDelegateOptProxy
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (DYYYGetBool(@"DYYYEnableFullScreen") && tableView) {
+        CGFloat tableH = tableView.frame.size.height;
+        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        if (tableH > 200.0 && tableH >= screenH - 1.0) {
+            return tableH;
+        }
+    }
+    return %orig;
+}
+
+%end
+
 %hook AWEFeedTableViewCell
 - (void)prepareForReuse {
     if (hideButton && hideButton.isElementsHidden) {
