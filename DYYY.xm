@@ -6509,8 +6509,9 @@ static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
     NSMutableString *o = [NSMutableString string];
     CGSize screenSize = [UIScreen mainScreen].bounds.size;
     UIEdgeInsets safe = win.safeAreaInsets;
-    [o appendFormat:@"# dyyy=%@ fullScreen=%@\n", DYYY_VERSION,
-                    DYYYGetBool(@"DYYYEnableFullScreen") ? @"ON" : @"OFF"];
+    [o appendFormat:@"# dyyy=%@ fullScreen=%@ autoplay=%@\n", DYYY_VERSION,
+                    DYYYGetBool(@"DYYYEnableFullScreen") ? @"ON" : @"OFF",
+                    DYYYGetBool(@"DYYYEnableAutoPlay") ? @"ON" : @"OFF"];
     [o appendFormat:@"# screen=%.1fx%.1f window=%.1fx%.1f safeTop=%.1f safeBottom=%.1f tabBar=%.1f/%.1f\n",
                     screenSize.width, screenSize.height, win.frame.size.width, win.frame.size.height,
                     safe.top, safe.bottom, gCurrentTabBarHeight, originalTabBarHeight];
@@ -6907,6 +6908,40 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 }
 - (void)setOriginalTableViewHeight:(CGFloat)height {
     %orig(DYYYDetailFullCellHeight(height));
+}
+%end
+
+// 关键路径 5（v2.4-26）：详情页表自身的 frame 高度。
+// WHY: 上面 4 条只把「行高基准」改成屏高(844)，但宿主给表的 frame 仍是「屏高 − 底栏」(761)。
+// 行高 844 / 表高 761 ⇒ 翻页吸附单位是 761，每翻一页累积 83pt 误差 = 用户看到的上下错位。
+// 这段逻辑原本只存在于 AutoPlay 组（那个组仅在开「自动播放」时 %init），绝大多数用户
+// 从来没执行过 ⇒ 全屏永远是「行高改了、表没撑」的半生效状态。放到本组才真正生效。
+%hook AWEAwemeDetailTableView
+
+- (void)setFrame:(CGRect)frame {
+    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
+        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        CGFloat h = frame.size.height;
+        // 只接管「一页但明显不满一屏」的高度；已是屏高 / 多屏 / 异常值一律放行。
+        if (h > 200.0 && h < screenH - 1.0) {
+            frame.size.height = screenH;
+        }
+    }
+    %orig(frame);
+}
+
+- (void)layoutSubviews {
+    %orig;
+    if (!DYYYGetBool(@"DYYYEnableFullScreen"))
+        return;
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+    CGRect f = self.frame;
+    // 宿主在父视图 layout 后可能把表高重置回「屏高 − 底栏」，这里兜底一次。
+    // 已经等于屏高时差值 < 1，不再赋值 ⇒ 不会与宿主来回抖动。
+    if (f.size.height > 200.0 && f.size.height < screenH - 1.0) {
+        f.size.height = screenH;
+        self.frame = f;
+    }
 }
 %end
 
@@ -10786,21 +10821,8 @@ static Class tabBarButtonClass = nil;
 
 %end
 
-%hook AWEAwemeDetailTableView
-
-- (void)setFrame:(CGRect)frame {
-    if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
-
-        CGFloat remainder = fmod(frame.size.height, screenHeight);
-        if (remainder != 0) {
-            frame.size.height += (screenHeight - remainder);
-        }
-    }
-    %orig(frame);
-}
-
-%end
+// v2.4-26: 详情页表高的接管已移到 DYYYDetailHeightGroup（那里无条件 %init）。
+// 原来这段挂在 AutoPlay 组，只有开「自动播放」才生效 ⇒ 全屏永远「行高改了、表没撑」。
 
 %hook CommentInputContainerView
 
