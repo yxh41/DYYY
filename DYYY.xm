@@ -6464,6 +6464,18 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 %group DYYYSettingsGesture
 
 %hook UIWindow
+// 摇一摇导出当前视图树到剪贴板（调试用：用于确认某版本宿主里真实类名/层级）
+- (void)motionEnded:(UIEventSubtype)motion withEvent:(UIEvent *)event {
+    %orig;
+    if (motion == UIEventSubtypeMotionShake && DYYYGetBool(@"DYYYShakeExportViewTree")) {
+        UIWindow *win = [DYYYUtils getActiveWindow] ?: self;
+        NSString *tree = [DYYYUtils describeViewTree:win];
+        if (tree.length > 0) {
+            [UIPasteboard generalPasteboard].string = tree;
+            [DYYYUtils showToast:[NSString stringWithFormat:@"视图树已复制（%lu 字）", (unsigned long)tree.length]];
+        }
+    }
+}
 - (instancetype)initWithFrame:(CGRect)frame {
     UIWindow *window = %orig(frame);
     if (window) {

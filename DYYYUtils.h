@@ -89,6 +89,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)clearBackgroundRecursivelyInView:(UIView *)view;
 
 /**
+ * 导出视图树文本（调试用：摇一摇把当前 UI 层级、frame、背景色复制到剪贴板）
+ * @param root 根视图
+ */
++ (NSString *)describeViewTree:(UIView *)root;
+
+/**
  * 显示提示信息
  * @param text 要显示的文本
  */
