@@ -10180,14 +10180,16 @@ static BOOL dyyyFeedGridAligning = NO;
     }
 
     CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-    if (screenH <= 1.0 || self.frame.size.height < screenH - 1.0) {
+    // 宿主类只做前向声明，属性/实例方法一律走 UITableView 公开 API
+    UITableView *tv = (UITableView *)self;
+    if (screenH <= 1.0 || tv.frame.size.height < screenH - 1.0) {
         return;
     }
 
     dyyyFeedGridAligning = YES;
 
     BOOL heightFixed = NO;
-    for (UITableViewCell *cell in self.visibleCells) {
+    for (UITableViewCell *cell in tv.visibleCells) {
         CGRect f = cell.frame;
         CGFloat diff = screenH - f.size.height;
         if (diff > 1.0 && diff < 160.0) {
@@ -10199,8 +10201,8 @@ static BOOL dyyyFeedGridAligning = NO;
 
     // 只重排一次，避免和翻页吸附互相打架
     if (heightFixed) {
-        [self beginUpdates];
-        [self endUpdates];
+        [tv beginUpdates];
+        [tv endUpdates];
     }
 
     dyyyFeedGridAligning = NO;
