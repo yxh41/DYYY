@@ -7040,14 +7040,12 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 
 %group AutoPlay
 
-%hook AWEAwemeDetailTableViewController
-
-- (BOOL)hasIphoneAutoPlaySwitch {
-    return YES;
-}
-
-%end
-
+// v2.4-33: do NOT force hasIphoneAutoPlaySwitch on AWEAwemeDetailTableViewController.
+// The short-drama page reuses the detail table controller and already has its own
+// "watch all episodes" auto-next. Forcing the detail autoplay switch on makes the two
+// auto-advance engines fight: the next episode is shown but the player stalls until a
+// manual pause/play. This switch is documented as covering only feed/search/profile,
+// so detail pages must keep the host default (%orig).
 %hook AWEAwemeDetailContainerPlayControlConfig
 
 - (BOOL)enableUserProfilePostAutoPlay {
