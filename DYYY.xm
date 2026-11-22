@@ -5762,14 +5762,30 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
     }
 
+    // 父容器本身已经是整屏（全屏模式已把底栏移走）时，不能再减一次底栏：
+    // 之前首页推荐/关注的 referString 不在白名单里，一路走 else 分支拿到 844-83=761，
+    // 于是 cell 是 844 而交互层（右侧按钮/文案/贴纸/弹幕）只有 761，整体偏高 83pt。
+    if (!useFullHeight && superviewHeight >= [UIScreen mainScreen].bounds.size.height - 1.0) {
+        useFullHeight = YES;
+    }
+
     if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
 
+    // 交互层与父容器等高，但内部容器（贴纸/弹幕）还是旧高度时一并撑开
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
+        CGFloat oldHeight = self.view.frame.size.height;
         self.view.frame = frame;
+        for (UIView *sub in self.view.subviews) {
+            CGRect sf = sub.frame;
+            if (oldHeight > 1.0 && fabs(sf.size.height - oldHeight) < 1.0) {
+                sf.size.height = frame.size.height;
+                sub.frame = sf;
+            }
+        }
     }
 }
 
@@ -6505,6 +6521,20 @@ static void DYYYDiagCollectVideoLayers(UIView *v, UIView *root, NSMutableArray *
         DYYYDiagCollectVideoLayers(s, root, out);
 }
 
+// 交互层（AWEPlayInteractionViewController 的 view）实际高度，用于确认「少一个底栏」是否已修好
+static void DYYYDiagCollectInteractionLayers(UIView *v, NSMutableArray *out, NSInteger depth) {
+    if (!v || out.count >= 4 || depth > 6)
+        return;
+    UIResponder *nr = [v nextResponder];
+    if (nr && [nr isKindOfClass:NSClassFromString(@"AWEPlayInteractionViewController")]) {
+        CGFloat cellH = v.superview ? v.superview.frame.size.height : 0;
+        [out addObject:[NSString stringWithFormat:@"%@ h=%.1f parentH=%.1f", NSStringFromClass([v class]),
+                                                  v.frame.size.height, cellH]];
+    }
+    for (UIView *s in v.subviews)
+        DYYYDiagCollectInteractionLayers(s, out, depth + 1);
+}
+
 static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
     NSMutableString *o = [NSMutableString string];
     CGSize screenSize = [UIScreen mainScreen].bounds.size;
@@ -6524,6 +6554,38 @@ static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
     [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWELivePostWorkLiveCardLayoutController", @[ @"originalTableViewHeight" ])];
     [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWELivePostWorkLiveCardLayoutDataLayer",
                                                     @[ @"normalHeight", @"originalTableViewHeight" ])];
+
+    // 首页/关注 feed 表：cell 是否整屏、offset 是否落在 cell 顶（grid=OFF 就是翻页拼接的直接证据），
+    // 以及交互层 view 的实际高度（parentH − h == 底栏就说明还在按非全屏布局）。
+    Class feedTableClass = NSClassFromString(@"AWEFeedNodeTableView");
+    NSArray<__kindof UIView *> *feedTables = feedTableClass ? [DYYYUtils findAllSubviewsOfClass:feedTableClass inContainer:win] : @[];
+    BOOL feedDiagDone = NO;
+    for (UITableView *tv in feedTables) {
+        if (feedDiagDone || ![tv isKindOfClass:[UITableView class]])
+            continue;
+        feedDiagDone = YES;
+        [o appendFormat:@"# feed %@ frame={%.1f,%.1f,%.1f,%.1f} contentH=%.1f offset=%.1f adjInset=(%.1f,%.1f)\n",
+                        NSStringFromClass([tv class]), tv.frame.origin.x, tv.frame.origin.y,
+                        tv.frame.size.width, tv.frame.size.height, tv.contentSize.height, tv.contentOffset.y,
+                        tv.adjustedContentInset.top, tv.adjustedContentInset.bottom];
+        NSInteger idx = 0;
+        UIView *sampleCell = nil;
+        for (UITableViewCell *cell in tv.visibleCells) {
+            CGFloat m = fmod(cell.frame.origin.y, screenSize.height);
+            BOOL gridOK = (m < 0.6 || m > screenSize.height - 0.6);
+            [o appendFormat:@"#   fcell %@ y=%.1f h=%.1f %@\n", NSStringFromClass([cell class]),
+                            cell.frame.origin.y, cell.frame.size.height, gridOK ? @"grid=OK" : @"grid=OFF"];
+            if (idx == 0)
+                sampleCell = cell;
+            idx++;
+        }
+        if (sampleCell) {
+            NSMutableArray *layers = [NSMutableArray array];
+            DYYYDiagCollectInteractionLayers(sampleCell, layers, 0);
+            for (NSString *line in layers)
+                [o appendFormat:@"#   lay %@\n", line];
+        }
+    }
 
     NSMutableArray *tables = [NSMutableArray array];
     DYYYDiagFindScrollViews(win, tables, YES, 0);
@@ -10097,6 +10159,53 @@ static Class tabBarButtonClass = nil;
         self.frame = frame;
     }
 }
+%end
+
+// 首页/关注 feed 表（AWEFeedNodeTableView）兜底纠偏。
+// 交互层曾按「屏高−底栏」布局时，首个 cell 的槽位会矮 83pt，之后所有 cell 累积偏移，
+// 而翻页吸附按整屏步进 → 翻页时会同时露出上一条尾巴和下一条头部。
+// 这里把高度≈屏高−底栏 的可见 cell 撑到整屏，并触发一次重排让表按新高度重算槽位。
+static BOOL dyyyFeedGridAligning = NO;
+
+%hook AWEFeedNodeTableView
+
+- (void)layoutSubviews {
+    %orig;
+
+    if (dyyyFeedGridAligning) {
+        return;
+    }
+    if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
+        return;
+    }
+
+    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+    if (screenH <= 1.0 || self.frame.size.height < screenH - 1.0) {
+        return;
+    }
+
+    dyyyFeedGridAligning = YES;
+
+    BOOL heightFixed = NO;
+    for (UITableViewCell *cell in self.visibleCells) {
+        CGRect f = cell.frame;
+        CGFloat diff = screenH - f.size.height;
+        if (diff > 1.0 && diff < 160.0) {
+            f.size.height = screenH;
+            cell.frame = f;
+            heightFixed = YES;
+        }
+    }
+
+    // 只重排一次，避免和翻页吸附互相打架
+    if (heightFixed) {
+        [self beginUpdates];
+        [self endUpdates];
+    }
+
+    dyyyFeedGridAligning = NO;
+}
+
 %end
 
 %hook AWEFeedTableViewCell
