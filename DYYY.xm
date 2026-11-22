@@ -5762,30 +5762,14 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
     }
 
-    // 父容器本身已经是整屏（全屏模式已把底栏移走）时，不能再减一次底栏：
-    // 之前首页推荐/关注的 referString 不在白名单里，一路走 else 分支拿到 844-83=761，
-    // 于是 cell 是 844 而交互层（右侧按钮/文案/贴纸/弹幕）只有 761，整体偏高 83pt。
-    if (!useFullHeight && superviewHeight >= [UIScreen mainScreen].bounds.size.height - 1.0) {
-        useFullHeight = YES;
-    }
-
     if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {
         frame.size.height = superviewHeight - gCurrentTabBarHeight;
     }
 
-    // 交互层与父容器等高，但内部容器（贴纸/弹幕）还是旧高度时一并撑开
     if (fabs(frame.size.height - self.view.frame.size.height) > 0.5) {
-        CGFloat oldHeight = self.view.frame.size.height;
         self.view.frame = frame;
-        for (UIView *sub in self.view.subviews) {
-            CGRect sf = sub.frame;
-            if (oldHeight > 1.0 && fabs(sf.size.height - oldHeight) < 1.0) {
-                sf.size.height = frame.size.height;
-                sub.frame = sf;
-            }
-        }
     }
 }
 
@@ -10159,55 +10143,6 @@ static Class tabBarButtonClass = nil;
         self.frame = frame;
     }
 }
-%end
-
-// 首页/关注 feed 表（AWEFeedNodeTableView）兜底纠偏。
-// 交互层曾按「屏高−底栏」布局时，首个 cell 的槽位会矮 83pt，之后所有 cell 累积偏移，
-// 而翻页吸附按整屏步进 → 翻页时会同时露出上一条尾巴和下一条头部。
-// 这里把高度≈屏高−底栏 的可见 cell 撑到整屏，并触发一次重排让表按新高度重算槽位。
-static BOOL dyyyFeedGridAligning = NO;
-
-%hook AWEFeedNodeTableView
-
-- (void)layoutSubviews {
-    %orig;
-
-    if (dyyyFeedGridAligning) {
-        return;
-    }
-    if (!DYYYGetBool(@"DYYYEnableFullScreen")) {
-        return;
-    }
-
-    CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-    // 宿主类只做前向声明，属性/实例方法一律走 UITableView 公开 API
-    UITableView *tv = (UITableView *)self;
-    if (screenH <= 1.0 || tv.frame.size.height < screenH - 1.0) {
-        return;
-    }
-
-    dyyyFeedGridAligning = YES;
-
-    BOOL heightFixed = NO;
-    for (UITableViewCell *cell in tv.visibleCells) {
-        CGRect f = cell.frame;
-        CGFloat diff = screenH - f.size.height;
-        if (diff > 1.0 && diff < 160.0) {
-            f.size.height = screenH;
-            cell.frame = f;
-            heightFixed = YES;
-        }
-    }
-
-    // 只重排一次，避免和翻页吸附互相打架
-    if (heightFixed) {
-        [tv beginUpdates];
-        [tv endUpdates];
-    }
-
-    dyyyFeedGridAligning = NO;
-}
-
 %end
 
 %hook AWEFeedTableViewCell
