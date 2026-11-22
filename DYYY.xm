@@ -10197,6 +10197,14 @@ static Class tabBarButtonClass = nil;
 %hook BSTTableViewDelegateOptProxy
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    // v2.4-32: only the home-feed table has the 761-vs-844 row-height drift this fixes.
+    // The same delegate also drives the short-drama / detail table; forcing all of its
+    // rows to the screen height broke the playlet auto-next transition (it cut to the
+    // next episode but the player stayed stuck until a manual pause/play).
+    Class feedTableClass = NSClassFromString(@"AWEFeedNodeTableView");
+    if (!feedTableClass || ![tableView isKindOfClass:feedTableClass]) {
+        return %orig;
+    }
     if (DYYYGetBool(@"DYYYEnableFullScreen") && tableView) {
         CGFloat tableH = tableView.frame.size.height;
         CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
