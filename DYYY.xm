@@ -6529,6 +6529,10 @@ static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
     [o appendFormat:@"# screen=%.1fx%.1f window=%.1fx%.1f safeTop=%.1f safeBottom=%.1f tabBar=%.1f/%.1f\n",
                     screenSize.width, screenSize.height, win.frame.size.width, win.frame.size.height,
                     safe.top, safe.bottom, gCurrentTabBarHeight, originalTabBarHeight];
+    [o appendFormat:@"# flags hideRelated=%@ hidePlaylet=%@ hideTemplatePlaylet=%@\n",
+                    DYYYGetBool(@"DYYYHideBottomRelated") ? @"ON" : @"OFF",
+                    DYYYGetBool(@"DYYYHidePlaylet") ? @"ON" : @"OFF",
+                    DYYYGetBool(@"DYYYHideTemplatePlaylet") ? @"ON" : @"OFF"];
 
     [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEAwemeDetailTableViewController", @[ @"fixedCellHeight" ])];
     [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEDetailFeedScrollDelegateContainer", @[ @"fixedCellHeight" ])];
@@ -12353,10 +12357,8 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
 }
 
 - (id)playletRelatedVideoInfoModel {
-	BOOL DYYYHideBottomRelated = DYYYGetBool(@"DYYYHideBottomRelated");
-	if (DYYYHideBottomRelated) {
-		return nil;
-	}
+	// 短剧的「下一集 / 看全集」续播数据走这里。「隐藏底部相关」只该屏蔽推荐视频，
+	// 不能把短剧的续播链一起切掉 —— 真机现象就是开启后自动跳下一集会停住。
 	return %orig;
 }
 
