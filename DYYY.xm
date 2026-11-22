@@ -6461,6 +6461,112 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
 
 %end
 
+// MARK: - v2.4-25 详情页布局诊断（随摇一摇导出）
+// 目的：一份导出就能判定「全屏错位」的归属 —— 是行高基准的 hook 没挂上（类/方法不存在），
+// 还是基准改了但视频层自己偏移。不改任何宿主行为，纯读。
+static NSString *DYYYDiagClassProbe(NSString *cls, NSArray *sels) {
+    Class c = NSClassFromString(cls);
+    if (!c)
+        return [NSString stringWithFormat:@"%@ = MISSING", cls];
+    NSMutableArray *hit = [NSMutableArray array];
+    for (NSString *s in sels) {
+        Method m = class_getInstanceMethod(c, NSSelectorFromString(s));
+        [hit addObject:[NSString stringWithFormat:@"%@:%@", s, m ? @"Y" : @"N"]];
+    }
+    return [NSString stringWithFormat:@"%@ = OK [%@]", cls, [hit componentsJoinedByString:@" "]];
+}
+
+static void DYYYDiagFindScrollViews(UIView *v, NSMutableArray *out, BOOL detailOnly, CGFloat minHeight) {
+    if (!v || out.count >= 4)
+        return;
+    if ([v isKindOfClass:[UIScrollView class]]) {
+        NSString *cn = NSStringFromClass([v class]);
+        BOOL nameHit = [cn rangeOfString:@"Detail" options:NSCaseInsensitiveSearch].location != NSNotFound;
+        if (detailOnly ? nameHit : (nameHit || v.frame.size.height >= minHeight))
+            [out addObject:v];
+    }
+    for (UIView *s in v.subviews)
+        DYYYDiagFindScrollViews(s, out, detailOnly, minHeight);
+}
+
+static void DYYYDiagCollectVideoLayers(UIView *v, UIView *root, NSMutableArray *out) {
+    if (!v || out.count >= 5)
+        return;
+    NSString *cn = NSStringFromClass([v class]);
+    BOOL looksVideo = ([cn rangeOfString:@"Metal"].location != NSNotFound ||
+                       [cn rangeOfString:@"PlayerView"].location != NSNotFound ||
+                       [cn rangeOfString:@"VideoPlayer"].location != NSNotFound);
+    if (looksVideo) {
+        CGRect r = [v convertRect:v.bounds toView:root];
+        [out addObject:[NSString stringWithFormat:@"%@ rel={%.1f,%.1f,%.1f,%.1f}",
+                                                  cn, r.origin.x, r.origin.y, r.size.width, r.size.height]];
+    }
+    for (UIView *s in v.subviews)
+        DYYYDiagCollectVideoLayers(s, root, out);
+}
+
+static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
+    NSMutableString *o = [NSMutableString string];
+    CGSize screenSize = [UIScreen mainScreen].bounds.size;
+    UIEdgeInsets safe = win.safeAreaInsets;
+    [o appendFormat:@"# dyyy=%@ fullScreen=%@\n", DYYY_VERSION,
+                    DYYYGetBool(@"DYYYEnableFullScreen") ? @"ON" : @"OFF"];
+    [o appendFormat:@"# screen=%.1fx%.1f window=%.1fx%.1f safeTop=%.1f safeBottom=%.1f tabBar=%.1f/%.1f\n",
+                    screenSize.width, screenSize.height, win.frame.size.width, win.frame.size.height,
+                    safe.top, safe.bottom, gCurrentTabBarHeight, originalTabBarHeight];
+
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEAwemeDetailTableViewController", @[ @"fixedCellHeight" ])];
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEDetailFeedScrollDelegateContainer", @[ @"fixedCellHeight" ])];
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEUserProfileAdDataLayer", @[ @"originalTableViewHeight" ])];
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWEUserProFileAdVideoDataController",
+                                                    @[ @"originalTableViewHeight", @"updateOriginalTableViewHeight:" ])];
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWELivePostWorkLiveCardLayoutController", @[ @"originalTableViewHeight" ])];
+    [o appendFormat:@"# %@\n", DYYYDiagClassProbe(@"AWELivePostWorkLiveCardLayoutDataLayer",
+                                                    @[ @"normalHeight", @"originalTableViewHeight" ])];
+
+    NSMutableArray *tables = [NSMutableArray array];
+    DYYYDiagFindScrollViews(win, tables, YES, 0);
+    if (tables.count == 0) {
+        // 兜底：极速版的详情表类名可能不含 "Detail"，改用「高度接近整屏」这个几何判据。
+        DYYYDiagFindScrollViews(win, tables, NO, screenSize.height * 0.5);
+    }
+    if (tables.count == 0) {
+        [o appendString:@"# no detail scroll view found\n"];
+        return o;
+    }
+    for (UIScrollView *sv in tables) {
+        [o appendFormat:@"# SV %@ frame={%.1f,%.1f,%.1f,%.1f} content={%.1f,%.1f} inset=(%.1f,%.1f) offset=%.1f delegate=%@\n",
+                        NSStringFromClass([sv class]),
+                        sv.frame.origin.x, sv.frame.origin.y, sv.frame.size.width, sv.frame.size.height,
+                        sv.contentSize.width, sv.contentSize.height,
+                        sv.contentInset.top, sv.contentInset.bottom, sv.contentOffset.y,
+                        sv.delegate ? NSStringFromClass([sv.delegate class]) : @"nil"];
+        NSArray *cells = nil;
+        if ([sv isKindOfClass:[UITableView class]])
+            cells = [(UITableView *)sv visibleCells];
+        else if ([sv isKindOfClass:[UICollectionView class]])
+            cells = [(UICollectionView *)sv visibleCells];
+        NSInteger n = 0;
+        UIView *firstCell = nil;
+        for (UIView *cell in cells) {
+            if (n >= 3)
+                break;
+            n++;
+            if (!firstCell)
+                firstCell = cell;
+            [o appendFormat:@"#   cell %@ frame={%.1f,%.1f,%.1f,%.1f}\n", NSStringFromClass([cell class]),
+                            cell.frame.origin.x, cell.frame.origin.y, cell.frame.size.width, cell.frame.size.height];
+        }
+        if (firstCell) {
+            NSMutableArray *vids = [NSMutableArray array];
+            DYYYDiagCollectVideoLayers(firstCell, firstCell, vids);
+            for (NSString *line in vids)
+                [o appendFormat:@"#   video %@\n", line];
+        }
+    }
+    return o;
+}
+
 %group DYYYSettingsGesture
 
 %hook UIWindow
@@ -6469,10 +6575,12 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     %orig;
     if (motion == UIEventSubtypeMotionShake && DYYYGetBool(@"DYYYShakeExportViewTree")) {
         UIWindow *win = [DYYYUtils getActiveWindow] ?: self;
+        NSString *diag = DYYYDetailLayoutDiag(win);
         NSString *tree = [DYYYUtils describeViewTree:win];
-        if (tree.length > 0) {
-            [UIPasteboard generalPasteboard].string = tree;
-            [DYYYUtils showToast:[NSString stringWithFormat:@"视图树已复制（%lu 字）", (unsigned long)tree.length]];
+        NSString *all = diag.length > 0 ? [diag stringByAppendingString:tree] : tree;
+        if (all.length > 0) {
+            [UIPasteboard generalPasteboard].string = all;
+            [DYYYUtils showToast:[NSString stringWithFormat:@"视图树已复制（%lu 字，含诊断头）", (unsigned long)all.length]];
         }
     }
 }
@@ -6707,9 +6815,15 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
     if (!DYYYGetBool(@"DYYYEnableFullScreen"))
         return orig;
     CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-    CGFloat diff = screenH - orig;
-    // 只在「比屏高小一个底栏量级」时接管；已是屏高、或异常值（0/负数/超大）一律原样放行。
-    return (orig > 1.0 && diff > 1.0 && diff < 160.0) ? screenH : orig;
+    if (screenH <= 1.0)
+        return orig;
+    // v2.4-25：判据从「diff < 160」改为「明显小于一屏」。
+    // 原上限 160 太窄 —— 极速版详情页表高 = 屏高 - 顶导航 - 底栏 - 安全区，
+    // 844 - 683 = 161 刚好被放行，等于整个修复静默失效（v2.4-24 真机仍错位的首要嫌疑）。
+    // 一整页的行高基准必然接近屏高，所以下限取 200 排除异常小值，上限取「小于屏高1pt」。
+    if (orig > 200.0 && orig < screenH - 1.0)
+        return screenH;
+    return orig;
 }
 
 @interface AWEDetailFeedScrollDelegateContainer : NSObject
