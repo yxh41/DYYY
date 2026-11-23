@@ -5762,6 +5762,21 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
         }
     }
 
+    // v2.4-34：本地 v2.4-30 把全屏 feed 行高撑到了屏高，父容器已经是整屏高；
+    // 这里若再减一次底栏就会少 83pt（真机导出实证 lay h=761 parentH=844，
+    // 表现为从主页返回推荐页时上下错位、自动跳一个视频后又自己对齐）。
+    // 上游 3.0.2 只处理了「父容器矮一个底栏」的另一侧，本地两条都补上，二者互斥。
+    CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+    if (!useFullHeight && gCurrentTabBarHeight > 0 && screenHeight > 1.0) {
+        if (superviewHeight >= screenHeight - 1.0) {
+            // 父容器已被撑到整屏高：交互层直接用父高，不再减底栏
+            useFullHeight = YES;
+        } else if (screenHeight - superviewHeight >= gCurrentTabBarHeight - 1.0) {
+            // 上游 3.0.2 护栏：父容器本身已比屏高矮一个底栏（底栏在容器外），再减会文案悬空
+            useFullHeight = YES;
+        }
+    }
+
     if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {
@@ -6277,6 +6292,59 @@ static BOOL dyyyShouldUseLastStickerURL = NO;
     %orig(frame);
 }
 
+%end
+%end
+
+// v2.4-34：移植上游 3.0.2 漏项——评论区毛玻璃开启时清掉 label 的实色底/黑底。
+// 注意与上面的 DYYYCommentExactTimeGroup 是同一个 Swift 类（占位名不同）： ExactTime 用
+// AWECommentSwiftBizUI_CommentInteractionBaseLabel，这里用动态绑定的占位名，二者互不冲突。
+%group DYYYCommentBlurLabelGroup
+%hook DYYYCommentInteractionBaseLabel
+- (void)layoutSubviews {
+    %orig;
+    if (DYYYGetBool(@"DYYYEnableCommentBlur")) {
+        UIView *v = (UIView *)self;
+        UIColor *bg = v.backgroundColor;
+        if (bg && CGColorGetAlpha(bg.CGColor) > 0.01) v.backgroundColor = [UIColor clearColor];
+        if (v.opaque || v.layer.opaque) {
+            v.opaque = NO;
+            v.layer.opaque = NO;
+            [v setNeedsDisplay];
+        }
+    }
+}
+- (void)setBackgroundColor:(UIColor *)color {
+    %orig(color);
+    if (DYYYGetBool(@"DYYYEnableCommentBlur") && color && CGColorGetAlpha(color.CGColor) > 0.01) {
+        %orig([UIColor clearColor]);
+        ((UIView *)self).opaque = NO;
+    }
+}
+- (void)setOpaque:(BOOL)opaque {
+    %orig(DYYYGetBool(@"DYYYEnableCommentBlur") ? NO : opaque);
+}
+%end
+
+// 「展开X条回复」footer 按钮的 UIButtonLabel 有黑底，清掉
+%hook DYYYCommentBaseFooterView
+- (void)layoutSubviews {
+    %orig;
+    if (DYYYGetBool(@"DYYYEnableCommentBlur")) {
+        for (UIView *sub in ((UIView *)self).subviews) {
+            if ([sub isKindOfClass:[UIButton class]]) {
+                UILabel *tl = ((UIButton *)sub).titleLabel;
+                tl.backgroundColor = [UIColor clearColor];
+                tl.layer.backgroundColor = [UIColor clearColor].CGColor;
+            }
+            CGColorRef lbg = sub.layer.backgroundColor;
+            if ((sub.backgroundColor && CGColorGetAlpha(sub.backgroundColor.CGColor) >= 0.99) ||
+                (lbg && CGColorGetAlpha(lbg) >= 0.99)) {
+                sub.backgroundColor = [UIColor clearColor];
+                sub.layer.backgroundColor = [UIColor clearColor].CGColor;
+            }
+        }
+    }
+}
 %end
 %end
 
@@ -14374,7 +14442,14 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
     if (interactionBaseLabelClass) {
         %init(DYYYCommentExactTimeGroup, AWECommentSwiftBizUI_CommentInteractionBaseLabel = interactionBaseLabelClass);
     }
-    
+
+    // v2.4-34：上游 3.0.2 评论黑底组。合并进本文件唯一的 %ctor（上游用独立 %ctor 会冲突）。
+    Class blurLabelClass = objc_getClass("AWECommentSwiftBizUI.CommentInteractionBaseLabel");
+    Class footerClass = objc_getClass("AWECommentPanelListSwiftImpl.CommentBaseFooterView");
+    if (blurLabelClass || footerClass) {
+        %init(DYYYCommentBlurLabelGroup, DYYYCommentInteractionBaseLabel = blurLabelClass, DYYYCommentBaseFooterView = footerClass);
+    }
+
     Class imMenuComponentClass = objc_getClass("AWEIMCustomMenuComponent");
     if (imMenuComponentClass) {
         SEL legacySelector = NSSelectorFromString(@"msg_showMenuForBubbleFrameInScreen:tapLocationInScreen:menuItemList:moreEmoticon:onCell:extra:");
