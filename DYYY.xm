@@ -219,6 +219,54 @@ static BOOL DYYYShouldHandleSpeedFeatures(void) {
     return fabsf(defaultSpeed - 1.0f) > FLT_EPSILON;
 }
 
+// 短剧「看全集」页有宿主自带的自动切集 + 倍速引擎（AWEPlayletInnerBottomSpeedButtonView）。
+// DYYY 的倍速链在 setIsAutoPlay: / prepareForDisplay 里异步写 setVideoControllerPlaybackRate:，
+// 和短剧引擎抢同一个播放器，真机表现就是「自动跳到下一集后画面卡住、点暂停再播放才恢复」——
+// 典型 rate 被写成异常值。短剧场景直接跳过倍速干预，避免竞争。
+// 只读：target 自己（或它的 model）的 referString 是否标记为短剧
+static BOOL DYYYLooksPlayletByModel(id target) {
+    if (!target) return NO;
+    SEL rs = NSSelectorFromString(@"referString");
+    id ref = nil;
+    if ([target respondsToSelector:rs]) {
+        ref = ((id (*)(id, SEL))objc_msgSend)(target, rs);
+    }
+    if (![ref isKindOfClass:[NSString class]]) {
+        SEL ms = NSSelectorFromString(@"model");
+        id model = [target respondsToSelector:ms] ? ((id (*)(id, SEL))objc_msgSend)(target, ms) : nil;
+        if (model && [model respondsToSelector:rs]) {
+            ref = ((id (*)(id, SEL))objc_msgSend)(model, rs);
+        }
+    }
+    if (![ref isKindOfClass:[NSString class]]) return NO;
+    return [ref rangeOfString:@"playlet" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+// 只读：短剧场景判定。
+// 1) 先看自己的 referString / model.referString（评价页、cellVC 上都准）；
+// 2) 短剧页的播放器（AWEDPlayerViewController_Merge / AWEPlayVideoViewController）本身没有 referString，
+//    所以再沿 responder 链向上找类名带 Playlet 的控制器（AWEDiscoverDPlayletTableViewController）。
+// 纯读，零 KVC，零状态修改。
+static BOOL DYYYTargetLooksPlaylet(id target) {
+    if (!target) return NO;
+    if (DYYYLooksPlayletByModel(target)) return YES;
+    UIResponder *cur = nil;
+    if ([target isKindOfClass:[UIResponder class]]) {
+        cur = (UIResponder *)target;
+    } else if ([target isKindOfClass:[UIView class]]) {
+        cur = ((UIView *)target).superview;
+    }
+    NSInteger hops = 0;
+    while (cur && hops++ < 30) {
+        NSString *cls = NSStringFromClass([cur class]);
+        if ([cls rangeOfString:@"Playlet" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
+        cur = [cur nextResponder];
+    }
+    return NO;
+}
+
 @interface AWEFeedProgressSlider (DYYYProgressLabel)
 - (NSString *)dyyy_formatTimeFromSeconds:(CGFloat)seconds;
 - (CGFloat)dyyy_modelDurationInSeconds;
@@ -7769,14 +7817,17 @@ static Class tabBarButtonClass = nil;
 
     for (UIViewController *vc in viewControllers) {
         if ([vc isKindOfClass:%c(AWEAwemePlayVideoViewController)]) {
+            DYYYTracePlaybackIntervention("floatButtonSpeed", vc, newSpeed, NO);
             [(AWEAwemePlayVideoViewController *)vc setVideoControllerPlaybackRate:newSpeed];
             speedApplied = YES;
         }
         if ([vc isKindOfClass:%c(AWEDPlayerFeedPlayerViewController)]) {
+            DYYYTracePlaybackIntervention("floatButtonSpeed", vc, newSpeed, NO);
             [(AWEDPlayerFeedPlayerViewController *)vc setVideoControllerPlaybackRate:newSpeed];
             speedApplied = YES;
         }
         if ([vc isKindOfClass:objc_getClass("AWEDPlayerViewController_Merge")]) {
+            DYYYTracePlaybackIntervention("floatButtonSpeed", vc, newSpeed, NO);
             [(AWEAwemePlayVideoViewController *)vc setVideoControllerPlaybackRate:newSpeed];
             speedApplied = YES;
         }
@@ -7811,7 +7862,12 @@ static Class tabBarButtonClass = nil;
 
 - (void)setIsAutoPlay:(BOOL)arg0 {
     %orig(arg0);
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    // 短剧「看全集」页有宿主自带的切集 + 倍速引擎，DYYY 不再介入播放器，避免和宿主抢 rate。
+    // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -7819,6 +7875,7 @@ static Class tabBarButtonClass = nil;
           float defaultSpeed = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYDefaultSpeed"];
           if (defaultSpeed > 0 && defaultSpeed != 1) {
               dispatch_async(dispatch_get_main_queue(), ^{
+                DYYYTracePlaybackIntervention("writeDefaultSpeed", self, defaultSpeed, NO);
                 [self setVideoControllerPlaybackRate:defaultSpeed];
               });
           }
@@ -7834,7 +7891,10 @@ static Class tabBarButtonClass = nil;
 
 - (void)prepareForDisplay {
     %orig;
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("prepareForDisplay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
 
@@ -7851,6 +7911,7 @@ static Class tabBarButtonClass = nil;
 
 %new
 - (void)adjustPlaybackSpeed:(float)speed {
+    DYYYTracePlaybackIntervention("adjustPlaybackSpeed", self, speed, NO);
     [self setVideoControllerPlaybackRate:speed];
 }
 
@@ -7879,7 +7940,12 @@ static Class tabBarButtonClass = nil;
 
 - (void)setIsAutoPlay:(BOOL)arg0 {
     %orig(arg0);
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    // 短剧「看全集」页有宿主自带的切集 + 倍速引擎，DYYY 不再介入播放器，避免和宿主抢 rate。
+    // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -7887,6 +7953,7 @@ static Class tabBarButtonClass = nil;
           float defaultSpeed = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYDefaultSpeed"];
           if (defaultSpeed > 0 && defaultSpeed != 1) {
               dispatch_async(dispatch_get_main_queue(), ^{
+                DYYYTracePlaybackIntervention("writeDefaultSpeed", self, defaultSpeed, NO);
                 [self setVideoControllerPlaybackRate:defaultSpeed];
               });
           }
@@ -7902,7 +7969,10 @@ static Class tabBarButtonClass = nil;
 
 - (void)prepareForDisplay {
     %orig;
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("prepareForDisplay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
     BOOL autoRestoreSpeed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYAutoRestoreSpeed"];
@@ -7918,6 +7988,7 @@ static Class tabBarButtonClass = nil;
 
 %new
 - (void)adjustPlaybackSpeed:(float)speed {
+    DYYYTracePlaybackIntervention("adjustPlaybackSpeed", self, speed, NO);
     [self setVideoControllerPlaybackRate:speed];
 }
 
@@ -7946,7 +8017,12 @@ static Class tabBarButtonClass = nil;
 
 - (void)setIsAutoPlay:(BOOL)arg0 {
     %orig(arg0);
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    // 短剧「看全集」页有宿主自带的切集 + 倍速引擎，DYYY 不再介入播放器，避免和宿主抢 rate。
+    // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -7954,6 +8030,7 @@ static Class tabBarButtonClass = nil;
           float defaultSpeed = [[NSUserDefaults standardUserDefaults] floatForKey:@"DYYYDefaultSpeed"];
           if (defaultSpeed > 0 && defaultSpeed != 1) {
               dispatch_async(dispatch_get_main_queue(), ^{
+                DYYYTracePlaybackIntervention("writeDefaultSpeed", self, defaultSpeed, NO);
                 [self setVideoControllerPlaybackRate:defaultSpeed];
               });
           }
@@ -7969,7 +8046,10 @@ static Class tabBarButtonClass = nil;
 
 - (void)prepareForDisplay {
     %orig;
-    if (!DYYYShouldHandleSpeedFeatures()) {
+    BOOL playlet = DYYYTargetLooksPlaylet(self);
+    BOOL handle = DYYYShouldHandleSpeedFeatures();
+    DYYYTracePlaybackIntervention("prepareForDisplay", self, getCurrentSpeed(), (playlet || !handle));
+    if (playlet || !handle) {
         return;
     }
     BOOL autoRestoreSpeed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYAutoRestoreSpeed"];
@@ -7985,6 +8065,7 @@ static Class tabBarButtonClass = nil;
 
 %new
 - (void)adjustPlaybackSpeed:(float)speed {
+    DYYYTracePlaybackIntervention("adjustPlaybackSpeed", self, speed, NO);
     [self setVideoControllerPlaybackRate:speed];
 }
 

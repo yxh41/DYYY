@@ -956,6 +956,26 @@ static void DYYYAppendVCProbe(UIViewController *vc, NSMutableString *out, NSInte
         DYYYAppendProbeLine(out, depth, l);
         return;
     }
+    // 播放器层：短剧卡住时这里能看出「UI 认为在播、播放器实际是什么状态」——
+    // isPlaying=NO / isPaused=YES / playbackRate=0 都直接指向 rate 被写成 0 或被人 pause 了。
+    if ([cls containsString:@"Player"] || [cls containsString:@"PlayVideoViewController"]) {
+        NSString *shortCls = cls;
+        NSRange dot = [shortCls rangeOfString:@"." options:NSBackwardsSearch];
+        if (dot.location != NSNotFound && dot.location + 1 < shortCls.length)
+            shortCls = [shortCls substringFromIndex:dot.location + 1];
+        NSMutableString *pl = [NSMutableString stringWithFormat:@"playerVC %@:", shortCls];
+        for (NSString *k in @[@"referString", @"isPlaying", @"isPaused", @"playbackState", @"playbackRate",
+                              @"speed", @"currentIndex", @"episodeIndex", @"currentTime", @"duration"]) {
+            [pl appendFormat:@" %@=%@", k, DYYYProbe(vc, k)];
+        }
+        DYYYAppendProbeLine(out, depth, pl);
+        for (NSString *k in @[@"videoController", @"videoView", @"playerController"]) {
+            NSString *v = DYYYProbe(vc, k);
+            if (![v isEqualToString:@"-"])
+                DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"playerVC.%@=%@", k, v]);
+        }
+        return;
+    }
     if (![cls containsString:@"DetailTableViewController"]) return;
     NSMutableString *line = [NSMutableString stringWithFormat:@"vc %@:", cls];
     for (NSString *k in @[@"referString", @"fixedCellHeight", @"cellHeight", @"canShowFixedBottomBar", @"getCanShowFixedBottomBar",
@@ -1038,12 +1058,65 @@ static void DYYYAppendViewTree(UIView *view, NSMutableString *out, NSInteger dep
     } @catch (NSException *e) {
         DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"probe exception: %@", e.reason]);
     }
+    // 播放内核视图（TTVideoEngine 的 TTPlayerView）：卡住时引擎侧的播放状态在这里
+    NSString *viewCls = NSStringFromClass([view class]);
+    if ([viewCls containsString:@"TTPlayer"]) {
+        NSMutableString *pl = [NSMutableString stringWithFormat:@"view.player %@:", viewCls];
+        for (NSString *k in @[@"isPlaying", @"playbackRate", @"playerViewState", @"isPaused"]) {
+            [pl appendFormat:@" %@=%@", k, DYYYProbe(view, k)];
+        }
+        DYYYAppendProbeLine(out, depth + 1, pl);
+    }
     for (UIView *sub in view.subviews)
         DYYYAppendViewTree(sub, out, depth + 1);
 }
 
+// ---- 短剧「看全集」自动跳下一集后卡住：DYYY 播放介入时间线（只记录，不改状态）----
+// 真机症状：自动跳到下一集后画面停住、UI 仍显示在播（暂停图标 alpha=0），点暂停再播放即恢复，
+// 典型是 rate/pause 竞态。这里只记录 DYYY 自己每一个「动播放器」的动作：写了什么倍速、有没有被跳过。
+// 卡住时摇一摇导出 → 头部 dyyytrace 就能判定到底是 DYYY 写 rate 引起的，还是宿主切集链自己的问题。
+static const NSUInteger kDYYYPlaybackTraceCapacity = 36;
+static NSMutableArray<NSString *> *dyyyPlaybackTrace = nil;
+static CFTimeInterval dyyyPlaybackTraceT0 = 0.0;
+
+void DYYYTracePlaybackIntervention(const char *tag, id target, CGFloat value, BOOL skipped) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      dyyyPlaybackTrace = [NSMutableArray array];
+      dyyyPlaybackTraceT0 = CACurrentMediaTime();
+    });
+    NSString *cls = target ? NSStringFromClass([target class]) : @"nil";
+    NSString *tagStr = tag ? [NSString stringWithUTF8String:tag] : @"?";
+    NSString *entry = [NSString stringWithFormat:@"%7.3f %@%@ %@ v=%.2f",
+                                                 CACurrentMediaTime() - dyyyPlaybackTraceT0,
+                                                 tagStr,
+                                                 skipped ? @"(skip)" : @"",
+                                                 cls,
+                                                 (double)value];
+    @synchronized(dyyyPlaybackTrace) {
+        [dyyyPlaybackTrace addObject:entry];
+        while (dyyyPlaybackTrace.count > kDYYYPlaybackTraceCapacity) {
+            [dyyyPlaybackTrace removeObjectAtIndex:0];
+        }
+    }
+}
+
+NSString *DYYYPlaybackTraceSummary(void) {
+    NSArray *snapshot = nil;
+    if (!dyyyPlaybackTrace)
+        return @"-";
+    @synchronized(dyyyPlaybackTrace) {
+        snapshot = [dyyyPlaybackTrace copy];
+    }
+    if (snapshot.count == 0)
+        return @"-";
+    return [snapshot componentsJoinedByString:@" ; "];
+}
+
 + (NSString *)describeViewTree:(UIView *)root {
     NSMutableString *out = [NSMutableString string];
+    // 先把 DYYY 自己的播放介入时间线放最前面，方便卡住时直接看「最后一次介入」
+    [out appendFormat:@"# dyyytrace %@\n", DYYYPlaybackTraceSummary()];
     DYYYAppendViewTree(root, out, 0);
     return out;
 }

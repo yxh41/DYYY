@@ -308,6 +308,21 @@ void applyTopBarTransparency(UIView *_Nullable topBar);
  */
 id DYYYJSONSafeObject(id _Nullable obj);
 
+/**
+ * @brief 记录一次 DYYY 对播放器的介入（短剧「看全集」自动切集后卡住的诊断，环形缓冲、只读、不改状态）。
+ *        卡住时摇一摇导出，头部会带上这条时间线，用来判断「DYYY 最后一次动播放器是什么、有没有被跳过」。
+ * @param tag     介入点名称，例如 "setIsAutoPlay" / "prepareForDisplay" / "adjustPlaybackSpeed"
+ * @param target  介入对象，只用于打印类名
+ * @param value   本次会写入的倍速（或该介入点的关键数值）
+ * @param skipped 是否因为短剧场景 / 功能未开启而跳过
+ */
+void DYYYTracePlaybackIntervention(const char *_Nullable tag, id _Nullable target, CGFloat value, BOOL skipped);
+
+/**
+ * @brief 导出介入时间线摘要；无记录时返回 "-"
+ */
+NSString *DYYYPlaybackTraceSummary(void);
+
 #ifdef __cplusplus
 }
 #endif
