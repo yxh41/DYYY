@@ -7752,6 +7752,16 @@ static Class tabBarButtonClass = nil;
         useFullHeight = YES;
     }
 
+    // v2.4-34 护栏（移植到 3.0.2 基准）：全屏 feed 的设计行高被撑到屏高后，父容器就是整屏高，
+    // 若这里再减一个底栏会得到 761 —— 真机导出实证 cell=844 / 交互层=761，表现为推荐页
+    // 点赞评论那一层整体偏上、上下错位（跳一个视频重新布局后又自己对齐）。
+    // 父容器已经是整屏高时直接用父高，与上面那条互斥（一条管"父容器矮一底栏"，一条管"父容器已满屏"）。
+    CGFloat dyyyFullScreenH = [UIScreen mainScreen].bounds.size.height;
+    if (!useFullHeight && gCurrentTabBarHeight > 0 && dyyyFullScreenH > 1.0 &&
+        superviewHeight >= dyyyFullScreenH - 1.0) {
+        useFullHeight = YES;
+    }
+
     if (useFullHeight) {
         frame.size.height = superviewHeight;
     } else {

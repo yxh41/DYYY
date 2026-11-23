@@ -2013,13 +2013,15 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
           @{@"identifier" : @"DYYYWorkDataAPIToken",
             @"title" : @"作品数据 API Token",
             @"subTitle" : @"可选。填入 tikhub token 后可额外获取播放量、下载量等隐藏数据",
-            @"detail" : @"",
+            @"detail" : @"粘贴 tikhub token，留空只用基础数据",
             @"cellType" : @20,
             @"imageName" : @"ic_key_outlined_20"}
       ];
 
+      // 注意：这里必须带 cellTapHandlers，否则 cellType 20（文本输入型）不会挂上
+      // cellTappedBlock —— 表现就是「点了没反应、没法填 token」。其它分组一直是两参版本。
       for (NSDictionary *dict in longPressSettings) {
-          AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict];
+          AWESettingItemModel *item = [DYYYSettingsHelper createSettingItem:dict cellTapHandlers:cellTapHandlers];
           [longPressItems addObject:item];
       }
 
