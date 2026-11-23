@@ -3401,7 +3401,11 @@ static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
     // 深拷贝失败（私有视图不支持 NSCoding 时静默失败）→ 自绘行保底
     UIView *clone = DYYYDeepCopyView(lastRow);
     BOOL useClone = (clone != nil);
-    if (useClone) {
+    if (!useClone) {
+        // 诊断：私有视图不支持 NSCoding 会走到自绘行保底，报出行类名便于下一版精准适配
+        [DYYYUtils showToast:[NSString stringWithFormat:@"主页插眼：%@ 深拷贝失败，改用自绘行",
+                              NSStringFromClass([lastRow class])]];
+    } else {
         DYYYNeutralizeClonedRow(clone);
         DYYYSetRowTexts(clone, @"🌺 插眼主页");
         DYYYStripCloneIcons(clone);
@@ -3515,7 +3519,11 @@ static void DYYYScanUserSheet(UIWindow *window) {
             lastRow = row;
         }
     }
-    if (!lastRow) return;
+    if (!lastRow) {
+        // 诊断：容器认得出但行认不出时报容器类名，便于下一版精准处理
+        [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@", NSStringFromClass([container class])]];
+        return;
+    }
     DYYYInjectHomeWardRow(container, lastRow);
 }
 
