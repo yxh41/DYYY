@@ -323,6 +323,23 @@ void DYYYTracePlaybackIntervention(const char *_Nullable tag, id _Nullable targe
  */
 NSString *DYYYPlaybackTraceSummary(void);
 
+/**
+ * @brief 带节流的 BOOL 记录（同一个 tag 在 minInterval 秒内只记一次）。
+ *        用于「可能被高频调用」的查询类埋点，避免刷爆时间线缓冲、也避免拖慢滚动。
+ */
+void DYYYTraceThrottledBOOL(const char *_Nullable tag, id _Nullable target, BOOL value, NSTimeInterval minInterval);
+
+/**
+ * @brief 短剧页「DYYY 主动放过」计数（诊断用，只加不减）。
+ *        slot: 0=表格 setFrame: / 1=表格 layoutSubviews / 2=详情行高 / 3=播放器 contentView
+ */
+void DYYYNotePlayletSkip(int slot);
+
+/**
+ * @brief 导出短剧页放过计数摘要，形如 "tableSetFrame=12 tableLayout=34"
+ */
+NSString *DYYYPlayletSkipSummary(void);
+
 #ifdef __cplusplus
 }
 #endif

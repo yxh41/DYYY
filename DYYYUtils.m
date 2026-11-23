@@ -894,8 +894,17 @@ static NSString *DYYYProbe(id obj, NSString *selName) {
     }
 }
 
-static NSString *DYYYProbeIndex(id obj, NSString *selName, NSInteger idx) {
+// 取「对象型 getter」的返回值：只有当返回类型确实是对象、且无参时才调用，零 KVC。
+// 用来顺着 playerController / videoController 继续往下探真实的播放引擎。
+static id DYYYProbeObject(id obj, NSString *selName) {
     SEL sel = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:sel]) return nil;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
+static NSString *DYYYProbeIndex(id obj, NSString *selName, NSInteger idx) {    SEL sel = NSSelectorFromString(selName);
     if (!obj || ![obj respondsToSelector:sel]) return @"-";
     NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
     if (!sig || sig.numberOfArguments != 3 || sig.methodReturnType[0] != 'd') return @"?";
@@ -969,10 +978,18 @@ static void DYYYAppendVCProbe(UIViewController *vc, NSMutableString *out, NSInte
             [pl appendFormat:@" %@=%@", k, DYYYProbe(vc, k)];
         }
         DYYYAppendProbeLine(out, depth, pl);
-        for (NSString *k in @[@"videoController", @"videoView", @"playerController"]) {
-            NSString *v = DYYYProbe(vc, k);
-            if (![v isEqualToString:@"-"])
-                DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"playerVC.%@=%@", k, v]);
+        // 顺着 videoController / playerController 继续探真实播放引擎（ALMVideoPlayerWrapper），
+        // 「宿主说在播、引擎其实停着」这种状态差异只有在这一层才看得见。
+        for (NSString *k in @[@"videoController", @"playerController"]) {
+            id sub = DYYYProbeObject(vc, k);
+            if (!sub)
+                continue;
+            NSMutableString *sl = [NSMutableString stringWithFormat:@"engine %@=%@:", k, NSStringFromClass([sub class])];
+            for (NSString *sk in @[@"isPlaying", @"isPaused", @"playbackRate", @"rate", @"currentTime",
+                                   @"duration", @"status", @"state", @"playbackState"]) {
+                [sl appendFormat:@" %@=%@", sk, DYYYProbe(sub, sk)];
+            }
+            DYYYAppendProbeLine(out, depth, sl);
         }
         return;
     }
@@ -1101,6 +1118,27 @@ void DYYYTracePlaybackIntervention(const char *tag, id target, CGFloat value, BO
     }
 }
 
+// 带节流的 BOOL 记录：查询类埋点（isAutoPlayOpen 之类）可能被高频调用，
+// 同 tag 在 minInterval 秒内只记一条，既不刷爆缓冲也不拖慢滚动。
+void DYYYTraceThrottledBOOL(const char *tag, id target, BOOL value, NSTimeInterval minInterval) {
+    static NSMutableDictionary<NSString *, NSNumber *> *dyyyTraceLastMap = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      dyyyTraceLastMap = [NSMutableDictionary dictionary];
+    });
+    NSString *key = tag ? [NSString stringWithUTF8String:tag] : @"?";
+    CFTimeInterval now = CACurrentMediaTime();
+    @synchronized(dyyyTraceLastMap) {
+        NSNumber *last = dyyyTraceLastMap[key];
+        if (last && now - last.doubleValue < minInterval)
+            return;
+        if (dyyyTraceLastMap.count > 64)
+            [dyyyTraceLastMap removeAllObjects];
+        dyyyTraceLastMap[key] = @(now);
+    }
+    DYYYTracePlaybackIntervention(tag, target, value ? 1.0 : 0.0, !value);
+}
+
 NSString *DYYYPlaybackTraceSummary(void) {
     NSArray *snapshot = nil;
     if (!dyyyPlaybackTrace)
@@ -1113,10 +1151,43 @@ NSString *DYYYPlaybackTraceSummary(void) {
     return [snapshot componentsJoinedByString:@" ; "];
 }
 
+// 短剧页「DYYY 主动放过」计数：用来确认守卫生效了（不是代码没跑到），也用来判断宿主在短剧页
+// 到底有没有被 DYYY 改过几何。只加不减，纯计数，无锁语义要求。
+static int dyyyPlayletSkipCounts[4] = {0, 0, 0, 0};
+static const char *dyyyPlayletSkipNames[4] = {"tableSetFrame", "tableLayout", "cellHeight", "playerContent"};
+
+void DYYYNotePlayletSkip(int slot) {
+    if (slot < 0 || slot > 3)
+        return;
+    __sync_fetch_and_add(&dyyyPlayletSkipCounts[slot], 1);
+}
+
+NSString *DYYYPlayletSkipSummary(void) {
+    NSMutableString *s = [NSMutableString string];
+    for (int i = 0; i < 4; i++) {
+        if (dyyyPlayletSkipCounts[i] <= 0)
+            continue;
+        if (s.length)
+            [s appendString:@" "];
+        [s appendFormat:@"%s=%d", dyyyPlayletSkipNames[i], dyyyPlayletSkipCounts[i]];
+    }
+    return s.length ? s : @"-";
+}
+
 + (NSString *)describeViewTree:(UIView *)root {
     NSMutableString *out = [NSMutableString string];
     // 先把 DYYY 自己的播放介入时间线放最前面，方便卡住时直接看「最后一次介入」
     [out appendFormat:@"# dyyytrace %@\n", DYYYPlaybackTraceSummary()];
+    [out appendFormat:@"# dyyyskip %@\n", DYYYPlayletSkipSummary()];
+    @try {
+        UIViewController *top = [DYYYUtils topView];
+        if (top) {
+            [out appendFormat:@"# dyyytop %@ referString=%@\n",
+                              NSStringFromClass([top class]), DYYYProbe(top, @"referString")];
+        }
+    } @catch (NSException *e) {
+        [out appendFormat:@"# dyyytop exception %@\n", e.reason];
+    }
     DYYYAppendViewTree(root, out, 0);
     return out;
 }

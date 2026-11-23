@@ -249,6 +249,12 @@ static BOOL DYYYLooksPlayletByModel(id target) {
 // 纯读，零 KVC，零状态修改。
 static BOOL DYYYTargetLooksPlaylet(id target) {
     if (!target) return NO;
+    // 自己就是短剧类（如 AWEDiscoverDPlayletTableViewController）时直接判定，
+    // 这类控制器没有 referString，也只能靠类名认。
+    NSString *ownCls = NSStringFromClass([target class]);
+    if (ownCls && [ownCls rangeOfString:@"Playlet" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return YES;
+    }
     if (DYYYLooksPlayletByModel(target)) return YES;
     UIResponder *cur = nil;
     if ([target isKindOfClass:[UIResponder class]]) {
@@ -2555,8 +2561,15 @@ static NSArray<NSString *> *dyyy_qualityRank = nil;
 // cellHeightAtIndex: / contentOffsetYForCellAtIndex: / indexForContentOffsetY: / 翻页吸附都读它）。
 // 原生表高是"屏高 - 底栏"(873)，DYYY 全屏会把表拉到屏高，但拉之前量过的行仍是 873，
 // 于是出现 873/956 混排 + 交互层再减一次底栏 = 少一截。这里让基准高度从一开始就是屏高。
-static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
+static CGFloat DYYYDetailFullCellHeight(id owner, CGFloat orig) {
     if (!DYYYGetBool(@"DYYYEnableFullScreen")) return orig;
+    // 短剧「看全集」页不做全屏几何改造：宿主按「屏高-底部面板」算翻页偏移和当前格，
+    // 把行高/表高改大后它的当前格计算会和真实布局对不上，自动跳下一集时挑错格、
+    // 新格只 prepare 不 play（真机表现：封面还盖着、isPlaying=NO、暂停图标却隐藏）。
+    if (owner && DYYYTargetLooksPlaylet(owner)) {
+        DYYYNotePlayletSkip(2);
+        return orig;
+    }
     CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
     CGFloat diff = screenH - orig;
     return (orig > 1.0 && diff > 1.0 && diff < 160.0) ? screenH : orig;
@@ -2565,7 +2578,7 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 // 接管架构下 tableView 的真实 delegate 链：AWEDetailFeedListContainer → UIContainer → 这个类
 %hook AWEDetailFeedScrollDelegateContainer
 - (CGFloat)fixedCellHeight {
-    return DYYYDetailFullCellHeight(%orig);
+    return DYYYDetailFullCellHeight(self, %orig);
 }
 %end
 
@@ -2573,27 +2586,27 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 // （进页面时记下的原生表高 873；-[AWEAwemeDetailTableViewController cellHeightAtIndex:] 的
 // others_homepage + adLiveStreamShowCount>=1 分支，翻页偏移也按它算）。同样提到屏高。
 %hook AWEUserProfileAdDataLayer
-- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(%orig); }
-- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(height)); }
+- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(self, %orig); }
+- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(self, height)); }
 %end
 
 %hook AWEUserProFileAdVideoDataController
-- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(%orig); }
-- (void)updateOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(height)); }
+- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(self, %orig); }
+- (void)updateOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(self, height)); }
 %end
 
 %hook AWELivePostWorkLiveCardLayoutController
-- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(%orig); }
-- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(height)); }
+- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(self, %orig); }
+- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(self, height)); }
 %end
 
 %hook AWELivePostWorkLiveCardLayoutDataLayer
 // 作者正在直播时，主页作品详情用这套"直播卡布局"算行高和翻页偏移：
 // normalHeight = normalTableViewHeightProvider() ?: originalTableViewHeight。
 // provider 是个 block（返回 屏高-底栏=873），所以只改 originalTableViewHeight 不生效，要改这里。
-- (CGFloat)normalHeight { return DYYYDetailFullCellHeight(%orig); }
-- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(%orig); }
-- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(height)); }
+- (CGFloat)normalHeight { return DYYYDetailFullCellHeight(self, %orig); }
+- (CGFloat)originalTableViewHeight { return DYYYDetailFullCellHeight(self, %orig); }
+- (void)setOriginalTableViewHeight:(CGFloat)height { %orig(DYYYDetailFullCellHeight(self, height)); }
 %end
 
 %hook AWEAwemeDetailTableViewController
@@ -2605,14 +2618,18 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 // 只删这一个方法，-fixedCellHeight 的详情页全屏行高修复保留。
 // feed / 个人主页的自动播放 hook 也保留（在下面其它类上）。
 - (CGFloat)fixedCellHeight {
-    return DYYYDetailFullCellHeight(%orig);
+    return DYYYDetailFullCellHeight(self, %orig);
 }
 
 %end
 
 %hook AWEAwemeDetailContainerPlayControlConfig
 
+// 诊断：短剧页是不是在问「个人主页作品自动播放」这个开关，宿主真实值是多少。
+// 只记录（0.5s 节流），返回值仍是原来的强制 YES，行为不变。
 - (BOOL)enableUserProfilePostAutoPlay {
+    BOOL r = %orig;
+    DYYYTraceThrottledBOOL("q.enableUPPostAutoPlay", self, r, 0.5);
     return YES;
 }
 
@@ -2621,6 +2638,8 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 %hook AWEFeedIPhoneAutoPlayManager
 
 - (BOOL)isAutoPlayOpen {
+    BOOL r = %orig;
+    DYYYTraceThrottledBOOL("q.isAutoPlayOpen", self, r, 0.5);
     return YES;
 }
 
@@ -2629,6 +2648,8 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 %hook AWEFeedModuleService
 
 - (BOOL)getFeedIphoneAutoPlayState {
+    BOOL r = %orig;
+    DYYYTraceThrottledBOOL("q.moduleFeedState", self, r, 0.5);
     return YES;
 }
 %end
@@ -2637,6 +2658,7 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 
 - (BOOL)getFeedIphoneAutoPlayState {
     BOOL r = %orig;
+    DYYYTraceThrottledBOOL("q.managerFeedState", self, r, 0.5);
     return YES;
 }
 %end
@@ -7866,7 +7888,7 @@ static Class tabBarButtonClass = nil;
     // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
     BOOL playlet = DYYYTargetLooksPlaylet(self);
     BOOL handle = DYYYShouldHandleSpeedFeatures();
-    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    DYYYTracePlaybackIntervention(arg0 ? "setIsAutoPlay:YES" : "setIsAutoPlay:NO", self, getCurrentSpeed(), (playlet || !handle));
     if (playlet || !handle) {
         return;
     }
@@ -7921,6 +7943,11 @@ static Class tabBarButtonClass = nil;
 
 - (void)viewDidLayoutSubviews {
     %orig;
+    // 短剧页不做全屏几何改造（见 DYYYDetailFullCellHeight 注释）
+    if (DYYYTargetLooksPlaylet(self)) {
+        DYYYNotePlayletSkip(3);
+        return;
+    }
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
@@ -7944,7 +7971,7 @@ static Class tabBarButtonClass = nil;
     // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
     BOOL playlet = DYYYTargetLooksPlaylet(self);
     BOOL handle = DYYYShouldHandleSpeedFeatures();
-    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    DYYYTracePlaybackIntervention(arg0 ? "setIsAutoPlay:YES" : "setIsAutoPlay:NO", self, getCurrentSpeed(), (playlet || !handle));
     if (playlet || !handle) {
         return;
     }
@@ -7998,6 +8025,11 @@ static Class tabBarButtonClass = nil;
 
 - (void)viewDidLayoutSubviews {
     %orig;
+    // 短剧页不做全屏几何改造（见 DYYYDetailFullCellHeight 注释）
+    if (DYYYTargetLooksPlaylet(self)) {
+        DYYYNotePlayletSkip(3);
+        return;
+    }
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
         UIView *contentView = self.contentView;
         if (contentView && contentView.superview) {
@@ -8021,7 +8053,7 @@ static Class tabBarButtonClass = nil;
     // 判定与动作都写进 dyyytrace，卡住时导出即可确认这条链有没有真的动过播放器。
     BOOL playlet = DYYYTargetLooksPlaylet(self);
     BOOL handle = DYYYShouldHandleSpeedFeatures();
-    DYYYTracePlaybackIntervention("setIsAutoPlay", self, getCurrentSpeed(), (playlet || !handle));
+    DYYYTracePlaybackIntervention(arg0 ? "setIsAutoPlay:YES" : "setIsAutoPlay:NO", self, getCurrentSpeed(), (playlet || !handle));
     if (playlet || !handle) {
         return;
     }
@@ -8939,7 +8971,16 @@ static Class TagViewClass = nil;
 
 // 个人主页作品详情：表被约束成"少一个底栏高度"（如 956→873）。
 // 在 setFrame: 里就直接拉满到父视图高度，避免先显示矮一帧再纠正导致切视频抖动。
+// 🔴 短剧「看全集」页必须放过：宿主自己按「屏高-底部面板(83)」算翻页偏移和"当前格"，
+// 这里把表强行拉到整屏高，会让宿主的当前格计算和真实表高对不上 —— 自动跳下一集时
+// 挑错当前格，新格只 prepare 不 play（真机表现：封面还盖着、isPlaying=NO、暂停图标却是隐藏的，
+// 点一次暂停再播放宿主重算当前格才恢复）。短剧页一律走 %orig 原始帧。
 - (void)setFrame:(CGRect)frame {
+    if (DYYYTargetLooksPlaylet(self)) {
+        DYYYNotePlayletSkip(0);
+        %orig(frame);
+        return;
+    }
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
         UIView *sv = self.superview;
         if (sv && sv.frame.size.height > frame.size.height + 0.5) {
@@ -8955,9 +8996,13 @@ static Class TagViewClass = nil;
     %orig(frame);
 }
 
-// 兜底：若布局后仍矮于父视图，再拉满一次。
+// 兜底：若布局后仍矮于父视图，再拉满一次。（短剧页同样放过，见上面注释）
 - (void)layoutSubviews {
     %orig;
+    if (DYYYTargetLooksPlaylet(self)) {
+        DYYYNotePlayletSkip(1);
+        return;
+    }
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
         UIView *sv = self.superview;
         if (sv && sv.frame.size.height > 0 && self.frame.size.height < sv.frame.size.height - 0.5) {
