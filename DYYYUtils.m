@@ -1,5 +1,4 @@
 #import "DYYYUtils.h"
-#import "DYYYPreferences.h"
 #import <AVFoundation/AVFoundation.h>
 #import <ImageIO/ImageIO.h>
 #import <MobileCoreServices/UTCoreTypes.h>
@@ -382,149 +381,11 @@ static BOOL DYYYUtilsWriteStaticImageToGIF(UIImage *image, NSURL *gifURL) {
 @interface DYYYUtils ()
 + (NSString *)fallbackLocationFromIPAttribution:(AWEAwemeModel *)model;
 + (NSString *)displayLocationForGeoNamesError:(NSError *)error model:(AWEAwemeModel *)model;
-+ (id)dyyy_safeValueForKey:(NSString *)key fromObject:(id)object;
-+ (BOOL)dyyy_objectContainsMeaningfulAdPayload:(id)object;
 @end
 
 @implementation DYYYUtils
 
 static const void *kCurrentIPRequestCityCodeKey = &kCurrentIPRequestCityCodeKey;
-
-#pragma mark - Public Model Filtering Utilities (公共模型过滤工具)
-
-+ (id)dyyy_safeValueForKey:(NSString *)key fromObject:(id)object {
-    if (!object || key.length == 0) {
-        return nil;
-    }
-
-    @try {
-        return [object valueForKey:key];
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
-
-+ (BOOL)dyyy_objectContainsMeaningfulAdPayload:(id)object {
-    if (!object || object == [NSNull null]) {
-        return NO;
-    }
-    if ([object isKindOfClass:[NSString class]]) {
-        NSString *value = [(NSString *)object stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        return value.length > 0 &&
-               ![value isEqualToString:@"{}"] &&
-               ![value isEqualToString:@"[]"] &&
-               ![value isEqualToString:@"null"];
-    }
-    if ([object isKindOfClass:[NSData class]]) {
-        return [(NSData *)object length] > 0;
-    }
-    if ([object isKindOfClass:[NSDictionary class]] || [object isKindOfClass:[NSArray class]]) {
-        return [object count] > 0;
-    }
-    if ([object isKindOfClass:[NSNumber class]]) {
-        return [(NSNumber *)object boolValue];
-    }
-    return NO;
-}
-
-+ (BOOL)isAdvertisementAwemeModel:(id)model {
-    Class awemeModelClass = NSClassFromString(@"AWEAwemeModel");
-    if (!model || !awemeModelClass || ![model isKindOfClass:awemeModelClass]) {
-        return NO;
-    }
-
-    // 仅信任抖音模型自身明确的广告布尔判定，避免把常驻的广告能力占位对象误当成广告。
-    for (NSString *selectorName in @[ @"checkIsAd", @"isHardAdModel", @"isHardAd", @"isAds" ]) {
-        SEL selector = NSSelectorFromString(selectorName);
-        if ([model respondsToSelector:selector]) {
-            BOOL (*sendBool)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
-            if (sendBool(model, selector)) {
-                return YES;
-            }
-        }
-    }
-
-    return NO;
-}
-
-+ (BOOL)isAdvertisementContainerModel:(id)model {
-    if ([self isAdvertisementAwemeModel:model]) {
-        return YES;
-    }
-
-    Class searchModelClass = NSClassFromString(@"AWEGeneralSearchModel");
-    if (!searchModelClass || ![model isKindOfClass:searchModelClass]) {
-        return NO;
-    }
-
-    // 搜索模型中的模块、卡片名和卡片类型在正常作品中也可能作为能力占位常驻，不能单独作为广告证据。
-    id dynamicPatch = [self dyyy_safeValueForKey:@"commonDynamicPatchModel" fromObject:model];
-    id isAdValue = [self dyyy_safeValueForKey:@"is_ad" fromObject:dynamicPatch];
-    if ([isAdValue respondsToSelector:@selector(boolValue)] && [isAdValue boolValue]) {
-        return YES;
-    }
-
-    for (NSString *selectorName in @[ @"aweme", @"awemeInVideoFeed" ]) {
-        SEL selector = NSSelectorFromString(selectorName);
-        if (![model respondsToSelector:selector]) {
-            continue;
-        }
-        id (*sendObject)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
-        if ([self isAdvertisementAwemeModel:sendObject(model, selector)]) {
-            return YES;
-        }
-    }
-
-    return NO;
-}
-
-+ (NSArray *)arrayByRemovingAdvertisements:(id)array {
-    if (![DYYYPreferences boolForKey:@"DYYYNoAds"] || ![array isKindOfClass:[NSArray class]]) {
-        return array;
-    }
-
-    NSArray *source = (NSArray *)array;
-    NSMutableArray *filtered = [NSMutableArray arrayWithCapacity:source.count];
-    for (id model in source) {
-        if (![self isAdvertisementContainerModel:model]) {
-            [filtered addObject:model];
-        }
-    }
-
-    if (filtered.count == source.count) {
-        return array;
-    }
-    return [array isKindOfClass:[NSMutableArray class]] ? filtered : [filtered copy];
-}
-
-+ (BOOL)isAdvertisementRawData:(id)rawData {
-    if (![rawData isKindOfClass:[NSDictionary class]]) {
-        return NO;
-    }
-
-    NSDictionary *dictionary = (NSDictionary *)rawData;
-    for (NSString *flagKey in @[ @"is_ads", @"is_ad" ]) {
-        id value = dictionary[flagKey];
-        if ([value respondsToSelector:@selector(boolValue)] && [value boolValue]) {
-            return YES;
-        }
-    }
-
-    // 仅检查名称本身就代表广告原始载荷的字段；普通作品也可能带有通用 ad_info 能力配置。
-    for (NSString *payloadKey in @[ @"aweme_raw_ad", @"raw_ad_data" ]) {
-        if ([self dyyy_objectContainsMeaningfulAdPayload:dictionary[payloadKey]]) {
-            return YES;
-        }
-    }
-
-    for (NSString *containerKey in @[ @"aweme", @"aweme_info", @"item", @"common_dynamic_patch_model" ]) {
-        if ([self isAdvertisementRawData:dictionary[containerKey]]) {
-            return YES;
-        }
-    }
-
-    return NO;
-}
 
 static NSString *DYYYJSONStringFromObject(id object) {
     if (!object) {
@@ -541,51 +402,6 @@ static NSString *DYYYJSONStringFromObject(id object) {
     }
 
     return [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-}
-
-static NSString *DYYYDisplayLocationFromGeoNamesInfo(NSDictionary *locationInfo) {
-    if (![locationInfo isKindOfClass:[NSDictionary class]]) {
-        return nil;
-    }
-
-    NSString *countryName = locationInfo[@"countryName"];
-    NSString *adminName1 = locationInfo[@"adminName1"];
-    NSString *localName = locationInfo[@"name"];
-
-    if (![countryName isKindOfClass:[NSString class]]) {
-        countryName = nil;
-    }
-    if (![adminName1 isKindOfClass:[NSString class]]) {
-        adminName1 = nil;
-    }
-    if (![localName isKindOfClass:[NSString class]]) {
-        localName = nil;
-    }
-
-    if (countryName.length > 0) {
-        if (adminName1.length > 0 && localName.length > 0 && ![countryName isEqualToString:localName]) {
-            if ([adminName1 isEqualToString:localName]) {
-                return [NSString stringWithFormat:@"%@ %@", countryName, localName];
-            }
-            return [NSString stringWithFormat:@"%@ %@ %@", countryName, adminName1, localName];
-        }
-        if (localName.length > 0 && ![countryName isEqualToString:localName]) {
-            return [NSString stringWithFormat:@"%@ %@", countryName, localName];
-        }
-        if (adminName1.length > 0 && ![countryName isEqualToString:adminName1]) {
-            return [NSString stringWithFormat:@"%@ %@", countryName, adminName1];
-        }
-        return countryName;
-    }
-
-    if (localName.length > 0) {
-        return localName;
-    }
-    if (adminName1.length > 0) {
-        return adminName1;
-    }
-
-    return nil;
 }
 
 static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLocation, NSString *colorHexString) {
@@ -665,7 +481,22 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
 
         // 3. 处理缓存数据或发起网络请求
         if (cachedData) {
-            NSString *displayLocation = DYYYDisplayLocationFromGeoNamesInfo(cachedData) ?: @"未知";
+            NSString *countryName = cachedData[@"countryName"];
+            NSString *adminName1 = cachedData[@"adminName1"];
+            NSString *localName = cachedData[@"name"];
+            NSString *displayLocation = @"未知";
+
+            if (countryName.length > 0) {
+                if (adminName1.length > 0 && localName.length > 0 && ![countryName isEqualToString:@"中国"] && ![countryName isEqualToString:localName]) {
+                    displayLocation = [NSString stringWithFormat:@"%@ %@ %@", countryName, adminName1, localName];
+                } else if (localName.length > 0 && ![countryName isEqualToString:localName]) {
+                    displayLocation = [NSString stringWithFormat:@"%@ %@", countryName, localName];
+                } else {
+                    displayLocation = countryName;
+                }
+            } else if (localName.length > 0) {
+                displayLocation = localName;
+            }
 
             if (displayLocation.length == 0 || [displayLocation isEqualToString:@"未知"]) {
                 NSString *fallbackLocation = [DYYYUtils fallbackLocationFromIPAttribution:model];
@@ -699,10 +530,21 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
                                         }
                                     } else if (locationInfo) {
                                         BOOL shouldCacheLocation = NO;
+                                        NSString *countryName = locationInfo[@"countryName"];
+                                        NSString *adminName1 = locationInfo[@"adminName1"];
+                                        NSString *localName = locationInfo[@"name"];
 
-                                        NSString *resolvedLocation = DYYYDisplayLocationFromGeoNamesInfo(locationInfo);
-                                        if (resolvedLocation.length > 0) {
-                                            displayLocation = resolvedLocation;
+                                        if (countryName.length > 0) {
+                                            if (adminName1.length > 0 && localName.length > 0 && ![countryName isEqualToString:@"中国"] && ![countryName isEqualToString:localName]) {
+                                                displayLocation = [NSString stringWithFormat:@"%@ %@ %@", countryName, adminName1, localName];
+                                            } else if (localName.length > 0 && ![countryName isEqualToString:localName]) {
+                                                displayLocation = [NSString stringWithFormat:@"%@ %@", countryName, localName];
+                                            } else {
+                                                displayLocation = countryName;
+                                            }
+                                            shouldCacheLocation = YES;
+                                        } else if (localName.length > 0) {
+                                            displayLocation = localName;
                                             shouldCacheLocation = YES;
                                         }
 
@@ -1029,8 +871,176 @@ static void DYYYApplyDisplayLocationToLabel(UILabel *label, NSString *displayLoc
     }
 }
 
-// 摇一摇导出视图树：复用本文件已有的 DYYYAppendViewTree（含类名/frame/text/a11y 等）
-static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger depth);
+// ---- 导出时的运行时探针（只读，不改任何状态）----
+static NSString *DYYYProbe(id obj, NSString *selName) {
+    SEL sel = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:sel]) return @"-";
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2) return @"?";
+    const char *rt = sig.methodReturnType;
+    switch (rt[0]) {
+        case 'd': return [NSString stringWithFormat:@"%.1f", ((double (*)(id, SEL))objc_msgSend)(obj, sel)];
+        case 'f': return [NSString stringWithFormat:@"%.1f", ((float (*)(id, SEL))objc_msgSend)(obj, sel)];
+        case 'B': case 'c': return ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel) ? @"YES" : @"NO";
+        case 'q': case 'Q': case 'i': case 'I': case 'l': case 'L':
+            return [NSString stringWithFormat:@"%ld", (long)((NSInteger (*)(id, SEL))objc_msgSend)(obj, sel)];
+        case '@': {
+            id r = ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+            if (!r) return @"nil";
+            if ([r isKindOfClass:[NSString class]]) return [NSString stringWithFormat:@"\"%@\"", r];
+            return NSStringFromClass([r class]);
+        }
+        default: return [NSString stringWithFormat:@"<%s>", rt];
+    }
+}
+
+static NSString *DYYYProbeIndex(id obj, NSString *selName, NSInteger idx) {
+    SEL sel = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:sel]) return @"-";
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 3 || sig.methodReturnType[0] != 'd') return @"?";
+    return [NSString stringWithFormat:@"%.1f", ((double (*)(id, SEL, NSInteger))objc_msgSend)(obj, sel, idx)];
+}
+
+static void DYYYAppendProbeLine(NSMutableString *out, NSInteger depth, NSString *line) {
+    for (NSInteger i = 0; i <= depth; i++) [out appendString:@"  "];
+    [out appendFormat:@"# %@\n", line];
+}
+
+static void DYYYAppendScrollProbe(UIView *view, NSMutableString *out, NSInteger depth) {
+    if (![view isKindOfClass:[UITableView class]]) return;
+    UITableView *tv = (UITableView *)view;
+    id delegate = tv.delegate;
+    DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"table bounds=%.0fx%.0f offset=%.1f contentH=%.1f inset=(%.0f,%.0f) adj=(%.0f,%.0f) paging=%d rowHeight=%.1f est=%.1f",
+        tv.bounds.size.width, tv.bounds.size.height, tv.contentOffset.y, tv.contentSize.height,
+        tv.contentInset.top, tv.contentInset.bottom, tv.adjustedContentInset.top, tv.adjustedContentInset.bottom,
+        tv.pagingEnabled, tv.rowHeight, tv.estimatedRowHeight]);
+    DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"delegate=%@ dataSource=%@",
+        delegate ? NSStringFromClass([delegate class]) : @"nil",
+        tv.dataSource ? NSStringFromClass([(id)tv.dataSource class]) : @"nil"]);
+    if ([delegate respondsToSelector:@selector(tableView:heightForRowAtIndexPath:)]) {
+        NSMutableString *hs = [NSMutableString string];
+        for (NSIndexPath *ip in [tv.indexPathsForVisibleRows subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)4, tv.indexPathsForVisibleRows.count))]) {
+            [hs appendFormat:@" row%ld=%.1f(rect %.1f)", (long)ip.row, [delegate tableView:tv heightForRowAtIndexPath:ip], [tv rectForRowAtIndexPath:ip].size.height];
+        }
+        DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"delegate heightForRow:%@", hs]);
+    } else {
+        DYYYAppendProbeLine(out, depth, @"delegate does NOT implement tableView:heightForRowAtIndexPath:");
+    }
+    for (NSString *k in @[@"fixedCellHeight", @"cellHeight", @"originalTableViewHeight"]) {
+        NSString *v = DYYYProbe(delegate, k);
+        if (![v isEqualToString:@"-"]) DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"delegate.%@=%@", k, v]);
+    }
+}
+
+static void DYYYAppendVCProbe(UIViewController *vc, NSMutableString *out, NSInteger depth) {
+    NSString *cls = NSStringFromClass([vc class]);
+    if ([cls containsString:@"DetailCellViewController"]) {
+        // 交互层（文案/右侧按钮）是首帧后延迟挂载的，这里只读几个状态位，看卡在哪一步
+        NSMutableString *l = [NSMutableString stringWithString:@"cellVC:"];
+        for (NSString *k in @[@"interactionController", @"shouldDelayAddInteraction", @"shouldForbidInitInteraction", @"innerInteractionDelay",
+                              @"shouldOptimizeInteractionDelayProcess", @"awe_isWaitingForDelayedInteractionInit", @"awe_isWaitingForDelayedInteractionUpdate",
+                              @"awe_defersInteractionUpdate", @"awe_hasDeferredInteractionUpdate", @"referString"]) {
+            [l appendFormat:@" %@=%@", k, DYYYProbe(vc, k)];
+        }
+        id model = nil; SEL ms = NSSelectorFromString(@"model");
+        if ([vc respondsToSelector:ms]) model = ((id (*)(id, SEL))objc_msgSend)(vc, ms);
+        [l appendFormat:@" | model=%@ awemeType=%@ isAds=%@", model ? NSStringFromClass([model class]) : @"nil", DYYYProbe(model, @"awemeType"), DYYYProbe(model, @"isAds")];
+        id ic = nil; SEL is = NSSelectorFromString(@"interactionController");
+        if ([vc respondsToSelector:is]) ic = ((id (*)(id, SEL))objc_msgSend)(vc, is);
+        if ([ic isKindOfClass:[UIViewController class]]) {
+            UIViewController *icvc = (UIViewController *)ic;
+            [l appendFormat:@" | interaction viewLoaded=%d superview=%@", icvc.isViewLoaded,
+                            icvc.isViewLoaded ? (icvc.view.superview ? NSStringFromClass([icvc.view.superview class]) : @"nil") : @"-"];
+        }
+        DYYYAppendProbeLine(out, depth, l);
+        return;
+    }
+    if (![cls containsString:@"DetailTableViewController"]) return;
+    NSMutableString *line = [NSMutableString stringWithFormat:@"vc %@:", cls];
+    for (NSString *k in @[@"referString", @"fixedCellHeight", @"cellHeight", @"canShowFixedBottomBar", @"getCanShowFixedBottomBar",
+                          @"currentIndex", @"detailFeedTakeoverUIContainer", @"rootContainer", @"liveCardLayoutController", @"bottomBarCoordinator"]) {
+        [line appendFormat:@" %@=%@", k, DYYYProbe(vc, k)];
+    }
+    DYYYAppendProbeLine(out, depth, line);
+    NSMutableString *l2 = [NSMutableString stringWithString:@"vc cellHeightAtIndex:"];
+    for (NSInteger i = 0; i < 4; i++) [l2 appendFormat:@" [%ld]=%@", (long)i, DYYYProbeIndex(vc, @"cellHeightAtIndex:", i)];
+    [l2 appendFormat:@" | smartSnap[1]=%@", DYYYProbeIndex(vc, @"smartSlidePageSnapCellHeightForIndex:", 1)];
+    DYYYAppendProbeLine(out, depth, l2);
+    id live = nil;
+    SEL ls = NSSelectorFromString(@"liveCardLayoutController");
+    if ([vc respondsToSelector:ls]) live = ((id (*)(id, SEL))objc_msgSend)(vc, ls);
+    if (live) DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"liveCardLayoutController %@ originalTableViewHeight=%@ normalHeight=%@",
+        NSStringFromClass([live class]), DYYYProbe(live, @"originalTableViewHeight"), DYYYProbe(live, @"normalHeight")]);
+    id ui = nil;
+    SEL us = NSSelectorFromString(@"detailFeedTakeoverUIContainer");
+    if ([vc respondsToSelector:us]) ui = ((id (*)(id, SEL))objc_msgSend)(vc, us);
+    if (ui) {
+        id sd = nil; SEL ss = NSSelectorFromString(@"scrollDelegate");
+        if ([ui respondsToSelector:ss]) sd = ((id (*)(id, SEL))objc_msgSend)(ui, ss);
+        DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"takeover ui=%@ fixedCellHeight=%@ cellHeightAtIndex[1]=%@ | scrollDelegate=%@ fixed=%@ variableHeightProviders=%@",
+            NSStringFromClass([ui class]), DYYYProbe(ui, @"fixedCellHeight"), DYYYProbeIndex(ui, @"cellHeightAtIndex:", 1),
+            sd ? NSStringFromClass([sd class]) : @"nil", DYYYProbe(sd, @"fixedCellHeight"), DYYYProbe(sd, @"variableHeightProviders")]);
+    }
+}
+
+static void DYYYAppendViewTree(UIView *view, NSMutableString *out, NSInteger depth) {
+    if (!view)
+        return;
+    for (NSInteger i = 0; i < depth; i++)
+        [out appendString:@"  "];
+    NSString *vc = @"";
+    UIResponder *next = [view nextResponder];
+    if ([next isKindOfClass:[UIViewController class]])
+        vc = [NSString stringWithFormat:@" [vc:%@]", NSStringFromClass([next class])];
+    NSString *bg = @"";
+    UIColor *c = view.backgroundColor;
+    if (c) {
+        CGFloat r = 0, g = 0, b = 0, a = 0;
+        if ([c getRed:&r green:&g blue:&b alpha:&a] && a > 0.01)
+            bg = [NSString stringWithFormat:@" bg=(%.2f,%.2f,%.2f,%.2f)", r, g, b, a];
+    }
+    // 诊断：layer.backgroundColor（CGColor 直接上色时 view.backgroundColor 读不到）
+    NSString *lbg = @"";
+    CGColorRef lc = view.layer.backgroundColor;
+    if (lc && CGColorGetAlpha(lc) > 0.01) {
+        UIColor *lcu = [UIColor colorWithCGColor:lc];
+        CGFloat r = 0, g = 0, b = 0, a = 0;
+        if ([lcu getRed:&r green:&g blue:&b alpha:&a])
+            lbg = [NSString stringWithFormat:@" lbg=(%.2f,%.2f,%.2f,%.2f)", r, g, b, a];
+    }
+    // 诊断：UILabel 富文本背景色属性（NSBackgroundColorAttributeName）
+    NSString *abg = @"";
+    if ([view isKindOfClass:[UILabel class]]) {
+        NSAttributedString *att = ((UILabel *)view).attributedText;
+        if (att.length > 0) {
+            UIColor *ac = [att attribute:NSBackgroundColorAttributeName atIndex:0 effectiveRange:NULL];
+            if (ac) {
+                CGFloat r = 0, g = 0, b = 0, a = 0;
+                if ([ac getRed:&r green:&g blue:&b alpha:&a] && a > 0.01)
+                    abg = [NSString stringWithFormat:@" abg=(%.2f,%.2f,%.2f,%.2f)", r, g, b, a];
+            }
+        }
+    }
+    if ([view isKindOfClass:[UILabel class]] && (view.opaque || view.layer.opaque))
+        abg = [abg stringByAppendingFormat:@" opq=%d/%d", view.opaque, view.layer.opaque];
+    CGRect f = view.frame;
+    [out appendFormat:@"%@%@ {%.0f,%.0f,%.0f,%.0f}%@%@%@%@%@%@\n",
+                      NSStringFromClass([view class]), vc,
+                      f.origin.x, f.origin.y, f.size.width, f.size.height, bg, lbg, abg,
+                      (view.alpha < 0.99) ? [NSString stringWithFormat:@" a=%.2f", view.alpha] : @"",
+                      view.hidden ? @" HIDDEN" : @"",
+                      (view.tag != 0) ? [NSString stringWithFormat:@" tag=%ld", (long)view.tag] : @""];
+    @try {
+        if ([next isKindOfClass:[UIViewController class]])
+            DYYYAppendVCProbe((UIViewController *)next, out, depth);
+        DYYYAppendScrollProbe(view, out, depth);
+    } @catch (NSException *e) {
+        DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"probe exception: %@", e.reason]);
+    }
+    for (UIView *sub in view.subviews)
+        DYYYAppendViewTree(sub, out, depth + 1);
+}
 
 + (NSString *)describeViewTree:(UIView *)root {
     NSMutableString *out = [NSMutableString string];
@@ -1067,46 +1077,40 @@ static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger
     }
 }
 
-+ (BOOL)usesDouyinLightBackground {
++ (BOOL)isDarkMode {
     Class themeManagerClass = NSClassFromString(@"AWEUIThemeManager");
+    if (!themeManagerClass) {
+        return NO;
+    }
+
     SEL isLightThemeSEL = NSSelectorFromString(@"isLightTheme");
-    if (themeManagerClass && [themeManagerClass respondsToSelector:isLightThemeSEL]) {
-        return ((BOOL (*)(id, SEL))objc_msgSend)(themeManagerClass, isLightThemeSEL);
+    if ([themeManagerClass respondsToSelector:isLightThemeSEL]) {
+        BOOL isLightTheme = ((BOOL (*)(id, SEL))objc_msgSend)(themeManagerClass, isLightThemeSEL);
+        return !isLightTheme;
     }
 
     id themeManager = nil;
     SEL sharedManagerSEL = NSSelectorFromString(@"sharedManager");
     SEL sharedInstanceSEL = NSSelectorFromString(@"sharedInstance");
-    if (themeManagerClass && [themeManagerClass respondsToSelector:sharedManagerSEL]) {
+    if ([themeManagerClass respondsToSelector:sharedManagerSEL]) {
         themeManager = [themeManagerClass performSelector:sharedManagerSEL];
-    } else if (themeManagerClass && [themeManagerClass respondsToSelector:sharedInstanceSEL]) {
+    } else if ([themeManagerClass respondsToSelector:sharedInstanceSEL]) {
         themeManager = [themeManagerClass performSelector:sharedInstanceSEL];
     }
 
     if (themeManager) {
         if ([themeManager respondsToSelector:isLightThemeSEL]) {
-            return ((BOOL (*)(id, SEL))objc_msgSend)(themeManager, isLightThemeSEL);
+            BOOL isLightTheme = ((BOOL (*)(id, SEL))objc_msgSend)(themeManager, isLightThemeSEL);
+            return !isLightTheme;
         }
 
         @try {
             id lightThemeValue = [themeManager valueForKey:@"isLightTheme"];
             if ([lightThemeValue respondsToSelector:@selector(boolValue)]) {
-                return [lightThemeValue boolValue];
+                return ![lightThemeValue boolValue];
             }
         } @catch (NSException *exception) {
         }
-    }
-
-    if (@available(iOS 13.0, *)) {
-        return [UIScreen mainScreen].traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark;
-    }
-
-    return YES;
-}
-
-+ (BOOL)isDarkMode {
-    if (![self usesDouyinLightBackground]) {
-        return YES;
     }
 
     return NO;
@@ -2295,146 +2299,6 @@ static os_unfair_lock _staticColorCreationLock = OS_UNFAIR_LOCK_INIT;
     return NSOrderedSame;
 }
 
-#pragma mark - Debug Utilities (调试工具)
-
-static NSString *DYYYSafeDescription(id _Nullable obj) {
-    if (!obj) {
-        return @"";
-    }
-    NSString *desc = nil;
-    @try {
-        desc = [obj description];
-    } @catch (NSException *e) {
-        return @"<desc-exception>";
-    }
-    if (desc.length > 200) {
-        desc = [desc substringToIndex:200];
-    }
-    desc = [desc stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    desc = [desc stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
-    return desc;
-}
-
-static void DYYYAppendViewTree(UIView *view, NSMutableString *buffer, NSUInteger depth) {
-    if (!view || !buffer) {
-        return;
-    }
-
-    NSMutableString *indent = [NSMutableString string];
-    for (NSUInteger i = 0; i < depth; i++) {
-        [indent appendString:@"  "];
-    }
-
-    CGRect frame = view.frame;
-    NSString *className = NSStringFromClass([view class]);
-    NSString *accessibility = view.accessibilityLabel ?: @"";
-    NSString *extra = @"";
-
-    if ([view isKindOfClass:[UILabel class]]) {
-        NSString *text = ((UILabel *)view).text ?: @"";
-        extra = [NSString stringWithFormat:@" text=\"%@\"", DYYYSafeDescription(text)];
-    } else if ([view isKindOfClass:[UIButton class]]) {
-        NSString *title = [((UIButton *)view) titleForState:UIControlStateNormal] ?: @"";
-        extra = [NSString stringWithFormat:@" title=\"%@\"", DYYYSafeDescription(title)];
-    } else if ([view isKindOfClass:[UIImageView class]]) {
-        UIImage *image = ((UIImageView *)view).image;
-        if (image) {
-            extra = [NSString stringWithFormat:@" image=%@x%@",
-                     @(image.size.width), @(image.size.height)];
-        }
-    }
-
-    // v2.4-23：补背景色与所属 VC（调试毛玻璃/不透明遮挡时最关键的两项）
-    NSString *bgStr = @"";
-    UIColor *bgColor = view.backgroundColor;
-    if (bgColor) {
-        CGFloat br = 0, bg2 = 0, bb = 0, ba = 0;
-        if ([bgColor getRed:&br green:&bg2 blue:&bb alpha:&ba] && ba > 0.01) {
-            bgStr = [NSString stringWithFormat:@" bg=(%.2f,%.2f,%.2f,%.2f)", br, bg2, bb, ba];
-        }
-    }
-    NSString *vcStr = @"";
-    UIResponder *nextResp = [view nextResponder];
-    if ([nextResp isKindOfClass:[UIViewController class]]) {
-        vcStr = [NSString stringWithFormat:@" vc=%@", NSStringFromClass([nextResp class])];
-    }
-
-    [buffer appendFormat:@"%@<%@: %p> frame={%.1f,%.1f,%.1f,%.1f} alpha=%.2f hidden=%d uie=%d tag=%ld a11y=\"%@\"%@%@%@\n",
-     indent,
-     className,
-     view,
-     frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-     view.alpha,
-     view.hidden,
-     view.userInteractionEnabled,
-     (long)view.tag,
-     DYYYSafeDescription(accessibility),
-     extra,
-     bgStr,
-     vcStr];
-
-    for (UIView *subview in view.subviews) {
-        DYYYAppendViewTree(subview, buffer, depth + 1);
-    }
-}
-
-+ (void)dumpAllWindowsViewTreeToFile:(NSString *)filePath {
-    if (filePath.length == 0) {
-        return;
-    }
-
-    // 快照在主线程采集（UIView 属性只能在主线程读取）
-    NSMutableString *buffer = [NSMutableString stringWithCapacity:64 * 1024];
-    NSDate *now = [NSDate date];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
-    [buffer appendFormat:@"# DYYY view tree dump @ %@\n", [formatter stringFromDate:now]];
-
-    NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
-    [buffer appendFormat:@"# windows count = %lu\n\n", (unsigned long)windows.count];
-    NSUInteger windowIndex = 0;
-    for (UIWindow *window in windows) {
-        [buffer appendFormat:@"==== Window[%lu] %@ keyWindow=%d level=%.1f hidden=%d alpha=%.2f ====\n",
-         (unsigned long)windowIndex,
-         NSStringFromClass([window class]),
-         window.isKeyWindow,
-         (double)window.windowLevel,
-         window.hidden,
-         window.alpha];
-        DYYYAppendViewTree(window, buffer, 0);
-        [buffer appendString:@"\n"];
-        windowIndex++;
-    }
-
-    NSString *targetPath = filePath;
-
-    // 后台线程写入，避免阻塞 UI
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSError *writeError = nil;
-        BOOL ok = [buffer writeToFile:targetPath
-                           atomically:YES
-                             encoding:NSUTF8StringEncoding
-                                error:&writeError];
-        if (!ok) {
-            // sandbox 环境下 /var/mobile 可能不可写，fallback 到 Documents
-            NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            if (documents) {
-                NSString *fallback = [documents stringByAppendingPathComponent:[targetPath lastPathComponent]];
-                NSError *fallbackError = nil;
-                BOOL fallbackOK = [buffer writeToFile:fallback
-                                           atomically:YES
-                                             encoding:NSUTF8StringEncoding
-                                                error:&fallbackError];
-                NSLog(@"[DYYY] dump view tree fallback to %@ ok=%d err=%@", fallback, fallbackOK, fallbackError);
-            } else {
-                NSLog(@"[DYYY] dump view tree failed: %@", writeError);
-            }
-        } else {
-            NSLog(@"[DYYY] dump view tree to %@ size=%lu", targetPath, (unsigned long)buffer.length);
-        }
-    });
-}
-
 @end
 
 #pragma mark - External C Functions (外部 C 函数)
@@ -2466,11 +2330,11 @@ UIViewController *findViewControllerOfClass(UIViewController *vc, Class targetCl
 void applyTopBarTransparency(UIView *topBar) {
     if (!topBar)
         return;
-    if ([DYYYPreferences boolForKey:@"DYYYEnablePure"]) {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYEnablePure"]) {
         return;
     }
 
-    NSString *transparentValue = [DYYYPreferences objectForKey:@"DYYYTopBarTransparent"];
+    NSString *transparentValue = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTopBarTransparent"];
     if (transparentValue && transparentValue.length > 0) {
         CGFloat alphaValue = [transparentValue floatValue];
         if (alphaValue >= 0.0 && alphaValue <= 1.0) {

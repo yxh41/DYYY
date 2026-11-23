@@ -1,5 +1,4 @@
 #import "DYYYABTestHook.h"
-#import "DYYYPreferences.h"
 #import "DYYYConstants.h"
 #import "DYYYUtils.h"
 #import <objc/runtime.h>
@@ -40,7 +39,7 @@ static void DYYYQueueSync(dispatch_block_t block) {
 }
 
 static NSNumber *DYYYResolveTabBarHeightFromSettings(void) {
-    NSString *heightString = [DYYYPreferences stringForKey:kDYYYTabBarHeightKey];
+    NSString *heightString = [[NSUserDefaults standardUserDefaults] stringForKey:kDYYYTabBarHeightKey];
     if (heightString.length == 0) {
         return nil;
     }
@@ -130,7 +129,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  * 转换为类方法
  */
 + (BOOL)isPatchMode {
-    NSString *savedMode = [DYYYPreferences objectForKey:@"DYYYABTestModeString"];
+    NSString *savedMode = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYABTestModeString"];
     if (savedMode) {
         if ([savedMode isEqualToString:DYYY_REMOTE_MODE_STRING] || [[savedMode lowercaseString] isEqualToString:@"remote"]) {
             if (s_fileMode) {
@@ -165,7 +164,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  * 当前是否处于远程模式
  */
 + (BOOL)isRemoteMode {
-    NSString *savedMode = [DYYYPreferences objectForKey:@"DYYYABTestModeString"];
+    NSString *savedMode = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYABTestModeString"];
     if (savedMode) {
         return [savedMode isEqualToString:DYYY_REMOTE_MODE_STRING] || [[savedMode lowercaseString] isEqualToString:@"remote"];
     }
@@ -330,7 +329,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
  */
 + (void)checkForRemoteConfigUpdate:(BOOL)notify {
     dispatch_async(DYYYABTestQueue(), ^{
-      NSString *urlString = [DYYYPreferences objectForKey:@"DYYYRemoteConfigURL"];
+      NSString *urlString = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYRemoteConfigURL"];
       if (urlString.length == 0) {
           urlString = kDefaultRemoteConfigURL;
       }
@@ -371,7 +370,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
                                                                              updated = YES;
                                                                          }
                                                                          if ([DYYYABTestHook isRemoteMode]) {
-                                                                             [DYYYPreferences setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
+                                                                             [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DYYY_REMOTE_CONFIG_FLAG_KEY];
                                                                              [[NSNotificationCenter defaultCenter] postNotificationName:DYYY_REMOTE_CONFIG_CHANGED_NOTIFICATION object:nil];
                                                                          }
                                                                      }
@@ -543,7 +542,7 @@ static void DYYYApplyTabBarHeightToCurrentABTestDataIfNeeded(void) {
 
     // 在队列上异步读取初始状态并加载/应用配置
     dispatch_async(DYYYABTestQueue(), ^{
-      s_abTestBlockEnabled = [DYYYPreferences boolForKey:@"DYYYABTestBlockEnabled"];
+      s_abTestBlockEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYABTestBlockEnabled"];
 
       NSString *currentMode = nil;
       if ([DYYYABTestHook isRemoteMode]) {

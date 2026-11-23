@@ -4,7 +4,7 @@
 #define DYYY_NAME @"DYYY"
 #define DYYY_SETTINGS_NAME @"DYYY设置"
 
-#define DYYY_VERSION @"2.4-35"
+#define DYYY_VERSION @"3.0.2"
 
 // 默认的远程 ABTest 配置地址
 #define DYYY_DEFAULT_ABTEST_URL @"https://github.com/Nathalie-Annis/AWEABTestDataPatch/releases/latest/download/ABTestDataPatch_A.json"
@@ -20,10 +20,5 @@
 
 #define DYYYGeonamesErrorDomain @"com.dyyy.geonames.api.error"
 #define DYYYGeonamesStatusUserInfoKey @"com.dyyy.geonames.api.status"
-
-// 消息页/我的页元素隐藏设置键（移植自 VexCove，默认关闭）
-// 注：头像加号(DYYYHideMineAvatarPlus) 本地已有等价实现，不在此重复。
-#define DYYYHideMessageTabStarMall @"DYYYHideMessageTabStarMall"
-#define DYYYHideMineAICreation @"DYYYHideMineAICreation"
 
 #endif

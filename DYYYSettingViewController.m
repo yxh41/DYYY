@@ -1,10 +1,7 @@
 #import "DYYYSettingViewController.h"
-#import "DYYYPreferences.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import "DYYYConstants.h"
-#import "DYYYFloatClearButton.h"
-#import "DYYYFloatSpeedButton.h"
 
 typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYYYSettingItemTypeTextField, DYYYSettingItemTypePicker };
 
@@ -66,19 +63,20 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     [self setupSettingItems];
     [self setupSectionTitles];
     [self setupFooterLabel];
+    [self addTitleGradientAnimation];
 }
 
 - (void)setupDefaultValues {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
 
     // 如果快捷倍速数值未设置，设置默认值
-    if (![DYYYPreferences objectForKey:@"DYYYSpeedSettings"]) {
-        [DYYYPreferences setObject:@"1.0,1.25,1.5,2.0" forKey:@"DYYYSpeedSettings"];
+    if (![defaults objectForKey:@"DYYYSpeedSettings"]) {
+        [defaults setObject:@"1.0,1.25,1.5,2.0" forKey:@"DYYYSpeedSettings"];
     }
 
     // 如果按钮大小未设置，设置默认值
-    if (![DYYYPreferences objectForKey:@"DYYYSpeedButtonSize"]) {
-        [DYYYPreferences setFloat:32.0 forKey:@"DYYYSpeedButtonSize"];
+    if (![defaults objectForKey:@"DYYYSpeedButtonSize"]) {
+        [defaults setFloat:32.0 forKey:@"DYYYSpeedButtonSize"];
     }
 
 }
@@ -93,24 +91,30 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 }
 
 - (void)setupAppearance {
-    // 透明导航栏，露出底层自适应毛玻璃；文字/按钮用语义色跟随系统深浅模式
     self.navigationController.navigationBar.barTintColor = [UIColor clearColor];
-    self.navigationController.navigationBar.tintColor = [UIColor labelColor];
-    self.navigationController.navigationBar.largeTitleTextAttributes = @{NSForegroundColorAttributeName : [UIColor labelColor]};
+    self.navigationController.navigationBar.tintColor = [UIColor whiteColor];
+    self.navigationController.navigationBar.largeTitleTextAttributes = @{NSForegroundColorAttributeName : [UIColor whiteColor]};
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
     self.navigationController.navigationBar.prefersLargeTitles = YES;
-    [self.navigationController.navigationBar setBackgroundImage:[UIImage new] forBarMetrics:UIBarMetricsDefault];
-    self.navigationController.navigationBar.shadowImage = [UIImage new];
-    self.navigationController.navigationBar.translucent = YES;
 }
 
 - (void)setupBlurEffect {
-    // 自适应毛玻璃：浅色模式下是浅色磨砂，深色模式下是深色磨砂，跟随系统
-    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
     self.blurEffectView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
     self.blurEffectView.frame = self.view.bounds;
     self.blurEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.blurEffectView];
+
+    UIVibrancyEffect *vibrancyEffect = [UIVibrancyEffect effectForBlurEffect:blurEffect];
+    self.vibrancyEffectView = [[UIVisualEffectView alloc] initWithEffect:vibrancyEffect];
+    self.vibrancyEffectView.frame = self.blurEffectView.bounds;
+    self.vibrancyEffectView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.blurEffectView.contentView addSubview:self.vibrancyEffectView];
+
+    UIView *overlayView = [[UIView alloc] initWithFrame:self.view.bounds];
+    overlayView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
+    overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:overlayView];
 }
 
 - (void)setupTableView {
@@ -144,7 +148,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"推荐过滤热点" key:@"DYYYSkipHotSpot" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"推荐过滤低赞" key:@"DYYYFilterLowLikes" type:DYYYSettingItemTypeTextField placeholder:@"填0关闭"],
             [DYYYSettingItem itemWithTitle:@"推荐视频时限" key:@"DYYYFilterTimeLimit" type:DYYYSettingItemTypeTextField placeholder:@"填0关闭，单位为天"],
-            [DYYYSettingItem itemWithTitle:@"全局HDR设置" key:@"DYYYHDRMode" type:DYYYSettingItemTypePicker],
+            [DYYYSettingItem itemWithTitle:@"推荐过滤HDR" key:@"DYYYFilterFeedHDR" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"启用首页净化" key:@"DYYYEnablePure" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"启用首页全屏" key:@"DYYYEnableFullScreen" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"启用屏蔽广告" key:@"DYYYNoAds" type:DYYYSettingItemTypeSwitch],
@@ -158,7 +162,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"国外解析账号" key:@"DYYYGeonamesUsername" type:DYYYSettingItemTypeTextField placeholder:@"需填写才能解析国外"],
             [DYYYSettingItem itemWithTitle:@"时间标签颜色" key:@"DYYYLabelColor" type:DYYYSettingItemTypeTextField placeholder:@"十六进制"],
             [DYYYSettingItem itemWithTitle:@"属地随机渐变" key:@"DYYYEnableRandomGradient" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"作品日期显示" key:@"DYYYShowPostDate" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏系统顶栏" key:@"DYYYHideStatusbar" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"关注二次确认" key:@"DYYYFollowTips" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"收藏二次确认" key:@"DYYYCollectTips" type:DYYYSettingItemTypeSwitch],
@@ -207,7 +210,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"隐藏点赞按钮" key:@"DYYYHideLikeButton" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏评论按钮" key:@"DYYYHideCommentButton" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏收藏按钮" key:@"DYYYHideCollectButton" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"隐藏头像及周边" key:@"DYYYHideAvatarButton" type:DYYYSettingItemTypeSwitch],
+            [DYYYSettingItem itemWithTitle:@"隐藏头像按钮" key:@"DYYYHideAvatarButton" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏音乐按钮" key:@"DYYYHideMusicButton" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏分享按钮" key:@"DYYYHideShareButton" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"隐藏视频定位" key:@"DYYYHideLocation" type:DYYYSettingItemTypeSwitch],
@@ -327,8 +330,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"长按面板定时关闭" key:@"DYYYLongPressTimerClose" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"长按面板过滤文案" key:@"DYYYLongPressFilterTitle" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"长按面板过滤作者" key:@"DYYYLongPressFilterUser" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"长按面板获取作品数据" key:@"DYYYLongPressWorkData" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"作品数据 APIToken" key:@"DYYYWorkDataAPIToken" type:DYYYSettingItemTypeTextField placeholder:@"tikhub.io Token，空则不获取播放量"],
             [DYYYSettingItem itemWithTitle:@"双击面板保存视频" key:@"DYYYDoubleTapDownload" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"双击面板保存音频" key:@"DYYYDoubleTapDownloadAudio" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"双击面板接口解析" key:@"DYYYDoubleInterfaceDownload" type:DYYYSettingItemTypeSwitch],
@@ -374,7 +375,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
             [DYYYSettingItem itemWithTitle:@"清屏隐藏时间进度" key:@"DYYYHideTimeProgress" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"清屏隐藏滑条" key:@"DYYYHideSlider" type:DYYYSettingItemTypeSwitch],
             [DYYYSettingItem itemWithTitle:@"清屏隐藏底栏" key:@"DYYYHideTabBar" type:DYYYSettingItemTypeSwitch],
-            [DYYYSettingItem itemWithTitle:@"清屏隐藏倍速按钮" key:@"DYYYHideSpeed" type:DYYYSettingItemTypeSwitch]
+            [DYYYSettingItem itemWithTitle:@"清屏隐藏倍速" key:@"DYYYHideSpeed" type:DYYYSettingItemTypeSwitch]
         ]
     ];
 }
@@ -388,14 +389,38 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     self.footerLabel.text = [NSString stringWithFormat:@"Developer By @huamidev\nVersion: %@ (%@)", DYYY_VERSION, @"260104"];
     self.footerLabel.textAlignment = NSTextAlignmentCenter;
     self.footerLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
-    self.footerLabel.textColor = [UIColor tertiaryLabelColor];
+    self.footerLabel.textColor = [UIColor colorWithRed:173 / 255.0 green:216 / 255.0 blue:230 / 255.0 alpha:1.0];
     self.footerLabel.numberOfLines = 2;
     self.footerLabel.lineBreakMode = NSLineBreakByWordWrapping;
     self.tableView.tableFooterView = self.footerLabel;
 }
 
 - (void)addTitleGradientAnimation {
-    // 已移除彩虹渐变标题动画，改用系统标准大标题（跟随主题，克制现代）
+    CAGradientLayer *gradient = [CAGradientLayer layer];
+    gradient.colors = @[ (__bridge id)[UIColor systemRedColor].CGColor, (__bridge id)[UIColor systemBlueColor].CGColor ];
+    gradient.startPoint = CGPointMake(0, 0);
+    gradient.endPoint = CGPointMake(1, 0);
+    gradient.frame = CGRectMake(0, 0, 150, 30);
+
+    UIView *titleView = [[UIView alloc] initWithFrame:gradient.frame];
+    [titleView.layer addSublayer:gradient];
+
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:titleView.bounds];
+    titleLabel.text = self.title;
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.font = [UIFont boldSystemFontOfSize:20];
+    titleLabel.textColor = [UIColor clearColor];
+
+    gradient.mask = titleLabel.layer;
+    self.navigationItem.titleView = titleView;
+
+    CABasicAnimation *colorChange = [CABasicAnimation animationWithKeyPath:@"colors"];
+    colorChange.toValue = @[ (__bridge id)[UIColor systemYellowColor].CGColor, (__bridge id)[UIColor systemGreenColor].CGColor ];
+    colorChange.duration = 2.0;
+    colorChange.autoreverses = YES;
+    colorChange.repeatCount = HUGE_VALF;
+
+    [gradient addAnimation:colorChange forKey:@"colorChangeAnimation"];
 }
 
 #pragma mark - Helper Methods
@@ -407,8 +432,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
         // 直播清晰度选项
         return @[ @"蓝光帧彩", @"蓝光", @"超清", @"高清", @"标清", @"自动" ];
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return @[ @"关闭", @"全局屏蔽HDR效果", @"全局过滤HDR作品" ];
     }
     return @[];
 }
@@ -421,8 +444,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
     } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
         // 直播清晰度直接显示
         return value ?: @"自动";
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return value ?: @"关闭";
     }
     return [NSString stringWithFormat:@"%@", value];
 }
@@ -432,8 +453,6 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         return @1.0;
     } else if ([key isEqualToString:@"DYYYLiveQuality"]) {
         return @"自动";
-    } else if ([key isEqualToString:@"DYYYHDRMode"]) {
-        return @"关闭";
     }
     return nil;
 }
@@ -441,7 +460,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 #pragma mark - First Launch Agreement
 
 - (void)checkFirstLaunch {
-    BOOL hasAgreed = [DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"];
+    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
 
     if (!hasAgreed) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -468,7 +487,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
                                                             NSString *inputText = textField.text;
 
                                                             if ([inputText isEqualToString:@"我已阅读并同意继续使用"]) {
-                                                                [DYYYPreferences setBool:YES forKey:@"DYYYUserAgreementAccepted"];
+                                                                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"DYYYUserAgreementAccepted"];
                                                             } else {
                                                                 UIAlertController *errorAlert = [UIAlertController alertControllerWithTitle:@"输入错误"
                                                                                                                                     message:@"请正确输入"
@@ -531,13 +550,13 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 0, headerView.bounds.size.width - 50, 44)];
     titleLabel.text = [self tableView:tableView titleForHeaderInSection:section];
-    titleLabel.textColor = [UIColor secondaryLabelColor];
-    titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    titleLabel.textColor = [UIColor whiteColor];
+    titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
     [headerView addSubview:titleLabel];
 
     UIImageView *arrowImageView = [[UIImageView alloc] initWithFrame:CGRectMake(titleLabel.frame.origin.x + titleLabel.frame.size.width - 30, 15, 14, 14)];
     arrowImageView.image = [UIImage systemImageNamed:[self.expandedSections containsObject:@(section)] ? @"chevron.down" : @"chevron.right"];
-    arrowImageView.tintColor = [UIColor tertiaryLabelColor];
+    arrowImageView.tintColor = [UIColor lightGrayColor];
     arrowImageView.tag = 100;
     arrowImageView.contentMode = UIViewContentModeScaleAspectFit;
     [headerView addSubview:arrowImageView];
@@ -581,38 +600,28 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         [cell.textLabel.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor].active = YES;
 
         UIView *selectedBackgroundView = [[UIView alloc] init];
-        selectedBackgroundView.backgroundColor = [UIColor systemFillColor];
+        selectedBackgroundView.backgroundColor = [UIColor colorWithRed:84 / 255.0 green:84 / 255.0 blue:84 / 255.0 alpha:1.0];
         cell.selectedBackgroundView = selectedBackgroundView;
     }
 
     cell.textLabel.text = item.title;
-    cell.textLabel.textColor = [UIColor labelColor];
-    cell.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
+    cell.textLabel.textColor = [UIColor whiteColor];
+    cell.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
 
     cell.backgroundView = nil;
 
-    // 卡片式圆角：首行圆顶角，末行圆底角，单行全圆角，中间行方角——形成连续卡片
-    NSInteger rowCount = [self.settingSections[indexPath.section] count];
-    BOOL isFirst = indexPath.row == 0;
-    BOOL isLast = indexPath.row == rowCount - 1;
-    if (isFirst && isLast) {
-        cell.layer.cornerRadius = 12;
-        cell.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
-    } else if (isFirst) {
-        cell.layer.cornerRadius = 12;
-        cell.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
-    } else if (isLast) {
-        cell.layer.cornerRadius = 12;
+    if (indexPath.row == [self.settingSections[indexPath.section] count] - 1) {
+        cell.layer.cornerRadius = 10;
         cell.layer.maskedCorners = kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+        cell.layer.masksToBounds = YES;
     } else {
         cell.layer.cornerRadius = 0;
         cell.layer.maskedCorners = 0;
     }
-    cell.layer.masksToBounds = YES;
 
     if (item.type == DYYYSettingItemTypeSwitch) {
         UISwitch *switchView = [[UISwitch alloc] init];
-        [switchView setOn:[DYYYPreferences boolForKey:item.key]];
+        [switchView setOn:[[NSUserDefaults standardUserDefaults] boolForKey:item.key]];
         [switchView addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
         switchView.tag = indexPath.section * 1000 + indexPath.row;
         cell.accessoryView = switchView;
@@ -620,11 +629,11 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
         UITextField *textField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 100, 30)];
         textField.borderStyle = UITextBorderStyleRoundedRect;
         textField.placeholder = item.placeholder;
-        textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor placeholderTextColor]}];
-        textField.text = [DYYYPreferences objectForKey:item.key];
+        textField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:item.placeholder attributes:@{NSForegroundColorAttributeName : [UIColor lightGrayColor]}];
+        textField.text = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
         textField.textAlignment = NSTextAlignmentRight;
-        textField.backgroundColor = [UIColor tertiarySystemFillColor];
-        textField.textColor = [UIColor labelColor];
+        textField.backgroundColor = [UIColor colorWithWhite:1 alpha:0.1];
+        textField.textColor = [UIColor whiteColor];
 
         [textField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingDidEnd];
         textField.tag = indexPath.section * 1000 + indexPath.row;
@@ -634,13 +643,13 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 
         UILabel *pickerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 44)];
         // 获取当前值
-        id currentValue = [DYYYPreferences objectForKey:item.key];
+        id currentValue = [[NSUserDefaults standardUserDefaults] objectForKey:item.key];
         if (!currentValue) {
             currentValue = [self defaultValueForKey:item.key];
         }
 
         pickerLabel.text = [self displayValueForKey:item.key value:currentValue];
-        pickerLabel.textColor = [UIColor secondaryLabelColor];
+        pickerLabel.textColor = [UIColor whiteColor];
         pickerLabel.textAlignment = NSTextAlignmentRight;
         pickerLabel.tag = indexPath.section * 1000 + indexPath.row;
 
@@ -661,7 +670,8 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    // InsetGrouped 样式已自动处理分组内边距与圆角裁切，无需手动 inset
+    CGFloat sectionInset = 16;
+    cell.contentView.frame = UIEdgeInsetsInsetRect(cell.contentView.frame, UIEdgeInsetsMake(0, sectionInset, 0, sectionInset));
 }
 
 #pragma mark - UITableViewDelegate
@@ -686,7 +696,7 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction *_Nonnull action) {
                                                          // 保存到对应的key
-                                                         [DYYYPreferences setObject:option forKey:item.key];
+                                                         [[NSUserDefaults standardUserDefaults] setObject:option forKey:item.key];
 
                                                          // 更新对应的cell显示
                                                          UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
@@ -718,47 +728,13 @@ typedef NS_ENUM(NSInteger, DYYYSettingItemType) { DYYYSettingItemTypeSwitch, DYY
 - (void)switchToggled:(UISwitch *)sender {
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:sender.tag % 1000 inSection:sender.tag / 1000];
     DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [DYYYPreferences setBool:sender.isOn forKey:item.key];
-    if ([item.key isEqualToString:@"DYYYEnableFloatSpeedButton"] || [item.key isEqualToString:@"DYYYSpeedButtonShowX"]) {
-        [FloatingSpeedButton reloadConfiguration];
-    }
-    if ([item.key isEqualToString:@"DYYYEnableFloatClearButton"] ||
-        [item.key isEqualToString:@"DYYYHideDanmaku"] ||
-        [item.key isEqualToString:@"DYYYRemoveTimeProgress"] ||
-        [item.key isEqualToString:@"DYYYHideTimeProgress"] ||
-        [item.key isEqualToString:@"DYYYHideSlider"] ||
-        [item.key isEqualToString:@"DYYYHideTabBar"] ||
-        [item.key isEqualToString:@"DYYYHideSpeed"] ||
-        [item.key isEqualToString:@"DYYYHideChapter"]) {
-        reloadClearButtonConfiguration();
-    }
-
-    if (sender.isOn) {
-        NSString *conflictingKey = nil;
-        if ([item.key isEqualToString:@"DYYYHideLOTAnimationView"]) {
-            conflictingKey = @"DYYYHideFollowPromptView";
-        } else if ([item.key isEqualToString:@"DYYYHideFollowPromptView"]) {
-            conflictingKey = @"DYYYHideLOTAnimationView";
-        }
-
-        if (conflictingKey) {
-            [DYYYPreferences setBool:NO forKey:conflictingKey];
-            [self.tableView reloadData];
-        }
-    }
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:item.key];
 }
 
 - (void)textFieldDidChange:(UITextField *)textField {
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:textField.tag % 1000 inSection:textField.tag / 1000];
     DYYYSettingItem *item = self.settingSections[indexPath.section][indexPath.row];
-    [DYYYPreferences setObject:textField.text forKey:item.key];
-    if ([item.key isEqualToString:@"DYYYSpeedSettings"] || [item.key isEqualToString:@"DYYYSpeedButtonSize"]) {
-        [FloatingSpeedButton reloadConfiguration];
-    }
-    if ([item.key isEqualToString:@"DYYYEnableFloatClearButtonSize"]) {
-        reloadClearButtonConfiguration();
-    }
+    [[NSUserDefaults standardUserDefaults] setObject:textField.text forKey:item.key];
 }
 
 - (void)headerTapped:(UIButton *)sender {

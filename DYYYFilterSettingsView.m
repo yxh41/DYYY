@@ -1,5 +1,4 @@
 #import "DYYYFilterSettingsView.h"
-#import "DYYYPreferences.h"
 #import "DYYYUtils.h"
 
 static inline UIColor *DYYYAccentColor(void) {
@@ -457,7 +456,7 @@ static const int kDYYYButtonsPerRow = 10;
     if (!self.propFilterButton)
         return;
 
-    NSString *saved = [DYYYPreferences objectForKey:@"DYYYFilterProp"] ?: @"";
+    NSString *saved = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterProp"] ?: @"";
     NSArray *array = saved.length > 0 ? [saved componentsSeparatedByString:@","] : @[];
     BOOL exists = [array containsObject:self.propName];
 
@@ -470,7 +469,7 @@ static const int kDYYYButtonsPerRow = 10;
 - (void)propFilterTapped {
     if (self.propName.length == 0)
         return;
-    NSString *saved = [DYYYPreferences objectForKey:@"DYYYFilterProp"] ?: @"";
+    NSString *saved = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterProp"] ?: @"";
     NSMutableArray *array = saved.length > 0 ? [saved componentsSeparatedByString:@","].mutableCopy : [NSMutableArray array];
     BOOL exists = [array containsObject:self.propName];
 
@@ -483,7 +482,7 @@ static const int kDYYYButtonsPerRow = 10;
     }
 
     NSString *newString = [array componentsJoinedByString:@","];
-    [DYYYPreferences setObject:newString forKey:@"DYYYFilterProp"];
+    [[NSUserDefaults standardUserDefaults] setObject:newString forKey:@"DYYYFilterProp"];
 
     [self updateFilterPropButton];
 }

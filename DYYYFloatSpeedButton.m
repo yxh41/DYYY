@@ -1,11 +1,8 @@
 #import "AwemeHeaders.h"
-#import "DYYYPreferences.h"
 #import "DYYYFloatClearButton.h"
 #import "DYYYFloatSpeedButton.h"
 #import "DYYYUtils.h"
 #import <UIKit/UIKit.h>
-#import <float.h>
-#import <math.h>
 #import <objc/runtime.h>
 
 @class AWEFeedCellViewController;
@@ -17,8 +14,6 @@ CGFloat speedButtonSize = 32.0;
 BOOL isFloatSpeedButtonEnabled = NO;
 BOOL speedButtonForceHidden = NO;
 BOOL dyyyInteractionViewVisible = NO;
-
-static NSString *const kDYYYDefaultSpeedSettingsString = @"0.75,1.0,1.25,1.5,2.0,2.5,3.0";
 
 static void DYYYApplySpeedButtonHiddenState(UIView *button, BOOL hidden) {
     if (!button) {
@@ -46,7 +41,7 @@ static void DYYYApplySpeedButtonHiddenState(UIView *button, BOOL hidden) {
 static BOOL DYYYShouldHideSpeedButton(void) {
     BOOL clearModeActive = (hideButton && hideButton.isElementsHidden);
     if (clearModeActive) {
-        BOOL hideSpeedInClearMode = [DYYYPreferences boolForKey:@"DYYYHideSpeed"];
+        BOOL hideSpeedInClearMode = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideSpeed"];
         if (hideSpeedInClearMode) {
             return YES;
         }
@@ -64,123 +59,18 @@ static BOOL DYYYShouldHideSpeedButton(void) {
     return NO;
 }
 
-static NSString *DYYYFormatSpeedOption(double speed) {
-    NSString *speedString = [NSString stringWithFormat:@"%.2f", speed];
-    while ([speedString containsString:@"."] && [speedString hasSuffix:@"0"]) {
-        speedString = [speedString substringToIndex:speedString.length - 1];
-    }
-    if ([speedString hasSuffix:@"."]) {
-        speedString = [speedString substringToIndex:speedString.length - 1];
-    }
-    return speedString;
-}
-
-static BOOL DYYYSpeedValuesMatch(double lhs, double rhs) {
-    return fabs(lhs - rhs) <= 0.001;
-}
-
-NSString *DYYYDefaultSpeedSettingsString(void) {
-    return kDYYYDefaultSpeedSettingsString;
-}
-
-static NSString *DYYYSpeedSettingsStringFromValue(id value) {
-    if ([value isKindOfClass:[NSString class]]) {
-        return [(NSString *)value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    }
-    if ([value respondsToSelector:@selector(stringValue)]) {
-        return [[value stringValue] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    }
-    return nil;
-}
-
-static NSArray<NSString *> *DYYYParsedSpeedOptionsFromString(NSString *speedConfig) {
-    NSMutableArray<NSString *> *validSpeeds = [NSMutableArray array];
-    NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-
-    for (NSString *component in [speedConfig componentsSeparatedByString:@","]) {
-        NSString *trimmedValue = [component stringByTrimmingCharactersInSet:whitespace];
-        if (trimmedValue.length == 0) {
-            continue;
-        }
-
-        NSScanner *scanner = [NSScanner scannerWithString:trimmedValue];
-        double speed = 0.0;
-        if ([scanner scanDouble:&speed] && scanner.isAtEnd && isfinite(speed) && speed > 0.0) {
-            [validSpeeds addObject:DYYYFormatSpeedOption(speed)];
-        }
-    }
-    return validSpeeds;
-}
-
-static double DYYYSpeedPreferenceValue(NSString *key, double fallback) {
-    id value = [DYYYPreferences objectForKey:key];
-    double speed = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : fallback;
-    if (!isfinite(speed) || speed <= 0.0) {
-        return fallback;
-    }
-    return speed;
-}
-
-static BOOL DYYYSpeedOptionsContainSpeed(NSArray<NSString *> *speedOptions, double speed) {
-    if (!isfinite(speed) || speed <= 0.0) {
-        return YES;
-    }
-
-    for (NSString *speedString in speedOptions) {
-        if (DYYYSpeedValuesMatch([speedString doubleValue], speed)) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-static BOOL DYYYSpeedOptionsCoverRequiredPlaybackSpeeds(NSArray<NSString *> *speedOptions) {
-    double defaultSpeed = DYYYSpeedPreferenceValue(@"DYYYDefaultSpeed", 1.0);
-    double longPressSpeed = DYYYSpeedPreferenceValue(@"DYYYLongPressSpeed", 2.0);
-    return DYYYSpeedOptionsContainSpeed(speedOptions, defaultSpeed) &&
-           DYYYSpeedOptionsContainSpeed(speedOptions, longPressSpeed);
-}
-
-BOOL DYYYNormalizeSpeedSettingsForRequiredSpeeds(void) {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([DYYYPreferences objectForKey:@"DYYYSpeedSettings"]);
-    NSArray<NSString *> *validSpeeds = DYYYParsedSpeedOptionsFromString(speedConfig ?: @"");
-    BOOL shouldUseDefaultSettings = speedConfig.length == 0 ||
-                                    validSpeeds.count == 0 ||
-                                    !DYYYSpeedOptionsCoverRequiredPlaybackSpeeds(validSpeeds);
-
-    if (!shouldUseDefaultSettings) {
-        return NO;
-    }
-
-    if (![speedConfig isEqualToString:kDYYYDefaultSpeedSettingsString]) {
-        [DYYYPreferences setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
-        return YES;
-    }
-    return NO;
-}
-
 NSArray *getSpeedOptions() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    DYYYNormalizeSpeedSettingsForRequiredSpeeds();
-
-    NSString *speedConfig = DYYYSpeedSettingsStringFromValue([DYYYPreferences objectForKey:@"DYYYSpeedSettings"]) ?: kDYYYDefaultSpeedSettingsString;
-    NSArray<NSString *> *validSpeeds = DYYYParsedSpeedOptionsFromString(speedConfig);
-    if (validSpeeds.count == 0) {
-        [DYYYPreferences setObject:kDYYYDefaultSpeedSettingsString forKey:@"DYYYSpeedSettings"];
-        validSpeeds = DYYYParsedSpeedOptionsFromString(kDYYYDefaultSpeedSettingsString);
-    }
-
-    return validSpeeds;
+    NSString *speedConfig = [[NSUserDefaults standardUserDefaults] stringForKey:@"DYYYSpeedSettings"] ?: @"1.0,1.25,1.5,2.0";
+    return [speedConfig componentsSeparatedByString:@","];
 }
 
 NSInteger getCurrentSpeedIndex() {
-    NSInteger index = [DYYYPreferences integerForKey:@"DYYYCurrentSpeedIndex"];
+    NSInteger index = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYCurrentSpeedIndex"];
     NSArray *speeds = getSpeedOptions();
 
     if (index >= speeds.count || index < 0) {
         index = 0;
-        [DYYYPreferences setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
+        [[NSUserDefaults standardUserDefaults] setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
     }
 
     return index;
@@ -202,26 +92,8 @@ void setCurrentSpeedIndex(NSInteger index) {
     if (speeds.count == 0)
         return;
     index = index % speeds.count;
-    if (index < 0) {
-        index += speeds.count;
-    }
 
-    [DYYYPreferences setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
-}
-
-BOOL setCurrentSpeedValue(float speed) {
-    if (!isfinite(speed) || speed <= 0.0f) {
-        return NO;
-    }
-
-    NSArray *speeds = getSpeedOptions();
-    for (NSInteger index = 0; index < speeds.count; index++) {
-        if (DYYYSpeedValuesMatch([speeds[index] floatValue], speed)) {
-            setCurrentSpeedIndex(index);
-            return YES;
-        }
-    }
-    return NO;
+    [[NSUserDefaults standardUserDefaults] setInteger:index forKey:@"DYYYCurrentSpeedIndex"];
 }
 
 void updateSpeedButtonUI() {
@@ -288,41 +160,13 @@ void hideSpeedButton(void) {
 }
 
 void updateSpeedButtonVisibility() {
-    if (!speedButton)
+    if (!speedButton || !isFloatSpeedButtonEnabled)
         return;
 
-    DYYYApplySpeedButtonHiddenState(speedButton, !isFloatSpeedButtonEnabled || DYYYShouldHideSpeedButton());
+    DYYYApplySpeedButtonHiddenState(speedButton, DYYYShouldHideSpeedButton());
 }
 
 @implementation FloatingSpeedButton
-
-+ (void)reloadConfiguration {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    isFloatSpeedButtonEnabled = [DYYYPreferences boolForKey:@"DYYYEnableFloatSpeedButton"];
-    showSpeedX = [DYYYPreferences boolForKey:@"DYYYSpeedButtonShowX"];
-
-    CGFloat configuredSize = [DYYYPreferences floatForKey:@"DYYYSpeedButtonSize"];
-    if (configuredSize <= 0.0) {
-        configuredSize = 32.0;
-    }
-    speedButtonSize = MIN(MAX(configuredSize, 20.0), 60.0);
-
-    void (^applyBlock)(void) = ^{
-      if (speedButton && fabs(speedButton.bounds.size.width - speedButtonSize) > FLT_EPSILON) {
-          speedButton.bounds = CGRectMake(0, 0, speedButtonSize, speedButtonSize);
-          speedButton.layer.cornerRadius = speedButtonSize / 2.0;
-          [speedButton loadSavedPosition];
-      }
-      updateSpeedButtonUI();
-      updateSpeedButtonVisibility();
-    };
-
-    if ([NSThread isMainThread]) {
-        applyBlock();
-    } else {
-        dispatch_async(dispatch_get_main_queue(), applyBlock);
-    }
-}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
@@ -362,9 +206,6 @@ void updateSpeedButtonVisibility() {
     for (UIGestureRecognizer *recognizer in [self.gestureRecognizers copy]) {
         [self removeGestureRecognizer:recognizer];
     }
-    [self removeTarget:self action:@selector(handleTouchUpInside:) forControlEvents:UIControlEventTouchUpInside];
-    [self removeTarget:self action:@selector(handleTouchDown:) forControlEvents:UIControlEventTouchDown];
-    [self removeTarget:self action:@selector(handleTouchUpOutside:) forControlEvents:UIControlEventTouchUpOutside];
 
     UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
     [self addGestureRecognizer:panGesture];
@@ -411,11 +252,6 @@ void updateSpeedButtonVisibility() {
                              self.transform = CGAffineTransformIdentity;
                            }];
         }];
-
-    id currentController = DYYYCurrentSpeedInteractionController();
-    if (currentController) {
-        self.interactionController = currentController;
-    }
 
     if (self.interactionController) {
         @try {
@@ -555,27 +391,21 @@ void updateSpeedButtonVisibility() {
 - (void)saveButtonPosition {
     if (self.superview) {
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        [DYYYPreferences setFloat:self.center.x / self.superview.bounds.size.width forKey:@"DYYYSpeedButtonCenterXPercent"];
-        [DYYYPreferences setFloat:self.center.y / self.superview.bounds.size.height forKey:@"DYYYSpeedButtonCenterYPercent"];
-        [DYYYPreferences setBool:self.isLocked forKey:@"DYYYSpeedButtonLocked"];
+        [defaults setFloat:self.center.x / self.superview.bounds.size.width forKey:@"DYYYSpeedButtonCenterXPercent"];
+        [defaults setFloat:self.center.y / self.superview.bounds.size.height forKey:@"DYYYSpeedButtonCenterYPercent"];
+        [defaults setBool:self.isLocked forKey:@"DYYYSpeedButtonLocked"];
     }
 }
 
 - (void)loadSavedPosition {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    float centerXPercent = [DYYYPreferences floatForKey:@"DYYYSpeedButtonCenterXPercent"];
-    float centerYPercent = [DYYYPreferences floatForKey:@"DYYYSpeedButtonCenterYPercent"];
+    float centerXPercent = [defaults floatForKey:@"DYYYSpeedButtonCenterXPercent"];
+    float centerYPercent = [defaults floatForKey:@"DYYYSpeedButtonCenterYPercent"];
 
-    self.isLocked = [DYYYPreferences boolForKey:@"DYYYSpeedButtonLocked"];
+    self.isLocked = [defaults boolForKey:@"DYYYSpeedButtonLocked"];
 
     if (centerXPercent > 0 && centerYPercent > 0 && self.superview) {
-        CGFloat halfWidth = self.bounds.size.width / 2.0;
-        CGFloat halfHeight = self.bounds.size.height / 2.0;
-        CGFloat centerX = centerXPercent * self.superview.bounds.size.width;
-        CGFloat centerY = centerYPercent * self.superview.bounds.size.height;
-        centerX = MAX(halfWidth, MIN(centerX, self.superview.bounds.size.width - halfWidth));
-        centerY = MAX(halfHeight, MIN(centerY, self.superview.bounds.size.height - halfHeight));
-        self.center = CGPointMake(centerX, centerY);
+        self.center = CGPointMake(centerXPercent * self.superview.bounds.size.width, centerYPercent * self.superview.bounds.size.height);
     }
 }
 
@@ -593,15 +423,7 @@ void updateSpeedButtonVisibility() {
     if (self.statusCheckTimer && [self.statusCheckTimer isValid]) {
         return;
     }
-    __weak typeof(self) weakSelf = self;
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:60.0 repeats:YES block:^(NSTimer *t) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) {
-            [t invalidate];
-            return;
-        }
-        [strongSelf checkAndRecoverButtonStatus];
-    }];
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:60.0 target:self selector:@selector(checkAndRecoverButtonStatus) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     self.statusCheckTimer = timer;
 }
@@ -620,11 +442,26 @@ void updateSpeedButtonVisibility() {
 - (void)checkAndRecoverButtonStatus {
     if (!self.isResponding) {
         [self resetButtonState];
+        [self setupGestureRecognizers];
         self.isResponding = YES;
     }
 
     if (!self.interactionController) {
-        self.interactionController = DYYYCurrentSpeedInteractionController();
+        UIWindow *win = [DYYYUtils getActiveWindow];
+        UIViewController *topVC = win.rootViewController;
+        while (topVC && topVC.presentedViewController) {
+            topVC = topVC.presentedViewController;
+        }
+
+        if (topVC) {
+            Class PlayVCClass = NSClassFromString(@"AWEPlayInteractionViewController");
+            for (UIViewController *vc in findViewControllersInHierarchy(topVC)) {
+                if (PlayVCClass && [vc isKindOfClass:PlayVCClass]) {
+                    self.interactionController = vc;
+                    break;
+                }
+            }
+        }
     }
 }
 

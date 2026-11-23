@@ -3,7 +3,6 @@
 #import <objc/runtime.h>
 #import "DYYYImagePickerDelegate.h"
 #import "DYYYUtils.h"
-#import "DYYYPreferences.h"
 
 #import "DYYYAboutDialogView.h"
 #import "DYYYCustomInputView.h"
@@ -13,12 +12,12 @@
 
 // 获取用户默认设置
 + (BOOL)getUserDefaults:(NSString *)key {
-    return [DYYYPreferences boolForKey:key];
+    return [[NSUserDefaults standardUserDefaults] boolForKey:key];
 }
 
 // 设置用户默认设置
 + (void)setUserDefaults:(id)object forKey:(NSString *)key {
-    [DYYYPreferences setObject:object forKey:key];
+    [[NSUserDefaults standardUserDefaults] setObject:object forKey:key];
 }
 
 // 显示自定义关于弹窗
@@ -62,7 +61,7 @@
               @"DYYYEnableFloatSpeedButton" : @[ @"DYYYAutoRestoreSpeed", @"DYYYSpeedButtonShowX", @"DYYYSpeedButtonSize", @"DYYYSpeedSettings" ],
               @"DYYYEnableFloatClearButton" : @[
                   @"DYYYClearButtonIcon", @"DYYYEnableFloatClearButtonSize", @"DYYYRemoveTimeProgress", @"DYYYHideTimeProgress", @"DYYYHideDanmaku", @"DYYYHideSlider", @"DYYYHideTabBar",
-                  @"DYYYHideSpeed", @"DYYYHideClearButtonOnTap", @"DYYYHideChapter", @"DYYYHidePauseVideoIcon", @"DYYYHideStatusBarOnClear"
+                  @"DYYYHideSpeed", @"DYYYHideChapter"
               ],
               @"DYYYEnableModernPanel" : @[ @"DYYYLongPressPanelBlur", @"DYYYLongPressPanelDark" ],
               @"DYYYEnableDoubleTapMenu" : @[ @"DYYYDoubleTapMenuSettings" ],
@@ -226,7 +225,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *DYYYConditionalSourceTar
 }
 
 static BOOL settingActive(NSString *identifier) {
-    id val = [DYYYPreferences objectForKey:identifier];
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:identifier];
     if ([val isKindOfClass:[NSNumber class]]) {
         return [val boolValue];
     } else if ([val isKindOfClass:[NSString class]]) {
@@ -314,7 +313,7 @@ static NSArray *allSettingsViewControllers(void) {
         NSString *sourceKey = valueRule[@"sourceKey"];
 
         if ([valueType isEqualToString:@"string"] && [condition isEqualToString:@"isNotEmpty"]) {
-            NSString *sourceValue = [DYYYPreferences objectForKey:sourceKey];
+            NSString *sourceValue = [[NSUserDefaults standardUserDefaults] objectForKey:sourceKey];
             enableState = (sourceValue != nil && sourceValue.length > 0);
         }
     }
@@ -356,8 +355,6 @@ static NSArray *allSettingsViewControllers(void) {
     [self updateDependentItemsForSetting:identifier value:@(isEnabled)];
 }
 + (void)updateConflictingItemUIState:(NSString *)identifier withValue:(BOOL)value {
-    [self setUserDefaults:@(value) forKey:identifier];
-
     for (AWESettingBaseViewController *settingsVC in allSettingsViewControllers()) {
         AWESettingsViewModel *viewModel = (AWESettingsViewModel *)[settingsVC viewModel];
         if (!viewModel || ![viewModel respondsToSelector:@selector(sectionDataArray)])
@@ -374,6 +371,7 @@ static NSArray *allSettingsViewControllers(void) {
                 if ([item.identifier isEqualToString:identifier]) {
                     if (item.cellType == 6 || item.cellType == 37) {
                         item.isSwitchOn = value;
+                        [self setUserDefaults:@(value) forKey:identifier];
                     }
                     item.isEnable = value;
                     [item refreshCell];
@@ -465,7 +463,7 @@ static NSArray *allSettingsViewControllers(void) {
     item.title = dict[@"title"];
     item.subTitle = dict[@"subTitle"];
 
-    NSString *savedDetail = [DYYYPreferences objectForKey:item.identifier];
+    NSString *savedDetail = [[NSUserDefaults standardUserDefaults] objectForKey:item.identifier];
     NSString *placeholder = dict[@"detail"];
     item.detail = savedDetail ?: @"";
 
@@ -689,7 +687,7 @@ static void showIconOptionsDialog(NSString *title, UIImage *previewImage, NSStri
 }
 
 + (void)openSettingsWithViewController:(UIViewController *)vc {
-    BOOL hasAgreed = [DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"];
+    BOOL hasAgreed = [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"];
     showDYYYSettingsVC(vc, hasAgreed);
 }
 

@@ -1,8 +1,4 @@
 #import "AwemeHeaders.h"
-#import <objc/runtime.h>
-#import <string.h>
-#import "CityManager.h"
-#import "DYYYPreferences.h"
 #import "DYYYBottomAlertView.h"
 #import "DYYYConfirmCloseView.h"
 #import "DYYYCustomInputView.h"
@@ -10,944 +6,7 @@
 #import "DYYYKeywordListView.h"
 #import "DYYYManager.h"
 #import "DYYYToast.h"
-#import "DYYYWardPanelView.h"
-#import "DYYYWardListViewController.h"
-#import "DYYYWardManager.h"
 #import "DYYYUtils.h"
-#import "DYYYPipPlayer.h"
-
-// MARK: - 评论插眼：向评论长按面板注入「插眼」Element
-static NSString *DYYYCommentWardSafeStr(id obj, NSString *key) {
-    if (!obj || !key) return @"";
-    @try {
-        id v = [obj valueForKey:key];
-        if (v && ![v isKindOfClass:[NSNull class]]) {
-            NSString *s = [NSString stringWithFormat:@"%@", v];
-            if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
-        }
-    } @catch (NSException *e) {}
-    return @"";
-}
-
-static id DYYYCommentWardContext(id element) {
-    if (!element) return nil;
-    @try {
-        SEL sel = NSSelectorFromString(@"commentPageContext");
-        if ([element respondsToSelector:sel]) {
-            return [element performSelector:sel];
-        }
-    } @catch (NSException *e) {}
-    return nil;
-}
-
-static id gDYYYCommentPanelContext = nil; // 最近一次评论面板 context，供 Element 点击兜底
-
-static id DYYYCommentFromContext(id ctx) {
-    if (!ctx) return nil;
-    id comment = nil;
-    @try {
-        SEL s1 = NSSelectorFromString(@"selectdComment");
-        if ([ctx respondsToSelector:s1]) comment = [ctx performSelector:s1];
-        if (!comment && [ctx respondsToSelector:NSSelectorFromString(@"params")]) {
-            id p = [ctx performSelector:NSSelectorFromString(@"params")];
-            if (p && [p respondsToSelector:s1]) comment = [p performSelector:s1];
-        }
-    } @catch (NSException *e) {}
-    return comment;
-}
-
-// 最近一次打开过的作品 ID（视频长按面板里记录），仅作评论插眼的兜底
-static NSString *gDYYYLastAwemeID = nil;
-
-// 从 KVC 对象里按多个 key 取第一个非空字符串（不同版本字段名不一致）
-static NSString *DYYYCommentStrForKeys(id obj, NSArray *keys) {
-    if (!obj) return @"";
-    for (NSString *k in keys) {
-        NSString *s = DYYYCommentWardSafeStr(obj, k);
-        if (s.length > 0) return s;
-    }
-    return @"";
-}
-
-// 取评论所属作品 ID：评论模型字段 → context/params 的 extraParams → 最近播放作品
-static NSString *DYYYCommentAwemeID(id ctx, id comment) {
-    NSArray *keys = @[ @"awemeID", @"awemeId", @"aweme_id", @"groupID", @"groupId", @"itemID", @"itemId", @"item_id" ];
-    NSString *v = DYYYCommentStrForKeys(comment, keys);
-    if (v.length > 0) return v;
-    @try {
-        NSMutableArray *srcs = [NSMutableArray array];
-        if (ctx) [srcs addObject:ctx];
-        SEL ps = NSSelectorFromString(@"params");
-        if (ctx && [ctx respondsToSelector:ps]) {
-            id p = [ctx performSelector:ps];
-            if (p) [srcs addObject:p];
-        }
-        for (id src in srcs) {
-            SEL es = NSSelectorFromString(@"extraParams");
-            if (![src respondsToSelector:es]) continue;
-            id ep = [src performSelector:es];
-            if (![ep isKindOfClass:[NSDictionary class]]) continue;
-            for (NSString *k in keys) {
-                id val = [(NSDictionary *)ep objectForKey:k];
-                if (!val || [val isKindOfClass:[NSNull class]]) continue;
-                NSString *s = [NSString stringWithFormat:@"%@", val];
-                if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
-            }
-        }
-    } @catch (NSException *e) {}
-    return gDYYYLastAwemeID ?: @"";
-}
-
-// 把评论上下文整理成插眼面板认识的字典
-static NSDictionary *DYYYCommentWardData(id ctx) {
-    id comment = DYYYCommentFromContext(ctx);
-    NSString *content = @"";
-    NSString *nick = @"未知用户";
-    NSString *uid = @"";
-    NSString *secUid = @"";
-    NSString *avatar = @"";
-    NSString *ctStr = @"";
-    if (comment) {
-        // 评论内容：字段名各版本不一（content/text/commentContent/...），
-        // 取不到会导致插眼记录的 desc 为空 → 后面的「内容兜底匹配」直接失效
-        content = DYYYCommentStrForKeys(comment, @[ @"content", @"text", @"commentContent",
-                                                    @"contentText", @"commentText", @"desc", @"description" ]);
-        // v2.4-18：抖音评论模型（AWE 系）里用户字段是 "user"，"author" 只是部分旧版；
-        // 只试 author 会导致评论插眼的 uid/secUid/昵称/头像全空——v2.4-16 的「点头像进主页」
-        // 对评论插眼因此失效（永远「无用户主页信息」）。
-        id author = nil;
-        for (NSString *ak in @[ @"user", @"author" ]) {
-            @try {
-                id v = [comment valueForKey:ak];
-                if (v && ![v isKindOfClass:[NSNull class]]) { author = v; break; }
-            } @catch (NSException *e) {}
-        }
-        if (author) {
-            NSString *n = DYYYCommentWardSafeStr(author, @"nickname");
-            if (n.length > 0) nick = n;
-            uid = DYYYCommentWardSafeStr(author, @"uid");
-            secUid = DYYYCommentWardSafeStr(author, @"secUid");
-            // v2.4-18：头像多 key 兜底（avatarThumb 是 AWEUserModel 标准小头档，avatarMedium 旧字段，
-            // avatarLarge 大图兜底）；URL 列表 originURLList 为主，urlList 兜底
-            for (NSString *avk in @[ @"avatarThumb", @"avatarMedium", @"avatarLarge" ]) {
-                id av = nil;
-                @try { av = [author valueForKey:avk]; } @catch (NSException *e) {}
-                if (!av || [av isKindOfClass:[NSNull class]]) continue;
-                NSArray *l = nil;
-                if ([av respondsToSelector:@selector(originURLList)]) l = [av originURLList];
-                if (l.count == 0 && [av respondsToSelector:@selector(urlList)]) l = [av urlList];
-                if (l.count > 0) { avatar = l.firstObject ?: @""; break; }
-            }
-        }
-        id ct = nil;
-        @try { ct = [comment valueForKey:@"createTime"]; } @catch (NSException *e) {}
-        double ts = 0;
-        if ([ct isKindOfClass:[NSNumber class]]) ts = [ct doubleValue];
-        if (ts > 0) {
-            NSDate *d = [NSDate dateWithTimeIntervalSince1970:ts];
-            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-            ctStr = [fmt stringFromDate:d] ?: @"";
-        }
-    }
-    NSString *awemeID = DYYYCommentAwemeID(ctx, comment);
-    NSString *commentID = DYYYCommentStrForKeys(comment, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
-    // 同时保存所有候选 id 值：定位时逐个比对，避免字段名不一致导致永远匹配不上
-    NSMutableArray *cidCandidates = [NSMutableArray array];
-    for (NSString *k in @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]) {
-        NSString *v = DYYYCommentStrForKeys(comment, @[ k ]);
-        if (v.length > 0 && ![cidCandidates containsObject:v]) [cidCandidates addObject:v];
-    }
-    NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
-    // v2.4-2：二级回复的父评论 id（replyComment/parentComment/parentCommentModel 等，各版本字段名不一）。
-    // 只在该评论确实是「回复」时才取到值，一级评论此项为空。定位二级回复时靠它先定位父评论再展开。
-    // v2.4-5：同时按同序存父评论正文（parentTexts）——Swift 新 cell 的 cid 可能是 Int64 标量，
-    // 对象图搜不到，而 cell 上的 UILabel 文本永远可靠；定位时优先按文本扫父 cell。
-    NSMutableArray *parentIDs = [NSMutableArray array];
-    NSMutableArray *parentTexts = [NSMutableArray array];
-    {
-        NSArray *parentKeys = @[ @"replyComment", @"parentComment", @"parentCommentModel", @"replyToComment",
-                                 @"originComment", @"parentModel", @"replyToCommentModel" ];
-        for (NSString *pk in parentKeys) {
-            id p = nil;
-            @try { p = [comment valueForKey:pk]; } @catch (NSException *e) {}
-            if (!p || [p isKindOfClass:[NSNull class]]) continue;
-            NSString *pid = DYYYCommentStrForKeys(p, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
-            if (pid.length > 0 && ![parentIDs containsObject:pid]) {
-                [parentIDs addObject:pid];
-                NSString *ptxt = DYYYCommentStrForKeys(p, @[ @"content", @"text", @"commentContent",
-                                                            @"contentText", @"commentText", @"desc", @"description" ]);
-                [parentTexts addObject:(ptxt ?: @"")];
-            }
-        }
-        // 兜底：部分版本 reply/parent 的 id 直接是字符串字段
-        if (parentIDs.count == 0) {
-            NSString *pid = DYYYCommentStrForKeys(comment, @[ @"replyToCommentID", @"parentCommentID", @"parentID", @"rootCommentID" ]);
-            if (pid.length > 0) { [parentIDs addObject:pid]; [parentTexts addObject:@""]; }
-        }
-    }
-
-    NSMutableDictionary *data = [NSMutableDictionary dictionary];
-    [data setObject:@"评论" forKey:@"type"];
-    [data setObject:uid forKey:@"uid"];
-    [data setObject:secUid forKey:@"secUid"];
-    [data setObject:nick forKey:@"nickname"];
-    [data setObject:avatar forKey:@"avatarURL"];
-    [data setObject:awemeID forKey:@"awemeID"];
-    [data setObject:commentID forKey:@"commentID"];
-    [data setObject:cidCandidates forKey:@"commentIDs"];
-    if (parentIDs.count > 0) {
-        [data setObject:parentIDs forKey:@"parentIDs"];
-        [data setObject:parentTexts forKey:@"parentTexts"]; // v2.4-5：与 parentIDs 同序
-    }
-    [data setObject:ctStr forKey:@"createTime"];
-    [data setObject:content forKey:@"desc"];
-    [data setObject:shareURL forKey:@"shareURL"];
-    return data;
-}
-
-static BOOL DYYYWardEl_shouldShow(id self, SEL _cmd) { (void)self; (void)_cmd; return YES; }
-static id DYYYWardEl_content(id self, SEL _cmd) { (void)self; (void)_cmd; return @"插眼"; }
-static id DYYYWardEl_image(id self, SEL _cmd) {
-    (void)self; (void)_cmd;
-    if (@available(iOS 13.0, *)) {
-        return [UIImage systemImageNamed:@"mappin.circle"];
-    }
-    return nil;
-}
-static void DYYYWardEl_tapped(id self, SEL _cmd) {
-    (void)_cmd;
-    id ctx = DYYYCommentWardContext(self);
-    if (!ctx) ctx = gDYYYCommentPanelContext;
-    NSDictionary *data = DYYYCommentWardData(ctx);
-    // 等宿主菜单收起后再弹插眼面板，避免被菜单的 dismiss 动画一起带走
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithWardData:data];
-        [panel show];
-    });
-}
-
-static Class DYYYWardCommentElementClass(void) {
-    static Class cls = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class base = NSClassFromString(@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement");
-        if (!base) return;
-        Class c = objc_allocateClassPair(base, "DYYYWardCommentElement", 0);
-        if (!c) return;
-        class_addMethod(c, NSSelectorFromString(@"elementShouldShow"), (IMP)DYYYWardEl_shouldShow, "B@:");
-        class_addMethod(c, NSSelectorFromString(@"elementContent"), (IMP)DYYYWardEl_content, "@@:");
-        class_addMethod(c, NSSelectorFromString(@"elementImage"), (IMP)DYYYWardEl_image, "@@:");
-        class_addMethod(c, NSSelectorFromString(@"elementTapped"), (IMP)DYYYWardEl_tapped, "v@:");
-        objc_registerClassPair(c);
-        cls = c;
-    });
-    return cls;
-}
-
-// MARK: - 获取作品数据辅助方法
-// 安全读取任意对象的属性（兼容本地头文件未声明的运行期字段，如 uid/secUid/playCount 等）。
-static id DYYYVideoInfoSafeValue(id obj, NSString *key) {
-    if (!obj || !key) return nil;
-    @try {
-        return [obj valueForKey:key];
-    } @catch (NSException *e) {
-        return nil;
-    }
-}
-
-// 尝试多个 key，返回第一个非空字符串值（用于 uid/secUid 等字段名不确定的场景）。
-static NSString *DYYYVideoInfoStringForKeys(id obj, NSArray<NSString *> *keys) {
-    if (!obj || keys.count == 0) return @"";
-    for (NSString *key in keys) {
-        id val = DYYYVideoInfoSafeValue(obj, key);
-        if (val && ![val isKindOfClass:[NSNull class]]) {
-            NSString *s = [NSString stringWithFormat:@"%@", val];
-            if (s.length > 0 && ![s isEqualToString:@"(null)"]) {
-                return s;
-            }
-        }
-    }
-    return @"";
-}
-
-// 解析发布属地：优先 model.ipAttribution，其次 cityCode/region 用 CityManager 转地名。
-static NSString *DYYYVideoInfoResolveRegion(AWEAwemeModel *model) {
-    if (!model) return @"";
-    NSString *ipAttribution = model.ipAttribution;
-    if (ipAttribution.length > 0) return ipAttribution;
-
-    NSString *cityCode = model.cityCode;
-    if (cityCode && cityCode.length > 0 && ![cityCode isEqualToString:@"0"] && [cityCode integerValue] != 0) {
-        NSString *city = [CityManager.sharedInstance getCityNameWithCode:cityCode];
-        if (city.length > 0) return city;
-    }
-
-    NSString *regionCode = DYYYVideoInfoStringForKeys(model, @[@"region"]);
-    if (regionCode.length > 0) {
-        NSString *country = [CityManager.sharedInstance getCountryNameWithCode:regionCode];
-        if (country.length > 0) return country;
-    }
-    return @"";
-}
-
-// 运行期遍历对象属性，按关键词匹配取值（兜底方案，用于头文件未声明的统计字段如 playCount/downloadCount）
-static NSString *DYYYVideoInfoScanProperty(id obj, NSString *keyword) {
-    if (!obj || !keyword) return @"";
-    Class cls = [obj class];
-    while (cls && cls != [NSObject class]) {
-        unsigned int count = 0;
-        objc_property_t *props = class_copyPropertyList(cls, &count);
-        for (unsigned int i = 0; i < count; i++) {
-            const char *name = property_getName(props[i]);
-            NSString *propName = [NSString stringWithUTF8String:name];
-            if ([propName.lowercaseString containsString:keyword.lowercaseString]) {
-                @try {
-                    id val = [obj valueForKey:propName];
-                    if (val && ![val isKindOfClass:[NSNull class]]) {
-                        NSString *s = [NSString stringWithFormat:@"%@", val];
-                        if (s.length > 0 && ![s isEqualToString:@"(null)"]) {
-                            free(props);
-                            return s;
-                        }
-                    }
-                } @catch (NSException *e) {}
-            }
-        }
-        free(props);
-        cls = class_getSuperclass(cls);
-    }
-    return @"";
-}
-
-// 递归搜索 JSON 树，找包含 keyword 的 key 对应的值（C 函数，避免 block 递归崩溃）
-static NSString *DYYYSearchJsonValue(id node, NSString *keyword) {
-    if (!node || [node isKindOfClass:[NSNull class]]) return nil;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = (NSDictionary *)node;
-        for (NSString *k in [dict allKeys]) {
-            if ([k.lowercaseString containsString:keyword.lowercaseString]) {
-                id v = [dict objectForKey:k];
-                if (v && ![v isKindOfClass:[NSNull class]]) {
-                    NSString *s = [NSString stringWithFormat:@"%@", v];
-                    if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
-                }
-            }
-        }
-        for (id v in [dict allValues]) {
-            NSString *r = DYYYSearchJsonValue(v, keyword);
-            if (r) return r;
-        }
-    } else if ([node isKindOfClass:[NSArray class]]) {
-        for (id v in (NSArray *)node) {
-            NSString *r = DYYYSearchJsonValue(v, keyword);
-            if (r) return r;
-        }
-    } else if ([node isKindOfClass:[NSString class]]) {
-        NSData *innerData = [(NSString *)node dataUsingEncoding:NSUTF8StringEncoding];
-        if (innerData) {
-            id innerJson = [NSJSONSerialization JSONObjectWithData:innerData options:NSJSONReadingAllowFragments error:nil];
-            if (innerJson) {
-                return DYYYSearchJsonValue(innerJson, keyword);
-            }
-        }
-    }
-    return nil;
-}
-
-// MARK: - 作品数据卡片
-@interface DYYYWorkDataCardView : UIView
-+ (void)showWithAwemeModel:(AWEAwemeModel *)model;
-@end
-
-@implementation DYYYWorkDataCardView {
-    AWEAwemeModel *_model;
-    NSString *_copyText;
-    NSString *_avatarURL;
-    NSString *_videoURL;
-    NSString *_workLink;
-    NSString *_profileLink;
-    UILabel *_playCountLabel;
-
-    NSString *_nickname;
-    NSString *_douyinId;
-    NSString *_uid;
-    NSString *_secUid;
-    NSString *_region;
-    NSString *_itemID;
-    NSString *_desc;
-    NSString *_publishTime;
-    NSString *_fetchTime;
-    NSString *_playCount;
-    NSString *_diggCount;
-    NSString *_commentCount;
-    NSString *_collectCount;
-    NSString *_shareCount;
-    NSString *_downloadCount;
-}
-
-+ (void)showWithAwemeModel:(AWEAwemeModel *)model {
-    if (!model) return;
-    DYYYWorkDataCardView *view = [[self alloc] initWithAwemeModel:model];
-    [view show];
-}
-
-- (instancetype)initWithAwemeModel:(AWEAwemeModel *)model {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    self = [super initWithFrame:window.bounds];
-    if (self) {
-        _model = model;
-        [self extractData];
-        [self buildUI];
-    }
-    return self;
-}
-
-- (void)extractData {
-    AWEUserModel *author = _model.author;
-    _nickname = author.nickname ?: @"未知";
-    _douyinId = author.shortID ?: @"";
-    _uid = DYYYVideoInfoStringForKeys(author, @[@"uid", @"userID", @"uniqueId", @"userId"]);
-    _secUid = DYYYVideoInfoStringForKeys(author, @[@"secUid", @"secUID", @"sec_uid"]);
-    _avatarURL = (author.avatarMedium && author.avatarMedium.originURLList.count > 0) ? author.avatarMedium.originURLList.firstObject : @"";
-
-    _itemID = _model.itemID ?: @"";
-    _desc = _model.descriptionString ?: @"";
-    _region = DYYYVideoInfoResolveRegion(_model);
-
-    _publishTime = @"";
-    NSNumber *createTimeNum = _model.createTime;
-    if (createTimeNum && [createTimeNum doubleValue] > 0) {
-        NSDate *date = [NSDate dateWithTimeIntervalSince1970:[createTimeNum doubleValue]];
-        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-        fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-        _publishTime = [fmt stringFromDate:date] ?: @"";
-    }
-
-    AWEAwemeStatisticsModel *stats = _model.statistics;
-    // 播放量：先试 KVC 多 key，再运行期扫描含 "play" 的属性
-    _playCount = DYYYVideoInfoStringForKeys(stats, @[@"playCount", @"play_count"]);
-    if (_playCount.length == 0) _playCount = DYYYVideoInfoScanProperty(stats, @"play");
-    if (_playCount.length == 0) _playCount = @"0";
-    _diggCount = [NSString stringWithFormat:@"%@", stats.diggCount ?: @0];
-    _commentCount = DYYYVideoInfoStringForKeys(stats, @[@"commentCount", @"comment_count"]);
-    if (_commentCount.length == 0) _commentCount = DYYYVideoInfoScanProperty(stats, @"comment");
-    if (_commentCount.length == 0) _commentCount = @"0";
-    _collectCount = DYYYVideoInfoStringForKeys(stats, @[@"collectCount", @"collect_count", @"favoriteCount"]);
-    if (_collectCount.length == 0) _collectCount = DYYYVideoInfoScanProperty(stats, @"collect");
-    if (_collectCount.length == 0) _collectCount = @"0";
-    _shareCount = DYYYVideoInfoStringForKeys(stats, @[@"shareCount", @"share_count"]);
-    if (_shareCount.length == 0) _shareCount = DYYYVideoInfoScanProperty(stats, @"share");
-    if (_shareCount.length == 0) _shareCount = @"0";
-    _downloadCount = DYYYVideoInfoStringForKeys(stats, @[@"downloadCount", @"download_count"]);
-    if (_downloadCount.length == 0) _downloadCount = DYYYVideoInfoScanProperty(stats, @"download");
-    if (_downloadCount.length == 0) _downloadCount = @"0";
-
-    // 作品链接：用短格式，不用 shareURL（太长）
-    _workLink = [NSString stringWithFormat:@"https://www.douyin.com/video/%@", _itemID];
-    // 主页链接
-    if (_secUid.length > 0) {
-        _profileLink = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", _secUid];
-    } else if (_uid.length > 0) {
-        _profileLink = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", _uid];
-    } else {
-        _profileLink = @"";
-    }
-
-    AWEVideoModel *video = _model.video;
-    if (video && video.h264URL && video.h264URL.originURLList.count > 0) {
-        _videoURL = video.h264URL.originURLList.firstObject;
-    } else if (video && video.playURL && video.playURL.originURLList.count > 0) {
-        _videoURL = video.playURL.originURLList.firstObject;
-    }
-
-    NSDateFormatter *nowFmt = [[NSDateFormatter alloc] init];
-    nowFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
-    _fetchTime = [nowFmt stringFromDate:[NSDate date]] ?: @"";
-
-    NSMutableString *info = [NSMutableString string];
-    [info appendFormat:@"作者：%@\n", _nickname];
-    [info appendFormat:@"抖音号：%@\n", _douyinId];
-    [info appendFormat:@"UID：%@\n", _uid];
-    [info appendFormat:@"secUID：%@\n", _secUid];
-    [info appendFormat:@"获取时间：%@\n", _fetchTime];
-    [info appendFormat:@"作品ID：%@\n", _itemID];
-    [info appendFormat:@"作品文案：%@\n", _desc];
-    [info appendFormat:@"发布属地：%@\n", _region];
-    [info appendFormat:@"发布时间：%@\n", _publishTime];
-    [info appendFormat:@"播放量：%@\n", _playCount];
-    [info appendFormat:@"点赞量：%@\n", _diggCount];
-    [info appendFormat:@"评论量：%@\n", _commentCount];
-    [info appendFormat:@"收藏量：%@\n", _collectCount];
-    [info appendFormat:@"分享量：%@\n", _shareCount];
-    [info appendFormat:@"下载量：%@\n", _downloadCount];
-    [info appendFormat:@"作品链接：%@\n", _workLink];
-    [info appendFormat:@"主页链接：%@\n", _profileLink];
-    _copyText = [info copy];
-}
-
-- (void)buildUI {
-    // 背景遮罩（点空白处关闭）
-    UIView *dimView = [[UIView alloc] initWithFrame:self.bounds];
-    dimView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
-    [dimView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismiss)]];
-    [self addSubview:dimView];
-
-    CGFloat cardW = MIN(self.bounds.size.width - 36, 340);
-    CGFloat cardH = MIN(self.bounds.size.height - 80, 540);
-    CGFloat cardX = (self.bounds.size.width - cardW) / 2;
-    CGFloat cardY = (self.bounds.size.height - cardH) / 2;
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(cardX, cardY, cardW, cardH)];
-    card.backgroundColor = [UIColor whiteColor];
-    card.layer.cornerRadius = 18;
-    card.layer.shadowColor = [UIColor blackColor].CGColor;
-    card.layer.shadowOffset = CGSizeMake(0, 6);
-    card.layer.shadowOpacity = 0.25;
-    card.layer.shadowRadius = 16;
-    [self addSubview:card];
-
-    CGFloat topH = 52;
-    CGFloat bottomH = 56;
-    CGFloat margin = 16;
-
-    // 顶部栏
-    UIView *topBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, topH)];
-    [card addSubview:topBar];
-
-    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.frame = CGRectMake(10, 8, 36, 36);
-    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
-    closeBtn.titleLabel.font = [UIFont systemFontOfSize:22];
-    [closeBtn setTitleColor:[UIColor darkGrayColor] forState:UIControlStateNormal];
-    [closeBtn addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
-    [topBar addSubview:closeBtn];
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 11, cardW - 100, 30)];
-    titleLabel.text = @"作品数据";
-    titleLabel.textAlignment = NSTextAlignmentCenter;
-    titleLabel.font = [UIFont boldSystemFontOfSize:18];
-    titleLabel.textColor = [UIColor blackColor];
-    [topBar addSubview:titleLabel];
-
-    UIButton *copyTopBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    copyTopBtn.frame = CGRectMake(cardW - 78, 10, 68, 32);
-    copyTopBtn.layer.cornerRadius = 14;
-    copyTopBtn.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
-    copyTopBtn.layer.borderColor = [UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1].CGColor;
-    [copyTopBtn setTitle:@"复制信息" forState:UIControlStateNormal];
-    [copyTopBtn setTitleColor:[UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1] forState:UIControlStateNormal];
-    copyTopBtn.titleLabel.font = [UIFont systemFontOfSize:13];
-    [copyTopBtn addTarget:self action:@selector(copyInfo:) forControlEvents:UIControlEventTouchUpInside];
-    [topBar addSubview:copyTopBtn];
-
-    // 底部栏
-    UIView *bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, cardH - bottomH, cardW, bottomH)];
-    [card addSubview:bottomBar];
-
-    NSArray *bottomTitles = @[@"下载原画", @"复制信息", @"保存头像"];
-    NSArray *bottomActions = @[NSStringFromSelector(@selector(downloadOriginal:)),
-                               NSStringFromSelector(@selector(copyInfo:)),
-                               NSStringFromSelector(@selector(saveAvatar:))];
-    CGFloat btnW = (cardW - margin * 2 - 16) / 3;
-    for (NSInteger i = 0; i < 3; i++) {
-        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-        btn.frame = CGRectMake(margin + i * (btnW + 8), 8, btnW, 40);
-        btn.layer.cornerRadius = 8;
-        btn.titleLabel.font = [UIFont systemFontOfSize:14];
-        [btn setTitle:bottomTitles[i] forState:UIControlStateNormal];
-        if (i == 0) {
-            btn.backgroundColor = [UIColor colorWithRed:0.15 green:0.68 blue:0.38 alpha:1];
-            [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        } else {
-            btn.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1];
-            [btn setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
-        }
-        [btn addTarget:self action:NSSelectorFromString(bottomActions[i]) forControlEvents:UIControlEventTouchUpInside];
-        [bottomBar addSubview:btn];
-    }
-
-    // 内容滚动区
-    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, topH, cardW, cardH - topH - bottomH)];
-    scroll.alwaysBounceVertical = YES;
-    [card addSubview:scroll];
-
-    CGFloat y = margin;
-    CGFloat contentW = cardW - margin * 2;
-
-    // 作者区（头像 + 信息）
-    UIImageView *avatar = [[UIImageView alloc] initWithFrame:CGRectMake(margin, y, 54, 54)];
-    avatar.layer.cornerRadius = 27;
-    avatar.clipsToBounds = YES;
-    avatar.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
-    avatar.contentMode = UIViewContentModeScaleAspectFill;
-    [scroll addSubview:avatar];
-    if (_avatarURL.length > 0) {
-        [self loadImageWithURL:_avatarURL intoImageView:avatar];
-    }
-
-    UILabel *nameLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 22)];
-    nameLabel.text = _nickname;
-    nameLabel.font = [UIFont boldSystemFontOfSize:17];
-    nameLabel.textColor = [UIColor blackColor];
-    [scroll addSubview:nameLabel];
-
-    y += 26;
-    UILabel *idLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 18)];
-    idLabel.text = [NSString stringWithFormat:@"抖音号：%@", _douyinId];
-    idLabel.font = [UIFont systemFontOfSize:13];
-    idLabel.textColor = [UIColor grayColor];
-    [scroll addSubview:idLabel];
-
-    y += 22;
-    UILabel *uidLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin + 66, y, contentW - 66, 18)];
-    uidLabel.text = [NSString stringWithFormat:@"UID：%@", _uid];
-    uidLabel.font = [UIFont systemFontOfSize:12];
-    uidLabel.textColor = [UIColor grayColor];
-    uidLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [scroll addSubview:uidLabel];
-
-    y += 34;
-    [self addLineIn:scroll atY:y - 8 width:contentW margin:margin];
-
-    // 获取时间
-    UILabel *fetchLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 18)];
-    fetchLabel.text = [NSString stringWithFormat:@"获取时间：%@", _fetchTime];
-    fetchLabel.font = [UIFont systemFontOfSize:12];
-    fetchLabel.textColor = [UIColor grayColor];
-    [scroll addSubview:fetchLabel];
-    y += 26;
-
-    // 作品信息
-    y = [self addSectionTitle:@"【作品信息】" in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"作品ID" value:_itemID in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"作品文案" value:_desc in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"发布属地" value:_region in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"发布时间" value:_publishTime in:scroll atY:y width:contentW margin:margin];
-
-    // 统计数据
-    y += 4;
-    y = [self addSectionTitle:@"【统计数据】" in:scroll atY:y width:contentW margin:margin];
-    // 播放量：特殊处理，本地可能为 0，需调 tikhub.io API 异步补值
-    {
-        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
-        lbl.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
-        lbl.font = [UIFont systemFontOfSize:14];
-        lbl.textColor = [UIColor blackColor];
-        lbl.numberOfLines = 0;
-        CGSize sz = [lbl.text boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
-                                           options:NSStringDrawingUsesLineFragmentOrigin
-                                        attributes:@{NSFontAttributeName: lbl.font}
-                                           context:nil].size;
-        lbl.frame = CGRectMake(margin, y, contentW, ceil(sz.height) + 4);
-        [scroll addSubview:lbl];
-        _playCountLabel = lbl;
-        y += CGRectGetHeight(lbl.frame) + 2;
-    }
-    y = [self addRowWithKey:@"点赞量" value:_diggCount in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"评论量" value:_commentCount in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"收藏量" value:_collectCount in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"分享量" value:_shareCount in:scroll atY:y width:contentW margin:margin];
-    y = [self addRowWithKey:@"下载量" value:_downloadCount in:scroll atY:y width:contentW margin:margin];
-
-    // 作品链接
-    y += 4;
-    y = [self addSectionTitle:@"【作品链接】" in:scroll atY:y width:contentW margin:margin];
-    UILabel *linkLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
-    linkLabel.text = _workLink;
-    linkLabel.font = [UIFont systemFontOfSize:12];
-    linkLabel.textColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:1];
-    linkLabel.numberOfLines = 0;
-    linkLabel.userInteractionEnabled = YES;
-    [linkLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyLink:)]];
-    CGSize linkSize = [_workLink boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
-                                              options:NSStringDrawingUsesLineFragmentOrigin
-                                           attributes:@{NSFontAttributeName: linkLabel.font}
-                                              context:nil].size;
-    linkLabel.frame = CGRectMake(margin, y, contentW, ceil(linkSize.height) + 4);
-    [scroll addSubview:linkLabel];
-    y += CGRectGetHeight(linkLabel.frame) + 10;
-
-    // 主页链接
-    if (_profileLink.length > 0) {
-        y = [self addSectionTitle:@"【主页链接】" in:scroll atY:y width:contentW margin:margin];
-        UILabel *profileLabel = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, contentW, 0)];
-        profileLabel.text = _profileLink;
-        profileLabel.font = [UIFont systemFontOfSize:12];
-        profileLabel.textColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:1];
-        profileLabel.numberOfLines = 0;
-        profileLabel.userInteractionEnabled = YES;
-        [profileLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyProfileLink:)]];
-        CGSize profileSize = [_profileLink boundingRectWithSize:CGSizeMake(contentW, CGFLOAT_MAX)
-                                                       options:NSStringDrawingUsesLineFragmentOrigin
-                                                    attributes:@{NSFontAttributeName: profileLabel.font}
-                                                       context:nil].size;
-        profileLabel.frame = CGRectMake(margin, y, contentW, ceil(profileSize.height) + 4);
-        [scroll addSubview:profileLabel];
-        y += CGRectGetHeight(profileLabel.frame) + 10;
-    }
-
-    scroll.contentSize = CGSizeMake(cardW, y + margin);
-}
-
-- (CGFloat)addSectionTitle:(NSString *)title in:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 22)];
-    label.text = title;
-    label.font = [UIFont boldSystemFontOfSize:15];
-    label.textColor = [UIColor blackColor];
-    [container addSubview:label];
-    return y + 26;
-}
-
-- (CGFloat)addRowWithKey:(NSString *)key value:(NSString *)value in:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(margin, y, w, 0)];
-    label.text = [NSString stringWithFormat:@"%@：%@", key, value];
-    label.font = [UIFont systemFontOfSize:14];
-    label.textColor = [UIColor blackColor];
-    label.numberOfLines = 0;
-    CGSize size = [label.text boundingRectWithSize:CGSizeMake(w, CGFLOAT_MAX)
-                                             options:NSStringDrawingUsesLineFragmentOrigin
-                                          attributes:@{NSFontAttributeName: label.font}
-                                             context:nil].size;
-    label.frame = CGRectMake(margin, y, w, ceil(size.height) + 4);
-    [container addSubview:label];
-    return y + CGRectGetHeight(label.frame) + 2;
-}
-
-- (void)addLineIn:(UIView *)container atY:(CGFloat)y width:(CGFloat)w margin:(CGFloat)margin {
-    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(margin, y, w, 1.0 / [UIScreen mainScreen].scale)];
-    line.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
-    [container addSubview:line];
-}
-
-- (void)loadImageWithURL:(NSString *)urlString intoImageView:(UIImageView *)imageView {
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) return;
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
-                                                              completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data) {
-            UIImage *img = [UIImage imageWithData:data];
-            if (img) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    imageView.image = img;
-                });
-            }
-        }
-    }];
-    [task resume];
-}
-
-- (void)show {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    [window addSubview:self];
-    self.alpha = 0;
-    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 1; }];
-    [self fetchPlayCountFromAPI];
-}
-
-// 播放量 API 缓存：aweme_id → @{@"value":NSString, @"time":NSDate}，5 分钟内不重复请求
-static NSMutableDictionary *DYYYPlayCountCache = nil;
-
-- (void)fetchPlayCountFromAPI {
-    NSString *token = DYYYGetString(@"DYYYWorkDataAPIToken");
-    if (token.length == 0 || _itemID.length == 0) return;
-
-    // 检查缓存：5 分钟内同一个视频不重复请求
-    @synchronized(self) {
-        if (!DYYYPlayCountCache) DYYYPlayCountCache = [NSMutableDictionary dictionary];
-        NSDictionary *cached = DYYYPlayCountCache[_itemID];
-        if (cached) {
-            NSTimeInterval age = -[cached[@"time"] timeIntervalSinceNow];
-            if (age < 300) { // 5 分钟
-                NSString *cachedPlay = cached[@"play"];
-                NSString *cachedDigg = cached[@"digg"];
-                NSString *cachedDownload = cached[@"download"];
-                NSString *cachedShare = cached[@"share"];
-                if (cachedPlay.length > 0) {
-                    _playCount = cachedPlay;
-                    if (cachedDigg.length > 0) _diggCount = cachedDigg;
-                    if (cachedDownload.length > 0) _downloadCount = cachedDownload;
-                    if (cachedShare.length > 0) _shareCount = cachedShare;
-                    if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
-                    [self refreshCopyText];
-                    return; // 用缓存，不发请求
-                }
-            }
-        }
-    }
-
-    // 正确端点：V3 fetch_video_statistics，参数 aweme_ids（逗号分隔），大陆用 api.tikhub.dev
-    NSString *urlString = [NSString stringWithFormat:@"https://api.tikhub.dev/api/v1/douyin/app/v3/fetch_video_statistics?aweme_ids=%@", _itemID];
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) return;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (_playCountLabel) {
-            _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API获取中...）", _playCount];
-        }
-    });
-
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    [req setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
-    [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-    req.timeoutInterval = 10;
-
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        // 先取 HTTP 状态码
-        NSInteger statusCode = 0;
-        if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
-            statusCode = [(NSHTTPURLResponse *)response statusCode];
-        }
-
-        if (error || !data) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（API失败:%@）", _playCount, error.localizedDescription ?: @"未知"];
-            });
-            return;
-        }
-        // 先把原始响应转成字符串，方便调试
-        NSString *rawStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-
-        // 解析外层 JSON
-        id outerJson = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingAllowFragments error:nil];
-
-        // 如果外层解析失败，尝试直接把整个 rawStr 当 JSON 解析
-        if (!outerJson) {
-            outerJson = rawStr;
-        }
-
-        // 递归搜索整个 JSON 树（用 C 函数，避免 block 递归崩溃）
-        NSString *playCountStr = DYYYSearchJsonValue(outerJson, @"play_count");
-        NSString *downloadCountStr = DYYYSearchJsonValue(outerJson, @"download_count");
-        NSString *shareCountStr = DYYYSearchJsonValue(outerJson, @"share_count");
-        NSString *diggCountStr = DYYYSearchJsonValue(outerJson, @"digg_count");
-
-        if (playCountStr.length == 0 || [playCountStr isEqualToString:@"(null)"]) {
-            // 找不到 play_count —— 区分 HTTP 错误 vs 字段缺失
-            NSString *errCode = DYYYSearchJsonValue(outerJson, @"code");
-            NSString *errMsg = DYYYSearchJsonValue(outerJson, @"message") ?: DYYYSearchJsonValue(outerJson, @"message_zh");
-            NSString *hint;
-            if (statusCode == 429) {
-                hint = @"请求过快被限流";
-            } else if (statusCode == 402) {
-                hint = @"API余额不足";
-            } else if (statusCode == 401 || statusCode == 403) {
-                hint = @"Token无效或权限不足";
-            } else if (statusCode == 404) {
-                hint = @"数据未找到";
-            } else if (statusCode >= 400 && statusCode < 500) {
-                hint = [NSString stringWithFormat:@"HTTP %ld", (long)statusCode];
-            } else if (statusCode >= 500) {
-                hint = @"API服务异常";
-            } else if (errCode.length > 0) {
-                hint = [NSString stringWithFormat:@"code=%@", errCode];
-            } else {
-                hint = @"未找到数值";
-            }
-            if (errMsg.length > 0 && errMsg.length < 50) {
-                hint = [hint stringByAppendingFormat:@" (%@)", errMsg];
-            }
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@（%@）", _playCount, hint];
-            });
-            return;
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            _playCount = playCountStr;
-            if (_playCountLabel) _playCountLabel.text = [NSString stringWithFormat:@"播放量：%@", _playCount];
-            // 也更新下载量/分享量/点赞量（API 返回了的话）
-            if (downloadCountStr.length > 0 && ![downloadCountStr isEqualToString:@"(null)"]) {
-                _downloadCount = downloadCountStr;
-            }
-            if (shareCountStr.length > 0 && ![shareCountStr isEqualToString:@"(null)"]) {
-                _shareCount = shareCountStr;
-            }
-            if (diggCountStr.length > 0 && ![diggCountStr isEqualToString:@"(null)"]) {
-                _diggCount = diggCountStr;
-            }
-            // 写入缓存，5 分钟内同视频不再重复请求
-            @synchronized(self) {
-                DYYYPlayCountCache[_itemID] = @{
-                    @"play": _playCount ?: @"",
-                    @"digg": _diggCount ?: @"",
-                    @"download": _downloadCount ?: @"",
-                    @"share": _shareCount ?: @"",
-                    @"time": [NSDate date]
-                };
-            }
-            [self refreshCopyText];
-        });
-    }];
-    [task resume];
-}
-
-- (void)refreshCopyText {
-    NSMutableString *info = [NSMutableString string];
-    [info appendFormat:@"作者：%@\n", _nickname];
-    [info appendFormat:@"抖音号：%@\n", _douyinId];
-    [info appendFormat:@"UID：%@\n", _uid];
-    [info appendFormat:@"secUID：%@\n", _secUid];
-    [info appendFormat:@"获取时间：%@\n", _fetchTime];
-    [info appendFormat:@"作品ID：%@\n", _itemID];
-    [info appendFormat:@"作品文案：%@\n", _desc];
-    [info appendFormat:@"发布属地：%@\n", _region];
-    [info appendFormat:@"发布时间：%@\n", _publishTime];
-    [info appendFormat:@"播放量：%@\n", _playCount];
-    [info appendFormat:@"点赞量：%@\n", _diggCount];
-    [info appendFormat:@"评论量：%@\n", _commentCount];
-    [info appendFormat:@"收藏量：%@\n", _collectCount];
-    [info appendFormat:@"分享量：%@\n", _shareCount];
-    [info appendFormat:@"下载量：%@\n", _downloadCount];
-    [info appendFormat:@"作品链接：%@\n", _workLink];
-    [info appendFormat:@"主页链接：%@\n", _profileLink];
-    _copyText = [info copy];
-}
-
-- (void)dismiss {
-    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 0; } completion:^(BOOL finished) {
-        [self removeFromSuperview];
-    }];
-}
-
-- (void)copyInfo:(id)sender {
-    [[UIPasteboard generalPasteboard] setString:_copyText];
-    [DYYYToast showSuccessToastWithMessage:@"作品数据已复制"];
-}
-
-- (void)copyLink:(UITapGestureRecognizer *)gesture {
-    [[UIPasteboard generalPasteboard] setString:_workLink];
-    [DYYYToast showSuccessToastWithMessage:@"作品链接已复制"];
-}
-
-- (void)copyProfileLink:(UITapGestureRecognizer *)gesture {
-    [[UIPasteboard generalPasteboard] setString:_profileLink];
-    [DYYYToast showSuccessToastWithMessage:@"主页链接已复制"];
-}
-
-- (void)saveAvatar:(id)sender {
-    if (_avatarURL.length == 0) {
-        [DYYYUtils showToast:@"没有头像地址"];
-        return;
-    }
-    NSURL *url = [NSURL URLWithString:_avatarURL];
-    if (url) {
-        [DYYYManager downloadMedia:url mediaType:MediaTypeImage audio:nil completion:^(BOOL success){}];
-    }
-}
-
-- (void)downloadOriginal:(id)sender {
-    if (_videoURL.length == 0) {
-        [DYYYUtils showToast:@"没有原画地址"];
-        return;
-    }
-    NSURL *url = [NSURL URLWithString:_videoURL];
-    if (url) {
-        [DYYYManager downloadMedia:url mediaType:MediaTypeVideo audio:nil completion:^(BOOL success){}];
-    }
-}
-
-@end
 
 %hook AWELongPressPanelViewGroupModel
 %property(nonatomic, assign) BOOL isDYYYCustomGroup;
@@ -963,15 +22,6 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     if (!originalArray) {
         originalArray = @[];
     }
-
-    // 记录当前作品 ID，供「评论插眼」兜底推断评论所属作品
-    @try {
-        id curID = [self.awemeModel valueForKey:@"itemID"];
-        if (curID) {
-            NSString *s = [NSString stringWithFormat:@"%@", curID];
-            if (s.length > 0 && ![s isEqualToString:@"(null)"]) gDYYYLastAwemeID = s;
-        }
-    } @catch (NSException *e) {}
 
     // 如果开启精简模式，直接跳过原始面板处理，只返回自定义选项
     if (simplifyPanel) {
@@ -1063,12 +113,10 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
-    BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
 
     // 检查是否有任何功能启用
-    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWard;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
 
     // 如果没有任何功能启用，仅使用官方按钮
     if (!hasAnyFeatureEnabled) {
@@ -1289,7 +337,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     }
 
     // 接口保存功能
-    NSString *apiKey = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
+    NSString *apiKey = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
     if (enableApiDownload && apiKey.length > 0) {
         AWELongPressPanelBaseViewModel *apiDownload = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         apiDownload.awemeModel = self.awemeModel;
@@ -1478,7 +526,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
           // 创建当前用户的过滤格式 "nickname-shortid"
           NSString *currentUserFilter = [NSString stringWithFormat:@"%@-%@", nickname, shortId];
           // 获取保存的过滤用户列表
-          NSString *savedUsers = [DYYYPreferences objectForKey:@"DYYYFilterUsers"] ?: @"";
+          NSString *savedUsers = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"] ?: @"";
           NSArray *userArray = [savedUsers length] > 0 ? [savedUsers componentsSeparatedByString:@","] : @[];
           BOOL userExists = NO;
           for (NSString *userInfo in userArray) {
@@ -1501,7 +549,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"过滤用户列表" keywords:userArray];
                 keywordListView.onConfirm = ^(NSArray *users) {
                   NSString *userString = [users componentsJoinedByString:@","];
-                  [DYYYPreferences setObject:userString forKey:@"DYYYFilterUsers"];
+                  [[NSUserDefaults standardUserDefaults] setObject:userString forKey:@"DYYYFilterUsers"];
                   [DYYYUtils showToast:@"过滤用户列表已更新"];
                 };
                 [keywordListView show];
@@ -1531,7 +579,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 }
                 // 保存更新后的列表
                 NSString *updatedUserString = [updatedUsers componentsJoinedByString:@","];
-                [DYYYPreferences setObject:updatedUserString forKey:@"DYYYFilterUsers"];
+                [[NSUserDefaults standardUserDefaults] setObject:updatedUserString forKey:@"DYYYFilterUsers"];
               }];
         };
         [viewModels addObject:filterKeywords];
@@ -1553,21 +601,21 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
           DYYYFilterSettingsView *filterView = [[DYYYFilterSettingsView alloc] initWithTitle:@"过滤关键词调整" text:descText propName:propName];
           filterView.onConfirm = ^(NSString *selectedText) {
             if (selectedText.length > 0) {
-                NSString *currentKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
+                NSString *currentKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
                 NSString *newKeywords;
                 if (currentKeywords.length > 0) {
                     newKeywords = [NSString stringWithFormat:@"%@,%@", currentKeywords, selectedText];
                 } else {
                     newKeywords = selectedText;
                 }
-                [DYYYPreferences setObject:newKeywords forKey:@"DYYYFilterKeywords"];
+                [[NSUserDefaults standardUserDefaults] setObject:newKeywords forKey:@"DYYYFilterKeywords"];
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已添加过滤词: %@", selectedText]];
             }
           };
           // 设置过滤关键词按钮回调
           filterView.onKeywordFilterTap = ^{
             // 获取保存的关键词
-            NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
+            NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
             NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
             // 创建并显示关键词列表视图
             DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤关键词" keywords:keywordArray];
@@ -1576,7 +624,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
               // 将关键词数组转换为逗号分隔的字符串
               NSString *keywordString = [keywords componentsJoinedByString:@","];
               // 保存到用户默认设置
-              [DYYYPreferences setObject:keywordString forKey:@"DYYYFilterKeywords"];
+              [[NSUserDefaults standardUserDefaults] setObject:keywordString forKey:@"DYYYFilterKeywords"];
               // 显示提示
               [DYYYUtils showToast:@"过滤关键词已更新"];
             };
@@ -1596,21 +644,21 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         timerCloseViewModel.actionType = 676;
         timerCloseViewModel.duxIconName = @"ic_c_alarm_outlined";
         // 检查是否已有定时任务在运行
-        NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+        NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
         BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
         timerCloseViewModel.describeString = hasActiveTimer ? @"取消定时" : @"定时关闭";
         timerCloseViewModel.action = ^{
           AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
           [panelManager dismissWithAnimation:YES completion:nil];
-          NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+          NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
           BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
           if (hasActiveTimer) {
-              [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
+              [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
               [DYYYUtils showToast:@"已取消定时关闭任务"];
               return;
           }
           // 读取上次设置的时间
-          NSInteger defaultMinutes = [DYYYPreferences integerForKey:@"DYYYTimerCloseMinutes"];
+          NSInteger defaultMinutes = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYTimerCloseMinutes"];
           if (defaultMinutes <= 0) {
               defaultMinutes = 5;
           }
@@ -1622,15 +670,15 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 minutes = 5;
             }
             // 保存用户设置的时间以供下次使用
-            [DYYYPreferences setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
+            [[NSUserDefaults standardUserDefaults] setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
             NSInteger seconds = minutes * 60;
             NSTimeInterval shutdownTimeValue = [[NSDate date] timeIntervalSince1970] + seconds;
-            [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
+            [[NSUserDefaults standardUserDefaults] setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-              NSNumber *currentShutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+              NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
               if (currentShutdownTime != nil && [currentShutdownTime doubleValue] <= [[NSDate date] timeIntervalSince1970]) {
-                  [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
+                  [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
                   // 显示确认关闭弹窗，而不是直接退出
                   DYYYConfirmCloseView *confirmView = [[DYYYConfirmCloseView alloc] initWithTitle:@"定时关闭" message:@"定时关闭时间已到，是否关闭抖音？"];
                   [confirmView show];
@@ -1642,131 +690,57 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         [viewModels addObject:timerCloseViewModel];
     }
 
-    // 画中画功能
-    if (enablePip) {
-        AWELongPressPanelBaseViewModel *pipViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        pipViewModel.awemeModel = self.awemeModel;
-        pipViewModel.actionType = 690;
-        pipViewModel.duxIconName = @"ic_rectangleonrectangleup_outlined_20";
-        pipViewModel.describeString = @"画中画";
-        pipViewModel.action = ^{
-          [[DYYYPipManager sharedManager] createPipWithAwemeModel:self.awemeModel];
-          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-          [panelManager dismissWithAnimation:YES completion:nil];
-        };
-        [viewModels addObject:pipViewModel];
-    }
-
-    // 插眼功能
-    if (enableWard) {
-        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        wardViewModel.awemeModel = self.awemeModel;
-        wardViewModel.actionType = 692;
-        wardViewModel.duxIconName = @"ic_location_outlined_20";
-        wardViewModel.describeString = @"视频插眼";
-        AWEAwemeModel *wardModel = self.awemeModel;
-        wardViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
-                [panel show];
-            }];
-        };
-        [viewModels addObject:wardViewModel];
-
-        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        wardListViewModel.awemeModel = self.awemeModel;
-        wardListViewModel.actionType = 693;
-        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
-        wardListViewModel.describeString = @"插眼列表";
-        wardListViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                [DYYYWardListViewController present];
-            }];
-        };
-        [viewModels addObject:wardListViewModel];
-    }
-
-    // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
-    BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
-    if (enableWorkData) {
-        AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        workDataViewModel.awemeModel = self.awemeModel;
-        workDataViewModel.actionType = 691;
-        workDataViewModel.duxIconName = @"ic_tag_outlined_20";
-        workDataViewModel.describeString = @"获取作品数据";
-        AWEAwemeModel *wdModel = self.awemeModel;
-        workDataViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                [DYYYWorkDataCardView showWithAwemeModel:wdModel];
-            }];
-        };
-        // 遍历原始组，找到"听抖音"所在组，在该组末尾插入
-        BOOL injected = NO;
-        for (NSInteger gi = 0; gi < (NSInteger)originalArray.count && !injected; gi++) {
-            AWELongPressPanelViewGroupModel *grp = originalArray[gi];
-            if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
-            NSArray *arr = grp.groupArr;
-            // 先检查是否已注入过（防止 dataArray 多次调用导致重复）
-            BOOL alreadyExists = NO;
-            for (id item in arr) {
-                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
-                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
-                    if ([vm.describeString containsString:@"获取作品数据"]) {
-                        alreadyExists = YES;
-                        break;
-                    }
-                }
-            }
-            if (alreadyExists) { injected = YES; break; }
-            for (id item in arr) {
-                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
-                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
-                    if ([vm.describeString containsString:@"听抖音"] || [vm.describeString containsString:@"听音乐"]) {
-                        NSMutableArray *mutArr = [arr mutableCopy];
-                        [mutArr addObject:workDataViewModel];
-                        grp.groupArr = [mutArr copy];
-                        injected = YES;
-                        break;
-                    }
-                }
-            }
-        }
-        // 如果没找到听抖音组，插入到最后一个原始组
-        if (!injected && originalArray.count > 0) {
-            AWELongPressPanelViewGroupModel *lastGrp = originalArray.lastObject;
-            if ([lastGrp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) {
-                NSMutableArray *mutArr = [lastGrp.groupArr mutableCopy];
-                [mutArr addObject:workDataViewModel];
-                lastGrp.groupArr = [mutArr copy];
-            }
-        }
-    }
-
-    // 创建自定义组：按每行最多 4 个自动分页
-    // 图集全开可达 12 项，旧逻辑钉死两行（5+7），第二行每格仅约 45pt，
-    // 放不下「保存当前实况/过滤用户」等 4~6 字标签，导致文字挤压交叠。改为每行 ≤4 自动换行。
+    // 创建自定义组
     NSMutableArray *customGroups = [NSMutableArray array];
     NSInteger totalButtons = viewModels.count;
-    const NSInteger kMaxPerRow = 4; // 每行最多按钮数：>4 时单格宽度不足以容纳 4~6 字标签
 
-    for (NSInteger start = 0; start < totalButtons; start += kMaxPerRow) {
-        NSInteger len = MIN(kMaxPerRow, totalButtons - start);
-        NSArray<AWELongPressPanelBaseViewModel *> *rowButtons = [viewModels subarrayWithRange:NSMakeRange(start, len)];
-        AWELongPressPanelViewGroupModel *rowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
-        rowGroup.isDYYYCustomGroup = YES;
-        rowGroup.groupType = (len <= 3) ? 11 : 12;
-        rowGroup.isModern = YES;
-        rowGroup.groupArr = rowButtons;
-        [customGroups addObject:rowGroup];
+    // 根据按钮总数确定每行的按钮数
+    NSInteger firstRowCount = 0;
+    NSInteger secondRowCount = 0;
+
+    // 确定分配方式与原代码相同
+    if (totalButtons <= 2) {
+        firstRowCount = totalButtons;
+    } else if (totalButtons <= 4) {
+        firstRowCount = totalButtons / 2;
+        secondRowCount = totalButtons - firstRowCount;
+    } else if (totalButtons <= 5) {
+        firstRowCount = 3;
+        secondRowCount = totalButtons - firstRowCount;
+    } else if (totalButtons <= 6) {
+        firstRowCount = 4;
+        secondRowCount = totalButtons - firstRowCount;
+    } else if (totalButtons <= 8) {
+        firstRowCount = 4;
+        secondRowCount = totalButtons - firstRowCount;
+    } else {
+        firstRowCount = 5;
+        secondRowCount = totalButtons - firstRowCount;
     }
 
-    NSMutableArray *resultGroups = [NSMutableArray array];
-    [resultGroups addObjectsFromArray:customGroups];
-    [resultGroups addObjectsFromArray:originalArray];
-    return [resultGroups copy];
+    // 创建第一行
+    if (firstRowCount > 0) {
+        NSArray<AWELongPressPanelBaseViewModel *> *firstRowButtons = [viewModels subarrayWithRange:NSMakeRange(0, firstRowCount)];
+        AWELongPressPanelViewGroupModel *firstRowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
+        firstRowGroup.isDYYYCustomGroup = YES;
+        firstRowGroup.groupType = (firstRowCount <= 3) ? 11 : 12;
+        firstRowGroup.isModern = YES;
+        firstRowGroup.groupArr = firstRowButtons;
+        [customGroups addObject:firstRowGroup];
+    }
+
+    // 创建第二行
+    if (secondRowCount > 0) {
+        NSArray<AWELongPressPanelBaseViewModel *> *secondRowButtons = [viewModels subarrayWithRange:NSMakeRange(firstRowCount, secondRowCount)];
+        AWELongPressPanelViewGroupModel *secondRowGroup = [[%c(AWELongPressPanelViewGroupModel) alloc] init];
+        secondRowGroup.isDYYYCustomGroup = YES;
+        secondRowGroup.groupType = (secondRowCount <= 3) ? 11 : 12;
+        secondRowGroup.isModern = YES;
+        secondRowGroup.groupArr = secondRowButtons;
+        [customGroups addObject:secondRowGroup];
+    }
+
+    return [customGroups arrayByAddingObjectsFromArray:originalArray];
 }
 %end
 
@@ -1812,15 +786,6 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     if (!self.awemeModel.author.nickname) {
         return originalArray;
     }
-
-    // 记录当前作品 ID，供「评论插眼」兜底推断评论所属作品
-    @try {
-        id curID = [self.awemeModel valueForKey:@"itemID"];
-        if (curID) {
-            NSString *s = [NSString stringWithFormat:@"%@", curID];
-            if (s.length > 0 && ![s isEqualToString:@"(null)"]) gDYYYLastAwemeID = s;
-        }
-    } @catch (NSException *e) {}
 
     // 检查是否开启精简模式
     BOOL simplifyPanel = DYYYGetBool(@"DYYYSimplifyLongPressPanel");
@@ -1915,13 +880,10 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
-    BOOL enablePip = DYYYGetBool(@"DYYYLongPressPip");
-    BOOL enableWorkData = DYYYGetBool(@"DYYYLongPressWorkData");
 
     // 检查是否有任何功能启用
-    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enablePip || enableWorkData || enableWard;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
 
     if (!hasAnyFeatureEnabled) {
         return originalArray;
@@ -2145,7 +1107,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
     }
 
     // 接口保存功能
-    NSString *apiKey = [DYYYPreferences objectForKey:@"DYYYInterfaceDownload"];
+    NSString *apiKey = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYInterfaceDownload"];
     if (enableApiDownload && apiKey.length > 0) {
         AWELongPressPanelBaseViewModel *apiDownload = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
         apiDownload.awemeModel = self.awemeModel;
@@ -2334,7 +1296,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
           // 创建当前用户的过滤格式 "nickname-shortid"
           NSString *currentUserFilter = [NSString stringWithFormat:@"%@-%@", nickname, shortId];
           // 获取保存的过滤用户列表
-          NSString *savedUsers = [DYYYPreferences objectForKey:@"DYYYFilterUsers"] ?: @"";
+          NSString *savedUsers = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterUsers"] ?: @"";
           NSArray *userArray = [savedUsers length] > 0 ? [savedUsers componentsSeparatedByString:@","] : @[];
           BOOL userExists = NO;
           for (NSString *userInfo in userArray) {
@@ -2357,7 +1319,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"过滤用户列表" keywords:userArray];
                 keywordListView.onConfirm = ^(NSArray *users) {
                   NSString *userString = [users componentsJoinedByString:@","];
-                  [DYYYPreferences setObject:userString forKey:@"DYYYFilterUsers"];
+                  [[NSUserDefaults standardUserDefaults] setObject:userString forKey:@"DYYYFilterUsers"];
                   [DYYYUtils showToast:@"过滤用户列表已更新"];
                 };
                 [keywordListView show];
@@ -2387,7 +1349,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 }
                 // 保存更新后的列表
                 NSString *updatedUserString = [updatedUsers componentsJoinedByString:@","];
-                [DYYYPreferences setObject:updatedUserString forKey:@"DYYYFilterUsers"];
+                [[NSUserDefaults standardUserDefaults] setObject:updatedUserString forKey:@"DYYYFilterUsers"];
               }];
         };
         [viewModels addObject:filterKeywords];
@@ -2409,21 +1371,21 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
           DYYYFilterSettingsView *filterView = [[DYYYFilterSettingsView alloc] initWithTitle:@"过滤关键词调整" text:descText propName:propName];
           filterView.onConfirm = ^(NSString *selectedText) {
             if (selectedText.length > 0) {
-                NSString *currentKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
+                NSString *currentKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
                 NSString *newKeywords;
                 if (currentKeywords.length > 0) {
                     newKeywords = [NSString stringWithFormat:@"%@,%@", currentKeywords, selectedText];
                 } else {
                     newKeywords = selectedText;
                 }
-                [DYYYPreferences setObject:newKeywords forKey:@"DYYYFilterKeywords"];
+                [[NSUserDefaults standardUserDefaults] setObject:newKeywords forKey:@"DYYYFilterKeywords"];
                 [DYYYUtils showToast:[NSString stringWithFormat:@"已添加过滤词: %@", selectedText]];
             }
           };
           // 设置过滤关键词按钮回调
           filterView.onKeywordFilterTap = ^{
             // 获取保存的关键词
-            NSString *savedKeywords = [DYYYPreferences objectForKey:@"DYYYFilterKeywords"] ?: @"";
+            NSString *savedKeywords = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYFilterKeywords"] ?: @"";
             NSArray *keywordArray = [savedKeywords length] > 0 ? [savedKeywords componentsSeparatedByString:@","] : @[];
             // 创建并显示关键词列表视图
             DYYYKeywordListView *keywordListView = [[DYYYKeywordListView alloc] initWithTitle:@"设置过滤关键词" keywords:keywordArray];
@@ -2432,7 +1394,7 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
               // 将关键词数组转换为逗号分隔的字符串
               NSString *keywordString = [keywords componentsJoinedByString:@","];
               // 保存到用户默认设置
-              [DYYYPreferences setObject:keywordString forKey:@"DYYYFilterKeywords"];
+              [[NSUserDefaults standardUserDefaults] setObject:keywordString forKey:@"DYYYFilterKeywords"];
               // 显示提示
               [DYYYUtils showToast:@"过滤关键词已更新"];
             };
@@ -2452,21 +1414,21 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         timerCloseViewModel.actionType = 676;
         timerCloseViewModel.duxIconName = @"ic_c_alarm_outlined";
         // 检查是否已有定时任务在运行
-        NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+        NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
         BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
         timerCloseViewModel.describeString = hasActiveTimer ? @"取消定时" : @"定时关闭";
         timerCloseViewModel.action = ^{
           AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
           [panelManager dismissWithAnimation:YES completion:nil];
-          NSNumber *shutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+          NSNumber *shutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
           BOOL hasActiveTimer = shutdownTime != nil && [shutdownTime doubleValue] > [[NSDate date] timeIntervalSince1970];
           if (hasActiveTimer) {
-              [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
+              [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
               [DYYYUtils showToast:@"已取消定时关闭任务"];
               return;
           }
           // 读取上次设置的时间
-          NSInteger defaultMinutes = [DYYYPreferences integerForKey:@"DYYYTimerCloseMinutes"];
+          NSInteger defaultMinutes = [[NSUserDefaults standardUserDefaults] integerForKey:@"DYYYTimerCloseMinutes"];
           if (defaultMinutes <= 0) {
               defaultMinutes = 5;
           }
@@ -2478,15 +1440,15 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
                 minutes = 5;
             }
             // 保存用户设置的时间以供下次使用
-            [DYYYPreferences setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
+            [[NSUserDefaults standardUserDefaults] setInteger:minutes forKey:@"DYYYTimerCloseMinutes"];
             NSInteger seconds = minutes * 60;
             NSTimeInterval shutdownTimeValue = [[NSDate date] timeIntervalSince1970] + seconds;
-            [DYYYPreferences setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
+            [[NSUserDefaults standardUserDefaults] setObject:@(shutdownTimeValue) forKey:@"DYYYTimerShutdownTime"];
             [DYYYUtils showToast:[NSString stringWithFormat:@"抖音将在%ld分钟后关闭...", (long)minutes]];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-              NSNumber *currentShutdownTime = [DYYYPreferences objectForKey:@"DYYYTimerShutdownTime"];
+              NSNumber *currentShutdownTime = [[NSUserDefaults standardUserDefaults] objectForKey:@"DYYYTimerShutdownTime"];
               if (currentShutdownTime != nil && [currentShutdownTime doubleValue] <= [[NSDate date] timeIntervalSince1970]) {
-                  [DYYYPreferences removeObjectForKey:@"DYYYTimerShutdownTime"];
+                  [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"DYYYTimerShutdownTime"];
                   // 显示确认关闭弹窗，而不是直接退出
                   DYYYConfirmCloseView *confirmView = [[DYYYConfirmCloseView alloc] initWithTitle:@"定时关闭" message:@"定时关闭时间已到，是否关闭抖音？"];
                   [confirmView show];
@@ -2498,958 +1460,154 @@ static NSMutableDictionary *DYYYPlayCountCache = nil;
         [viewModels addObject:timerCloseViewModel];
     }
 
-    // 画中画功能
-    if (enablePip) {
-        AWELongPressPanelBaseViewModel *pipViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        pipViewModel.awemeModel = self.awemeModel;
-        pipViewModel.actionType = 690;
-        pipViewModel.duxIconName = @"ic_rectangleonrectangleup_outlined_20";
-        pipViewModel.describeString = @"画中画";
-        pipViewModel.action = ^{
-          [[DYYYPipManager sharedManager] createPipWithAwemeModel:self.awemeModel];
-          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-          [panelManager dismissWithAnimation:YES completion:nil];
-        };
-        [viewModels addObject:pipViewModel];
-    }
-
-    // 插眼功能
-    if (enableWard) {
-        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        wardViewModel.awemeModel = self.awemeModel;
-        wardViewModel.actionType = 694;
-        wardViewModel.duxIconName = @"ic_location_outlined_20";
-        wardViewModel.describeString = @"视频插眼";
-        AWEAwemeModel *wardModel = self.awemeModel;
-        wardViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
-                [panel show];
-            }];
-        };
-        [viewModels addObject:wardViewModel];
-
-        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        wardListViewModel.awemeModel = self.awemeModel;
-        wardListViewModel.actionType = 695;
-        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
-        wardListViewModel.describeString = @"插眼列表";
-        wardListViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                [DYYYWardListViewController present];
-            }];
-        };
-        [viewModels addObject:wardListViewModel];
-    }
-
-    // 获取作品数据功能（插入到原始面板"听抖音"所在组的后面）
-    if (enableWorkData) {
-        AWELongPressPanelBaseViewModel *workDataViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
-        workDataViewModel.awemeModel = self.awemeModel;
-        workDataViewModel.actionType = 692;
-        workDataViewModel.duxIconName = @"ic_tag_outlined_20";
-        workDataViewModel.describeString = @"获取作品数据";
-        AWEAwemeModel *wdModel = self.awemeModel;
-        workDataViewModel.action = ^{
-            AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
-            [panelManager dismissWithAnimation:YES completion:^{
-                [DYYYWorkDataCardView showWithAwemeModel:wdModel];
-            }];
-        };
-        // 遍历原始组，找到"听抖音"所在组，在该组末尾插入
-        BOOL injected = NO;
-        for (NSInteger gi = 0; gi < (NSInteger)originalArray.count && !injected; gi++) {
-            AWELongPressPanelViewGroupModel *grp = originalArray[gi];
-            if (![grp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) continue;
-            NSArray *arr = grp.groupArr;
-            // 先检查是否已注入过（防止 dataArray 多次调用导致重复）
-            BOOL alreadyExists = NO;
-            for (id item in arr) {
-                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
-                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
-                    if ([vm.describeString containsString:@"获取作品数据"]) {
-                        alreadyExists = YES;
-                        break;
-                    }
-                }
-            }
-            if (alreadyExists) { injected = YES; break; }
-            for (id item in arr) {
-                if ([item isKindOfClass:%c(AWELongPressPanelBaseViewModel)]) {
-                    AWELongPressPanelBaseViewModel *vm = (AWELongPressPanelBaseViewModel *)item;
-                    if ([vm.describeString containsString:@"听抖音"] || [vm.describeString containsString:@"听音乐"]) {
-                        NSMutableArray *mutArr = [arr mutableCopy];
-                        [mutArr addObject:workDataViewModel];
-                        grp.groupArr = [mutArr copy];
-                        injected = YES;
-                        break;
-                    }
-                }
-            }
-        }
-        // 如果没找到听抖音组，插入到最后一个原始组
-        if (!injected && originalArray.count > 0) {
-            AWELongPressPanelViewGroupModel *lastGrp = originalArray.lastObject;
-            if ([lastGrp isKindOfClass:%c(AWELongPressPanelViewGroupModel)]) {
-                NSMutableArray *mutArr = [lastGrp.groupArr mutableCopy];
-                [mutArr addObject:workDataViewModel];
-                lastGrp.groupArr = [mutArr copy];
-            }
-        }
-    }
-
     newGroupModel.groupArr = viewModels;
 
-    // 返回：原始组（含获取作品数据） + 自定义组（顶部）
-    NSMutableArray *resultArray = [NSMutableArray array];
-    [resultArray addObjectsFromArray:originalArray];
-    if (viewModels.count > 0) {
-        [resultArray addObject:newGroupModel];
-    }
-    return [resultArray copy];
-}
-%end
-
-// 隐藏评论分享功能
-
-%hook AWEIMCommentShareUserHorizontalCollectionViewCell
-
-- (void)layoutSubviews {
-    %orig;
-
-    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
-        self.hidden = YES;
+    // 返回自定义组+原始组的结果
+    if (originalArray.count > 0) {
+        NSMutableArray *resultArray = [originalArray mutableCopy];
+        [resultArray insertObject:newGroupModel atIndex:0];
+        return [resultArray copy];
     } else {
-        self.hidden = NO;
+        return @[ newGroupModel ];
     }
 }
-
 %end
 
-%hook AWEIMCommentShareUserHorizontalSectionController
+// 隐藏评论分享功能（长按面板顶部"分享给朋友"横排）
+// 旧版 AWEIMCommentShareUserHorizontal* 已移除，41.x 由 CommentLongPressPanelHorizonSectionController 承担（Swift 类，运行时绑定）。
+%group DYYYHideShareToFriendsGroup
+%hook DYYYLPShareHorizonSection
 
 - (CGSize)sizeForItemAtIndex:(NSInteger)index model:(id)model collectionViewSize:(CGSize)size {
-    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentShareToFriends"]) {
         return CGSizeZero;
     }
     return %orig;
 }
 
 - (void)configCell:(id)cell index:(NSInteger)index model:(id)model {
-    if ([DYYYPreferences boolForKey:@"DYYYHideCommentShareToFriends"]) {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideCommentShareToFriends"]) {
         return;
     }
     %orig;
 }
 
 %end
+%end
 
 %ctor {
-    if ([DYYYPreferences boolForKey:@"DYYYUserAgreementAccepted"]) {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYUserAgreementAccepted"]) {
         %init;
     }
 }
 
-%group DYYYFilterSetterGroup
+// 评论长按面板：逐 Element 命中 -elementShouldShow（数据层），
 
-%hook HOOK_TARGET_OWNER_CLASS
+// 替代旧版对 CommentLongPressPanelNormalSectionViewModel 的 setModelsArray: 过滤（该类在 41.x 已改名/移除）。
 
-- (void)setModelsArray:(id)arg1 {
-    if (![arg1 isKindOfClass:[NSArray class]]) {
-        %orig(arg1);
-        return;
+%group DYYYHideLPForwardGroup
+%hook DYYYLPForwardElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressDaily")) {
+        return NO;
     }
-
-    NSArray *inputArray = (NSArray *)arg1;
-    NSMutableArray *filteredArray = nil;
-
-    for (id item in inputArray) {
-        NSString *className = NSStringFromClass([item class]);
-
-        BOOL shouldFilter = ([className isEqualToString:@"AWECommentIMSwiftImpl.CommentLongPressPanelForwardElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressDaily"]) ||
-
-                            ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressCopy"]) ||
-
-                            ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelSaveImageElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressSaveImage"]) ||
-
-                            ([className isEqualToString:@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelReportElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressReport"]) ||
-
-                            ([className isEqualToString:@"AWECommentStudioSwiftImpl.CommentLongPressPanelVideoReplyElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressVideoReply"]) ||
-
-                            ([className isEqualToString:@"AWECommentSearchSwiftImpl.CommentLongPressPanelPictureSearchElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressPictureSearch"]) ||
-
-                            ([className isEqualToString:@"AWECommentSearchSwiftImpl.CommentLongPressPanelSearchElement"] &&
-                             [DYYYPreferences boolForKey:@"DYYYHideCommentLongPressSearch"]);
-
-        if (shouldFilter) {
-            if (!filteredArray) {
-                filteredArray = [NSMutableArray arrayWithCapacity:inputArray.count];
-                for (id keepItem in inputArray) {
-                    if (keepItem == item)
-                        break;
-                    [filteredArray addObject:keepItem];
-                }
-            }
-            continue;
-        }
-
-        if (filteredArray) {
-            [filteredArray addObject:item];
-        }
-    }
-
-    NSArray *finalArray = filteredArray ? [filteredArray copy] : arg1;
-
-    // 评论插眼：向评论长按菜单注入「插眼」项
-    // setModelsArray: 在一次面板弹出中会被多次调用（宿主会把上次的数组再喂回来），
-    // 因此这里先清掉之前注入的项，再补一个，保证菜单里始终只有一个「插眼」。
-    if (finalArray.count > 0 && [DYYYPreferences boolForKey:@"DYYYCommentWard"]) {
-        Class elCls = DYYYWardCommentElementClass();
-        if (elCls) {
-            NSMutableArray *arr = [NSMutableArray arrayWithCapacity:finalArray.count + 1];
-            NSInteger removed = 0;
-            for (id item in finalArray) {
-                if ([NSStringFromClass([item class]) isEqualToString:@"DYYYWardCommentElement"]) {
-                    removed++;
-                    continue;
-                }
-                [arr addObject:item];
-            }
-            if (arr.count > 0) {
-                id ctx = DYYYCommentWardContext(arr.firstObject);
-                if (ctx) gDYYYCommentPanelContext = ctx;
-
-                // 宿主重复喂回来（removed>0）时必须补回；全新数组时才用时间窗防多 section 重复注入
-                static NSTimeInterval sLastInjectTime = 0;
-                NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-                BOOL recentlyInjected = (now - sLastInjectTime) < 1.0;
-                BOOL shouldInject = (removed > 0) || !recentlyInjected;
-
-                if (shouldInject) {
-                    id el = [[elCls alloc] init];
-                    if (el) {
-                        if (ctx) {
-                            @try { [el setValue:ctx forKey:@"commentPageContext"]; } @catch (NSException *e) {}
-                        }
-                        [arr insertObject:el atIndex:0];
-                        sLastInjectTime = now;
-                    }
-                }
-            }
-            finalArray = [arr copy];
-        }
-    }
-
-    %orig(finalArray);
+    return %orig;
 }
+%end
+%end
 
+%group DYYYHideLPCopyGroup
+%hook DYYYLPCopyElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressCopy")) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+%end
+
+%group DYYYHideLPSaveImageGroup
+%hook DYYYLPSaveImageElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressSaveImage")) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+%end
+
+%group DYYYHideLPReportGroup
+%hook DYYYLPReportElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressReport")) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+%end
+
+%group DYYYHideLPVideoReplyGroup
+%hook DYYYLPVideoReplyElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressVideoReply")) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+%end
+
+%group DYYYHideLPPictureSearchGroup
+%hook DYYYLPPictureSearchElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressPictureSearch")) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+%end
+
+%group DYYYHideLPSearchGroup
+%hook DYYYLPSearchElement
+- (BOOL)elementShouldShow {
+    if (DYYYGetBool(@"DYYYHideCommentLongPressSearch")) {
+        return NO;
+    }
+    return %orig;
+}
 %end
 %end
 
 %ctor {
-    Class ownerClass = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelNormalSectionViewModel");
-    if (ownerClass) {
-        %init(DYYYFilterSetterGroup, HOOK_TARGET_OWNER_CLASS = ownerClass);
-    }
-}
-
-// MARK: - 主页插眼
-// 主页「…」菜单（分享名片/发私信/举报/拉黑/设置备注/不让她看/加朋友/关注）在不同版本
-// 实现差异极大：不是 presentViewController 弹的（诊断 toast 从不触发），大概率是自绘
-// UIView 直接挂 window。因此走两条路：
-//   ① Logos hook AWEUserActionSheetView.setActions:（老版本/其它入口仍可能命中）
-//   ② UI 层：定时扫 window，识别用户面板特征文案 → 深拷贝最后一行 → 改文案 + 清回调 → 追加
-// 结构不认识时 toast 报告容器/行的类名，便于下一版精准处理。
-
-static NSArray *DYYYSheetTextKeys(void) {
-    static NSArray *keys = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        keys = @[ @"title", @"actionTitle", @"displayTitle", @"buttonTitle", @"content", @"text", @"desc", @"name" ];
-    });
-    return keys;
-}
-
-static NSString *DYYYSheetActionText(id action) {
-    if (!action) return nil;
-    for (NSString *k in DYYYSheetTextKeys()) {
-        @try {
-            id v = [action valueForKey:k];
-            if ([v isKindOfClass:[NSString class]] && ((NSString *)v).length > 0) return v;
-            if (v && ![v isKindOfClass:[NSNull class]]) {
-                NSString *str = [NSString stringWithFormat:@"%@", v];
-                if (str.length > 0 && ![str isEqualToString:@"(null)"]) return str;
-            }
-        } @catch (NSException *e) {}
-    }
-    return nil;
-}
-
-// 顶层控制器（沿 presented / navigation / tab 往下钻）
-static UIViewController *DYYYSheetTopViewController(void) {
-    UIWindow *window = [DYYYUtils getActiveWindow];
-    UIViewController *vc = window.rootViewController;
-    for (NSInteger i = 0; vc && i < 8; i++) {
-        UIViewController *next = nil;
-        if (vc.presentedViewController) {
-            next = vc.presentedViewController;
-        } else if ([vc isKindOfClass:[UINavigationController class]]) {
-            next = [(UINavigationController *)vc topViewController];
-        } else if ([vc isKindOfClass:[UITabBarController class]]) {
-            next = [(UITabBarController *)vc selectedViewController];
-        }
-        if (!next || next == vc) break;
-        vc = next;
-    }
-    return vc;
-}
-
-// 解析当前主页用户：先用主页访问时缓存的，兜底从顶层控制器上猜（字段名各版本不一）
-static NSDictionary *DYYYHomeWardResolveProfileUser(void) {
-    NSDictionary *cached = [DYYYPreferences objectForKey:@"DYYYLastProfileUser"];
-    if ([cached isKindOfClass:[NSDictionary class]]) {
-        NSString *nick = [cached objectForKey:@"nickname"];
-        NSString *uid = [cached objectForKey:@"uid"];
-        NSString *sec = [cached objectForKey:@"secUid"];
-        if (([nick isKindOfClass:[NSString class]] && nick.length > 0) ||
-            ([uid isKindOfClass:[NSString class]] && uid.length > 0) ||
-            ([sec isKindOfClass:[NSString class]] && sec.length > 0)) {
-            return cached;
-        }
+    Class shareHorizon = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelHorizonSectionController");
+    if (shareHorizon) {
+        %init(DYYYHideShareToFriendsGroup, DYYYLPShareHorizonSection = shareHorizon);
     }
 
-    NSArray *keys = @[ @"user", @"userModel", @"awemeAuthor", @"author", @"userInfo", @"profileUser" ];
-    UIViewController *vc = DYYYSheetTopViewController();
-    for (NSInteger depth = 0; vc && depth < 6; depth++) {
-        for (NSString *k in keys) {
-            id obj = nil;
-            @try { obj = [vc valueForKey:k]; } @catch (NSException *e) { obj = nil; }
-            if (!obj) continue;
-            NSString *cls = NSStringFromClass([obj class]);
-            if (![cls containsString:@"User"] && ![cls containsString:@"Author"]) continue;
-            // 字段名各版本不一（sec_uid / userID 等都见过），逐个试
-            NSString *nick = DYYYCommentStrForKeys(obj, @[ @"nickname", @"nick_name" ]);
-            NSString *uid = DYYYCommentStrForKeys(obj, @[ @"uid", @"userID", @"user_id", @"uid_str" ]);
-            NSString *secUid = DYYYCommentStrForKeys(obj, @[ @"secUid", @"sec_uid", @"secuid" ]);
-            if (nick.length == 0 && uid.length == 0 && secUid.length == 0) continue;
-            NSString *avatar = @"";
-            @try {
-                id av = [obj valueForKey:@"avatarMedium"];
-                if (av && [av respondsToSelector:@selector(originURLList)]) {
-                    NSArray *l = [av originURLList];
-                    if (l.count > 0) avatar = l.firstObject ?: @"";
-                }
-            } @catch (NSException *e) {}
-            NSMutableDictionary *info = [NSMutableDictionary dictionary];
-            [info setObject:nick forKey:@"nickname"];
-            [info setObject:uid forKey:@"uid"];
-            [info setObject:secUid forKey:@"secUid"];
-            [info setObject:avatar forKey:@"avatarURL"];
-            return info;
-        }
-        UIViewController *next = vc.presentedViewController;
-        if (!next && [vc isKindOfClass:[UINavigationController class]])
-            next = [(UINavigationController *)vc topViewController];
-        if (!next && vc.childViewControllers.count > 0) next = vc.childViewControllers.lastObject;
-        if (!next || next == vc) break;
-        vc = next;
+    Class c;
+    if ((c = objc_getClass("AWECommentIMSwiftImpl.CommentLongPressPanelForwardElement"))) {
+        %init(DYYYHideLPForwardGroup, DYYYLPForwardElement = c);
     }
-    return nil;
-}
-
-// 弹出「插眼主页」面板（分类 + 备注，与视频/评论插眼一致）
-static void DYYYHomeWardShowPanel(void) {
-    NSDictionary *info = DYYYHomeWardResolveProfileUser();
-    if (!info) {
-        [DYYYUtils showToast:@"未获取到主页用户，请先打开对应用户主页"];
-        return;
+    if ((c = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement"))) {
+        %init(DYYYHideLPCopyGroup, DYYYLPCopyElement = c);
     }
-    NSString *secUid = [info objectForKey:@"secUid"];
-    if (![secUid isKindOfClass:[NSString class]]) secUid = @"";
-    NSString *uid = [info objectForKey:@"uid"];
-    if (![uid isKindOfClass:[NSString class]]) uid = @"";
-    // secUid 优先；只有 uid 时用 share/user 兜底链接（该形态可被宿主/浏览器打开）
-    NSString *shareURL = @"";
-    if (secUid.length > 0) {
-        shareURL = [NSString stringWithFormat:@"https://www.douyin.com/user/%@", secUid];
-    } else if (uid.length > 0) {
-        shareURL = [NSString stringWithFormat:@"https://www.douyin.com/share/user/%@", uid];
+    if ((c = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelSaveImageElement"))) {
+        %init(DYYYHideLPSaveImageGroup, DYYYLPSaveImageElement = c);
     }
-
-    NSMutableDictionary *data = [NSMutableDictionary dictionary];
-    [data setObject:@"主页" forKey:@"type"];
-    [data setObject:uid forKey:@"uid"];
-    [data setObject:secUid forKey:@"secUid"];
-    [data setObject:([info objectForKey:@"nickname"] ?: @"未知用户") forKey:@"nickname"];
-    [data setObject:([info objectForKey:@"avatarURL"] ?: @"") forKey:@"avatarURL"];
-    [data setObject:@"" forKey:@"awemeID"];
-    [data setObject:@"" forKey:@"createTime"];
-    [data setObject:@"" forKey:@"desc"];
-    [data setObject:shareURL forKey:@"shareURL"];
-
-    DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithWardData:data];
-    [panel show];
-}
-
-static void DYYYHomeWardActionTapped(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        DYYYHomeWardShowPanel();
-    });
-}
-
-@interface DYYYWardHomeActionTarget : NSObject
-+ (instancetype)shared;
-- (void)dyyyHomeWardTapped;
-@end
-
-@implementation DYYYWardHomeActionTarget
-+ (instancetype)shared {
-    static DYYYWardHomeActionTarget *obj = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ obj = [[self alloc] init]; });
-    return obj;
-}
-- (void)dyyyHomeWardTapped { DYYYHomeWardActionTapped(); }
-@end
-
-#pragma mark - 路径①：AWEUserActionSheetView.setActions:
-
-// 是否为「用户操作」面板：≥2 个用户面板特征标题，且没有视频面板特征标题
-static BOOL DYYYSheetLooksLikeUserSheet(NSArray *actions) {
-    NSInteger userMark = 0;
-    BOOL videoMark = NO;
-    for (id a in actions) {
-        NSString *t = DYYYSheetActionText(a);
-        if (t.length == 0) continue;
-        if ([t containsString:@"分享名片"] || [t containsString:@"私信"] || [t containsString:@"拉黑"] ||
-            [t containsString:@"举报"] || [t containsString:@"设置备注"] || [t containsString:@"加朋友"] ||
-            [t containsString:@"不让"] || [t containsString:@"复制链接"] || [t containsString:@"关注"])
-            userMark++;
-        if ([t containsString:@"下载"] || [t containsString:@"保存视频"] || [t containsString:@"保存图片"] ||
-            [t containsString:@"保存音频"] || [t containsString:@"保存实况"] || [t containsString:@"复制文案"] ||
-            [t containsString:@"打开评论"])
-            videoMark = YES;
+    if ((c = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelReportElement"))) {
+        %init(DYYYHideLPReportGroup, DYYYLPReportElement = c);
     }
-    return userMark >= 2 && !videoMark;
-}
-
-static BOOL DYYYSheetAlreadyHasWard(NSArray *actions) {
-    for (id a in actions) {
-        NSString *t = DYYYSheetActionText(a);
-        if (t.length > 0 && [t containsString:@"插眼主页"]) return YES;
+    if ((c = objc_getClass("AWECommentStudioSwiftImpl.CommentLongPressPanelVideoReplyElement"))) {
+        %init(DYYYHideLPVideoReplyGroup, DYYYLPVideoReplyElement = c);
     }
-    return NO;
-}
-
-// 克隆一个现有 action（property 逐个拷值），用于宿主 action 类型不认识的场景
-static id DYYYCloneActionObject(id src) {
-    if (!src) return nil;
-    Class cls = object_getClass(src);
-    id clone = [[cls alloc] init];
-    if (!clone) return nil;
-    unsigned int n = 0;
-    objc_property_t *list = class_copyPropertyList(cls, &n);
-    for (unsigned int i = 0; i < n; i++) {
-        const char *pname = property_getName(list[i]);
-        if (!pname) continue;
-        NSString *name = [NSString stringWithUTF8String:pname];
-        @try {
-            id v = [src valueForKey:name];
-            if (!v) continue;
-            @try { [clone setValue:v forKey:name]; } @catch (NSException *e) {}
-        } @catch (NSException *e) {}
+    if ((c = objc_getClass("AWECommentSearchSwiftImpl.CommentLongPressPanelPictureSearchElement"))) {
+        %init(DYYYHideLPPictureSearchGroup, DYYYLPPictureSearchElement = c);
     }
-    if (list) free(list);
-    return clone;
-}
-
-static id DYYYBuildWardAction(NSArray *actions) {
-    Class actCls = NSClassFromString(@"AWEUserSheetAction");
-    if (actCls) {
-        BOOL allHost = (actions.count > 0);
-        for (id a in actions) {
-            if (![a isKindOfClass:actCls]) {
-                allHost = NO;
-                break;
-            }
-        }
-        if (allHost) {
-            id handler = [^{ DYYYHomeWardActionTapped(); } copy];
-            id act = nil;
-            @try {
-                act = [actCls actionWithTitle:@"🌺 插眼主页" imgName:@"ic_location_outlined_20" handler:handler];
-            } @catch (NSException *e) {
-                act = nil;
-            }
-            if (!act) {
-                @try {
-                    act = [actCls actionWithTitle:@"🌺 插眼主页" style:0 imgName:@"ic_location_outlined_20" handler:handler];
-                } @catch (NSException *e) {
-                    act = nil;
-                }
-            }
-            if (act) return act;
-        }
+    if ((c = objc_getClass("AWECommentSearchSwiftImpl.CommentLongPressPanelSearchElement"))) {
+        %init(DYYYHideLPSearchGroup, DYYYLPSearchElement = c);
     }
-
-    id src = actions.lastObject;
-    if (!src) return nil;
-    id clone = DYYYCloneActionObject(src);
-    if (!clone) return nil;
-
-    NSString *textKey = nil;
-    for (NSString *k in DYYYSheetTextKeys()) {
-        @try {
-            if ([src valueForKey:k]) {
-                textKey = k;
-                break;
-            }
-        } @catch (NSException *e) {}
-    }
-    if (textKey) {
-        @try { [clone setValue:@"🌺 插眼主页" forKey:textKey]; } @catch (NSException *e) {}
-    }
-
-    id handler = [^{ DYYYHomeWardActionTapped(); } copy];
-    BOOL handlerSet = NO;
-    for (NSString *k in @[ @"handler", @"handlerBlock", @"tapHandler", @"tapBlock", @"actionBlock",
-                           @"actionHandler", @"clickBlock", @"block", @"onTap", @"tapAction" ]) {
-        @try {
-            if ([src valueForKey:k]) {
-                [clone setValue:handler forKey:k];
-                handlerSet = YES;
-                break;
-            }
-        } @catch (NSException *e) {}
-    }
-    if (!handlerSet) {
-        @try {
-            if ([src valueForKey:@"target"]) {
-                [clone setValue:[DYYYWardHomeActionTarget shared] forKey:@"target"];
-                NSString *skey = nil;
-                for (NSString *k in @[ @"action", @"selector", @"tapSelector", @"sel" ]) {
-                    @try {
-                        if ([src valueForKey:k]) {
-                            skey = k;
-                            break;
-                        }
-                    } @catch (NSException *e) {}
-                }
-                if (skey) {
-                    @try { [clone setValue:NSStringFromSelector(@selector(dyyyHomeWardTapped)) forKey:skey]; } @catch (NSException *e) {}
-                }
-            }
-        } @catch (NSException *e) {}
-    }
-    return clone;
-}
-
-static NSArray *DYYYHomeWardInjectActions(NSArray *actions) {
-    if (![DYYYPreferences boolForKey:@"DYYYHomeWard"]) return actions;
-    if (![actions isKindOfClass:[NSArray class]] || actions.count == 0) return actions;
-    if (DYYYSheetAlreadyHasWard(actions)) return actions;
-    if (!DYYYSheetLooksLikeUserSheet(actions)) return actions;
-
-    id wardAction = DYYYBuildWardAction(actions);
-    if (!wardAction) return actions;
-
-    NSMutableArray *arr = [actions mutableCopy];
-    [arr addObject:wardAction];
-    return [arr copy];
-}
-
-#pragma mark - 路径②：UI 层注入（扫 window → 深拷贝最后一行 → 追加）
-
-static char kDYYYWardHomeInjectedKey;
-
-// 用户面板特征文案（视频面板里不会出现这些）
-static NSArray *DYYYUserSheetSignatures(void) {
-    static NSArray *sigs = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        sigs = @[ @"分享名片", @"发私信", @"设置备注", @"加朋友", @"不让她看", @"复制链接" ];
-    });
-    return sigs;
-}
-
-static BOOL DYYYIsSignatureText(NSString *t) {
-    if (t.length == 0) return NO;
-    for (NSString *s in DYYYUserSheetSignatures()) {
-        if ([t containsString:s]) return YES;
-    }
-    return NO;
-}
-
-static BOOL DYYYIsWardHomeText(NSString *t) {
-    return t.length > 0 && [t containsString:@"插眼主页"];
-}
-
-static void DYYYCollectLabelsDeep(UIView *view, NSInteger depth, NSMutableArray *out) {
-    if (!view || depth > 16 || out.count > 800) return;
-    if ([view isKindOfClass:[UILabel class]]) [out addObject:view];
-    for (UIView *sub in view.subviews) {
-        DYYYCollectLabelsDeep(sub, depth + 1, out);
-    }
-}
-
-// 统计某视图子树里特征文案数量
-static NSInteger DYYYCountSignatureIn(UIView *view) {
-    NSMutableArray *labels = [NSMutableArray array];
-    DYYYCollectLabelsDeep(view, 0, labels);
-    NSInteger count = 0;
-    for (UILabel *label in labels) {
-        if (DYYYIsSignatureText(label.text)) count++;
-    }
-    return count;
-}
-
-// 深拷贝视图（UIView 支持 NSCoding）
-static UIView *DYYYDeepCopyView(UIView *src) {
-    if (!src) return nil;
-    @try {
-        NSData *data = [NSKeyedArchiver archivedDataWithRootObject:src];
-        if (!data) return nil;
-        id obj = [NSKeyedUnarchiver unarchiveObjectWithData:data];
-        if ([obj isKindOfClass:[UIView class]]) return (UIView *)obj;
-    } @catch (NSException *e) {}
-    return nil;
-}
-
-// 清掉克隆行自带的所有回调（UIControl target/action、手势、block 属性）
-static void DYYYNeutralizeClonedRow(UIView *row) {
-    if ([row isKindOfClass:[UIControl class]]) {
-        UIControl *control = (UIControl *)row;
-        for (id target in [[control allTargets] allObjects] ?: @[]) {
-            NSArray *events = @[ @(UIControlEventTouchUpInside), @(UIControlEventTouchDown),
-                                 @(UIControlEventPrimaryActionTriggered), @(UIControlEventValueChanged) ];
-            for (NSNumber *ev in events) {
-                UIControlEvents e = (UIControlEvents)[ev unsignedIntegerValue];
-                for (NSString *action in [control actionsForTarget:target forControlEvent:e]) {
-                    if (action.length > 0) {
-                        [control removeTarget:target action:NSSelectorFromString(action) forControlEvents:e];
-                    }
-                }
-            }
-        }
-        [control removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
-        [control removeTarget:nil action:NULL forControlEvents:UIControlEventAllTouchEvents];
-    }
-    for (UIGestureRecognizer *g in [row.gestureRecognizers copy]) {
-        [row removeGestureRecognizer:g];
-    }
-    unsigned int n = 0;
-    objc_property_t *list = class_copyPropertyList(object_getClass(row), &n);
-    for (unsigned int i = 0; i < n; i++) {
-        const char *attrs = property_getAttributes(list[i]);
-        if (!attrs || !strstr(attrs, "@?")) continue; // 只清 block 属性
-        const char *pname = property_getName(list[i]);
-        if (!pname) continue;
-        NSString *name = [NSString stringWithUTF8String:pname];
-        @try { [row setValue:nil forKey:name]; } @catch (NSException *e) {}
-    }
-    if (list) free(list);
-}
-
-static void DYYYSetRowTexts(UIView *row, NSString *text) {
-    NSMutableArray *labels = [NSMutableArray array];
-    DYYYCollectLabelsDeep(row, 0, labels);
-    BOOL firstSet = NO;
-    for (UILabel *label in labels) {
-        if (!firstSet) {
-            label.text = text;
-            firstSet = YES;
-        } else {
-            label.text = @"";
-        }
-    }
-}
-
-// 清掉克隆行里的图标（如「关注」行右侧的 +），只留文字
-static void DYYYStripCloneIcons(UIView *row) {
-    for (UIView *sub in [row.subviews copy]) {
-        if ([sub isKindOfClass:[UIImageView class]]) [sub removeFromSuperview];
-    }
-}
-
-// 自绘一行「🌺 插眼主页」（白底圆角深浅色自适应 + 文字 + 点击），
-// 用于深拷贝失败（NSKeyedArchiver 对复杂私有视图会抛异常）时的保底路径
-static UIView *DYYYWardRowWithFrame(CGRect frame) {
-    UIView *row = [[UIView alloc] initWithFrame:frame];
-    if (@available(iOS 13.0, *)) {
-        row.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
-            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
-                ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
-                : [UIColor whiteColor];
-        }];
-    } else {
-        row.backgroundColor = [UIColor whiteColor];
-    }
-    row.layer.cornerRadius = 12.0;
-    row.clipsToBounds = YES;
-    row.tag = 20261023;
-
-    UILabel *label = [[UILabel alloc] initWithFrame:row.bounds];
-    label.text = @"🌺 插眼主页";
-    label.textAlignment = NSTextAlignmentCenter;
-    label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
-    if (@available(iOS 13.0, *)) {
-        label.textColor = [UIColor labelColor];
-    } else {
-        label.textColor = [UIColor darkTextColor];
-    }
-    [row addSubview:label];
-
-    UITapGestureRecognizer *tap =
-        [[UITapGestureRecognizer alloc] initWithTarget:[DYYYWardHomeActionTarget shared]
-                                                action:@selector(dyyyHomeWardTapped)];
-    [row addGestureRecognizer:tap];
-    row.userInteractionEnabled = YES;
-    return row;
-}
-
-// 尝试把「插眼主页」行注入到识别到的用户面板里
-static void DYYYInjectHomeWardRow(UIView *container, UIView *lastRow) {
-    if (!container || !lastRow) return;
-    CGFloat rowHeight = CGRectGetHeight(lastRow.bounds);
-
-    UITapGestureRecognizer *tap =
-        [[UITapGestureRecognizer alloc] initWithTarget:[DYYYWardHomeActionTarget shared]
-                                                action:@selector(dyyyHomeWardTapped)];
-
-    // 深拷贝失败（私有视图不支持 NSCoding 时静默失败）→ toast 诊断 + 自绘行保底
-    UIView *clone = DYYYDeepCopyView(lastRow);
-    BOOL useClone = (clone != nil);
-    if (useClone) {
-        DYYYNeutralizeClonedRow(clone);
-        DYYYSetRowTexts(clone, @"🌺 插眼主页");
-        DYYYStripCloneIcons(clone);
-        [clone addGestureRecognizer:tap];
-        clone.userInteractionEnabled = YES;
-    } else {
-        [DYYYUtils showToast:[NSString stringWithFormat:@"主页插眼：%@ 深拷贝失败，改用自绘行", NSStringFromClass([lastRow class])]];
-    }
-
-    if ([container isKindOfClass:[UIStackView class]]) {
-        if (useClone) {
-            [(UIStackView *)container addArrangedSubview:clone];
-        } else {
-            [(UIStackView *)container addArrangedSubview:DYYYWardRowWithFrame(CGRectMake(0, 0, CGRectGetWidth(container.bounds), rowHeight))];
-        }
-    } else if ([container isKindOfClass:[UIScrollView class]]) {
-        // 表格/滚动容器（UICollectionView/UITableView）：行在 cell 里，不能直接塞，
-        // 且跨树 convertRect 到父面板会错位（实测跑到面板顶部）。
-        // 做法：行挂到同一个 window 上，坐标用 lastRow→window 转换（同树内可靠），
-        // 位置 = 最后一行下方；扫描循环检测到面板消失时清掉残留（tag 20261023）
-        UIWindow *window = lastRow.window ?: container.window;
-        if (!window) {
-            [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@ 行：%@", NSStringFromClass([container class]), NSStringFromClass([lastRow class])]];
-            return;
-        }
-        if (useClone) {
-            CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
-            clone.frame = CGRectOffset(rowInWindow, 0, rowHeight + 8);
-            // 深拷贝会丢 layer 样式，补白底圆角（跟随深浅色）
-            if (@available(iOS 13.0, *)) {
-                clone.backgroundColor = [UIColor colorWithDynamicProvider:^(UITraitCollection *tc) {
-                    return (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
-                        ? [UIColor colorWithRed:28/255.0 green:28/255.0 blue:30/255.0 alpha:1.0]
-                        : [UIColor whiteColor];
-                }];
-            } else {
-                clone.backgroundColor = [UIColor whiteColor];
-            }
-            clone.layer.cornerRadius = 12.0;
-            clone.clipsToBounds = YES;
-            clone.tag = 20261023;
-            [window addSubview:clone];
-        } else {
-            CGRect rowInWindow = [lastRow convertRect:lastRow.bounds toView:window];
-            [window addSubview:DYYYWardRowWithFrame(CGRectOffset(rowInWindow, 0, rowHeight + 8))];
-        }
-    } else {
-        if (useClone) {
-            clone.frame = CGRectOffset(lastRow.frame, 0, rowHeight);
-            [container addSubview:clone];
-        } else {
-            [container addSubview:DYYYWardRowWithFrame(CGRectOffset(lastRow.frame, 0, rowHeight))];
-        }
-        if (container.constraints.count == 0 && container.translatesAutoresizingMaskIntoConstraints) {
-            CGRect f = container.frame;
-            f.size.height += rowHeight;
-            container.frame = f;
-        }
-    }
-    objc_setAssociatedObject(container, &kDYYYWardHomeInjectedKey, @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static void DYYYScanUserSheet(UIWindow *window) {
-    if (!window) return;
-    NSMutableArray *labels = [NSMutableArray array];
-    DYYYCollectLabelsDeep(window, 0, labels);
-    if (labels.count == 0) return;
-
-    NSMutableArray *sigLabels = [NSMutableArray array];
-    BOOL hasWardLabel = NO;
-    for (UILabel *label in labels) {
-        if (DYYYIsSignatureText(label.text)) [sigLabels addObject:label];
-        if (DYYYIsWardHomeText(label.text)) hasWardLabel = YES;
-    }
-    if (sigLabels.count < 3) {
-        // 特征面板已不在：清掉挂在 window 上的「插眼主页」行，防残留挡交互
-        // （必须在 hasWardLabel 检查之前——clone 本身含「插眼主页」文本，
-        //   若先 return 它会永远清不掉）
-        for (UIView *sub in [window.subviews copy]) {
-            if (sub.tag == 20261023) [sub removeFromSuperview];
-        }
-        return;
-    }
-    if (hasWardLabel) return; // 面板在且已注入过
-
-    // 容器：从第一个特征文案往上找，第一个包含 ≥3 个特征文案的祖先
-    UIView *container = nil;
-    UIView *probe = [(UILabel *)sigLabels.firstObject superview];
-    for (NSInteger i = 0; probe && i < 8; i++) {
-        if (DYYYCountSignatureIn(probe) >= 3) {
-            container = probe;
-            break;
-        }
-        probe = probe.superview;
-    }
-    if (!container) return;
-    if ([objc_getAssociatedObject(container, &kDYYYWardHomeInjectedKey) boolValue]) return;
-
-    // 行：每个特征文案向上找「宽度接近容器宽、高度 28~110」的祖先；取最下面那一行
-    CGFloat containerWidth = CGRectGetWidth(container.bounds);
-    UIView *lastRow = nil;
-    CGFloat lastMaxY = -1;
-    for (UILabel *label in sigLabels) {
-        UIView *row = nil;
-        UIView *p = label.superview;
-        for (NSInteger i = 0; p && i < 5; i++) {
-            CGFloat w = CGRectGetWidth(p.bounds);
-            CGFloat h = CGRectGetHeight(p.bounds);
-            BOOL wideEnough = (containerWidth > 0 && w >= containerWidth * 0.55) || (w >= 60 && h >= 28 && h <= 110);
-            if (wideEnough && p != container) {
-                row = p;
-                break;
-            }
-            p = p.superview;
-        }
-        if (!row) continue;
-        CGRect frameInWindow = [row convertRect:row.bounds toView:window];
-        if (CGRectGetMaxY(frameInWindow) > lastMaxY) {
-            lastMaxY = CGRectGetMaxY(frameInWindow);
-            lastRow = row;
-        }
-    }
-    if (!lastRow) {
-        [DYYYUtils showToast:[NSString stringWithFormat:@"主页面板：%@", NSStringFromClass([container class])]];
-        return;
-    }
-    DYYYInjectHomeWardRow(container, lastRow);
-}
-
-// 主页插眼入口③：不依赖三点菜单结构，直接把「🌺」按钮挂在用户主页页面上。
-// 判定：reportUserDetailVisitIfNeeded: 最近 20s 内被调用过（正停在某个用户主页）
-// + 顶层 VC 类名像用户主页。离开主页/超时即移除，不残留。
-static void DYYYRemoveHomeWardButton(UIViewController *vc) {
-    if (!vc) return;
-    for (UIView *sub in [vc.view.subviews copy]) {
-        if (sub.tag == 20261024) [sub removeFromSuperview];
-    }
-}
-
-static void DYYYSyncHomeWardButton(void) {
-    @try {
-        NSDate *ts = [DYYYPreferences objectForKey:@"DYYYLastProfileVisitTime"];
-        BOOL recent = [ts isKindOfClass:[NSDate class]] && (-[ts timeIntervalSinceNow]) < 20.0;
-        UIViewController *top = DYYYSheetTopViewController();
-        if (!top || !top.isViewLoaded || !top.view) return;
-        NSString *cls = NSStringFromClass([top class]);
-        BOOL looksProfile = [cls containsString:@"User"] || [cls containsString:@"Profile"] ||
-                            [cls containsString:@"Home"] || [cls containsString:@"Detail"];
-        if (!recent || !looksProfile || !top.view.window) {
-            DYYYRemoveHomeWardButton(top);
-            return;
-        }
-        for (UIView *sub in top.view.subviews) {
-            if (sub.tag == 20261024) return; // 已存在
-        }
-        UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
-        CGFloat size = 34.0;
-        CGFloat y = CGRectGetHeight(top.view.bounds) - size - 70.0;
-        if (@available(iOS 11.0, *)) {
-            CGFloat bottomInset = top.view.safeAreaInsets.bottom;
-            if (bottomInset > 0) y = CGRectGetHeight(top.view.bounds) - bottomInset - size - 30.0;
-        }
-        btn.frame = CGRectMake(CGRectGetWidth(top.view.bounds) - size - 12.0, y, size, size);
-        [btn setTitle:@"🌺" forState:UIControlStateNormal];
-        btn.titleLabel.font = [UIFont systemFontOfSize:20.0];
-        btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
-        btn.layer.cornerRadius = size / 2.0;
-        btn.tag = 20261024;
-        [btn addTarget:[DYYYWardHomeActionTarget shared]
-                action:@selector(dyyyHomeWardTapped)
-      forControlEvents:UIControlEventTouchUpInside];
-        [top.view addSubview:btn];
-    } @catch (NSException *e) {}
-}
-
-static void DYYYStartUserSheetScan(void) {
-    // 每 1.2s 扫一次所有 window；只在开启主页插眼时才真正遍历
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (YES) {
-            @try {
-                if ([DYYYPreferences boolForKey:@"DYYYHomeWard"]) {
-                    NSArray *windows = [[UIApplication sharedApplication] windows];
-                    for (UIWindow *window in windows) {
-                        if (window && window.alpha > 0.01 && !window.isHidden) {
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                @try { DYYYScanUserSheet(window); } @catch (NSException *e) {}
-                            });
-                        }
-                    }
-                    // 入口③：用户主页页面上的「🌺」按钮（与菜单注入互不依赖）
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        @try { DYYYSyncHomeWardButton(); } @catch (NSException *e) {}
-                    });
-                }
-            } @catch (NSException *e) {}
-            [NSThread sleepForTimeInterval:1.2];
-        }
-    });
-}
-
-%group DYYYHomeWardGroup
-
-%hook AWEUserActionSheetView
-
-- (void)setActions:(NSArray *)actions {
-    NSArray *out = actions;
-    @try {
-        out = DYYYHomeWardInjectActions(actions);
-    } @catch (NSException *e) {
-        out = actions;
-    }
-    if (![out isKindOfClass:[NSArray class]]) out = actions;
-    %orig(out);
-}
-
-%end
-%end
-
-%ctor {
-    %init(DYYYHomeWardGroup);
-    // 主页菜单不是 VC 弹窗，靠 UI 扫描识别；延迟启动，避免拖慢冷启动
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        DYYYStartUserSheetScan();
-    });
 }
