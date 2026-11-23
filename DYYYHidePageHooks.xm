@@ -72,12 +72,14 @@ static void DYYYHideChromeView(UIView *view) {
     if (DYYYHideMineAICreationEnabled()) {
         // containerNode 为视图容器；KVC 取不到时安全跳过（buildVirtualView 已兜底返回 nil）
         // 类为前向声明，需转 (id) 才能发 KVC 消息
+        // 类为 Logos 前向声明，直接给 self 发消息会报 "forward declaration"，先转 (id)
+        id selfObj = (id)self;
         id node = nil;
         SEL containerSel = NSSelectorFromString(@"containerNode");
-        if ([self respondsToSelector:containerSel]) {
-            NSMethodSignature *sig = [self methodSignatureForSelector:containerSel];
+        if ([selfObj respondsToSelector:containerSel]) {
+            NSMethodSignature *sig = [selfObj methodSignatureForSelector:containerSel];
             if (sig && sig.numberOfArguments == 2 && sig.methodReturnType && sig.methodReturnType[0] == '@') {
-                node = ((id (*)(id, SEL))objc_msgSend)(self, containerSel);
+                node = ((id (*)(id, SEL))objc_msgSend)(selfObj, containerSel);
             }
         }
         if ([node isKindOfClass:[UIView class]]) {
