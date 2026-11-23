@@ -26,6 +26,10 @@
 #import "DYYYSettingViewController.h"
 #import "DYYYToast.h"
 #import "DYYYUtils.h"
+// b8 移植的四个模块（入口函数在下方 %ctor 里调用）
+#import "DYYYHideCommentAIAnalysisHooks.h"
+#import "DYYYMiniProgramRewardBypass.h"
+#import "DYYYSearchKeyboardVoiceHooks.h"
 
 static CGFloat gStartY = 0.0;
 static CGFloat gStartVal = 0.0;
