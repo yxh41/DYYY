@@ -7752,15 +7752,11 @@ static Class tabBarButtonClass = nil;
         useFullHeight = YES;
     }
 
-    // v2.4-34 护栏（移植到 3.0.2 基准）：全屏 feed 的设计行高被撑到屏高后，父容器就是整屏高，
-    // 若这里再减一个底栏会得到 761 —— 真机导出实证 cell=844 / 交互层=761，表现为推荐页
-    // 点赞评论那一层整体偏上、上下错位（跳一个视频重新布局后又自己对齐）。
-    // 父容器已经是整屏高时直接用父高，与上面那条互斥（一条管"父容器矮一底栏"，一条管"父容器已满屏"）。
-    CGFloat dyyyFullScreenH = [UIScreen mainScreen].bounds.size.height;
-    if (!useFullHeight && gCurrentTabBarHeight > 0 && dyyyFullScreenH > 1.0 &&
-        superviewHeight >= dyyyFullScreenH - 1.0) {
-        useFullHeight = YES;
-    }
+    // 🔴 别在这里补「父容器=整屏高 → 用父高」那条（b6 试过，已回滚）：
+    // 推荐页父容器确实是 844（cell 也是 844），但宿主故意让交互层 = 844-83 = 761，
+    // 底部 83pt 留给评论输入栏/底部操作栏。拉到 844 会把元素栈从 644~760 下推到 689~804，
+    // 整块文案/按钮被底部面板盖住 ⇒ 用户看到的「视频显示不全」。
+    // 真机导出对照：b5 elementStack{12,644,214,116} 贴底正常；b6 {12,689,214,115} 被遮。
 
     if (useFullHeight) {
         frame.size.height = superviewHeight;
