@@ -5451,8 +5451,61 @@ static NSHashTable *processedParentViews = nil;
     return %orig;
 }
 
+// ---------------------------------------------------------------------------
+// 自动跳过视频营销章节（本地 fork 功能，b10 移植）
+// 抖音原生字段 adChapterAutoSkipIndexArray 由服务端控制但从不下发（本地探针实测全 null），
+// 故把 adChapterIndexArray 复制进去，借原生「智能跳过营销章节」机制实现自动跳过。
+// 零 KVC：字段类型不确定，统一走 selector 存在性 + 签名校验 + typed objc_msgSend，
+// 避免 valueForKey: 撞结构体/裸指针/位域属性导致 SIGSEGV（@try 抓不住）。
+// ---------------------------------------------------------------------------
+static id DYYYAdChapterReadObject(id obj, NSString *selName) {
+    if (!obj || selName.length == 0) return nil;
+    SEL sel = NSSelectorFromString(selName);
+    if (!sel || ![obj respondsToSelector:sel]) return nil;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2) return nil;
+    const char *rt = sig.methodReturnType;
+    if (!rt || rt[0] != '@') return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
+static BOOL DYYYAdChapterWriteObject(id obj, NSString *propName, id value) {
+    if (!obj || propName.length == 0 || !value) return NO;
+    NSString *setterName = [NSString stringWithFormat:@"set%@%@:",
+                            [[propName substringToIndex:1] uppercaseString],
+                            [propName substringFromIndex:1]];
+    SEL sel = NSSelectorFromString(setterName);
+    if (!sel || ![obj respondsToSelector:sel]) return NO;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 3) return NO;
+    const char *at = [sig getArgumentTypeAtIndex:2];
+    if (!at || at[0] != '@') return NO;
+    ((void (*)(id, SEL, id))objc_msgSend)(obj, sel, value);
+    return YES;
+}
+
+static void DYYYApplyAdChapterAutoSkip(id model) {
+    if (!model) return;
+    if (!DYYYGetBool(@"DYYYAutoSkipAdChapter")) return;
+    id chapterData = DYYYAdChapterReadObject(model, @"chapterData");
+    if (!chapterData) return;
+    id adIdx = DYYYAdChapterReadObject(chapterData, @"adChapterIndexArray");
+    if (![adIdx isKindOfClass:[NSArray class]] || [adIdx count] == 0) return;
+    // 已填充则跳过，避免重复写
+    id curSkip = DYYYAdChapterReadObject(chapterData, @"adChapterAutoSkipIndexArray");
+    if ([curSkip isKindOfClass:[NSArray class]] && [curSkip count] > 0) return;
+    NSMutableArray *copy = [NSMutableArray arrayWithCapacity:[adIdx count]];
+    for (id v in (NSArray *)adIdx) {
+        if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]]) [copy addObject:v];
+    }
+    if (copy.count == 0) return;
+    DYYYAdChapterWriteObject(chapterData, @"adChapterAutoSkipIndexArray", [copy copy]);
+}
+
 //屏蔽章节要点数据
 - (NSArray *)chapterList {
+    DYYYApplyAdChapterAutoSkip(self);
+	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
 	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
 	if (hideChapterList) {
 		return @[]; // 返回空数组
