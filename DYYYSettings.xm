@@ -534,7 +534,13 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"摇一摇导出视图树",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_fullscreen_outlined_16"}
+            @"imageName" : @"ic_fullscreen_outlined_16"},
+          @{@"identifier" : @"DYYYEnableMiniProgramJumpingAds",
+            @"title" : @"跳过小程序激励广告",
+            @"subTitle" : @"自动跳过小程序里的激励视频，直接发放奖励",
+            @"detail" : @"",
+            @"cellType" : @37,
+            @"imageName" : @"ic_playrectangleonrectangle_outlined_20"}
       ];
 
       for (NSDictionary *dict in miscellaneousSettings) {
@@ -1258,6 +1264,18 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"隐藏我的页发作品",
             @"detail" : @"",
             @"cellType" : @6,
+            @"imageName" : @"ic_eyeslash_outlined_16"},
+          @{@"identifier" : @"DYYYHideMessageTabStarMall",
+            @"title" : @"隐藏消息页星光商城",
+            @"subTitle" : @"消息页导航栏右侧资源位",
+            @"detail" : @"",
+            @"cellType" : @37,
+            @"imageName" : @"ic_eyeslash_outlined_16"},
+          @{@"identifier" : @"DYYYHideMineAICreation",
+            @"title" : @"隐藏我的页 AI 作品",
+            @"subTitle" : @"「创作 AI 作品」入口（含虚拟视图容器）",
+            @"detail" : @"",
+            @"cellType" : @37,
             @"imageName" : @"ic_eyeslash_outlined_16"}
       ];
       for (NSDictionary *dict in messageAndMineSettings) {
@@ -1537,6 +1555,14 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
               @"identifier" : @"DYYYHideKeyboardAI",
               @"title" : @"隐藏键盘 AI",
               @"subTitle" : @"隐藏搜索下方的 AI 和语音搜索按钮",
+              @"detail" : @"",
+              @"cellType" : @37,
+              @"imageName" : @"ic_eyeslash_outlined_16"
+          },
+          @{
+              @"identifier" : @"DYYYHideCommentAIAnalysis",
+              @"title" : @"隐藏评论 AI 分析",
+              @"subTitle" : @"隐藏评论区 AI 解析 / 门店评价 / 商品评价等扩展 Tab",
               @"detail" : @"",
               @"cellType" : @37,
               @"imageName" : @"ic_eyeslash_outlined_16"

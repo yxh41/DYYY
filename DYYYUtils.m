@@ -924,6 +924,19 @@ static void DYYYAppendScrollProbe(UIView *view, NSMutableString *out, NSInteger 
         tv.bounds.size.width, tv.bounds.size.height, tv.contentOffset.y, tv.contentSize.height,
         tv.contentInset.top, tv.contentInset.bottom, tv.adjustedContentInset.top, tv.adjustedContentInset.bottom,
         tv.pagingEnabled, tv.rowHeight, tv.estimatedRowHeight]);
+    // 错位探针（只读）：全屏 feed 的翻页吸附单位 = 单页高，offset 应是它的整数倍。
+    // mod 明显不为 0 就是「当前帧与 cell 边界错开」——用户看到的下半截是下个视频 /
+    // 上半截留着上个视频。导出带上 decelerating/tracking 可区分「停稳了还错」和「滚动中」。
+    CGFloat dyyyPageH = tv.bounds.size.height;
+    if (dyyyPageH > 1.0) {
+        CGFloat dyyyMod = fmod(tv.contentOffset.y, dyyyPageH);
+        if (dyyyMod < 0) dyyyMod += dyyyPageH;
+        BOOL dyyyAligned = (dyyyMod < 1.0 || dyyyMod > dyyyPageH - 1.0);
+        DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"align off=%.1f mod=%.1f %@ pageH=%.0f state=%@ rowH=%.1f",
+            tv.contentOffset.y, dyyyMod, dyyyAligned ? @"OK" : @"MISALIGNED", dyyyPageH,
+            tv.isDecelerating ? @"decelerating" : (tv.isTracking ? @"tracking" : @"idle"),
+            tv.rowHeight]);
+    }
     DYYYAppendProbeLine(out, depth, [NSString stringWithFormat:@"delegate=%@ dataSource=%@",
         delegate ? NSStringFromClass([delegate class]) : @"nil",
         tv.dataSource ? NSStringFromClass([(id)tv.dataSource class]) : @"nil"]);

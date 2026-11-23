@@ -1,0 +1,96 @@
+// DYYYHidePageHooks.xm
+// 移植自 VexCove 的消息页/我的页元素隐藏：星光商城、我的页创作 AI 作品入口。
+// 关键约束：
+//  - 均为 Aweme 39.8 私有类（AWEIMMessageTabNavBarResourceSlotComponent*、
+//    AWEProfileHeaderGenericOperationComponent）。标准版与极速版都挂载：
+//    Logos %hook 对运行时不存的类会静默跳过，不崩。星光商城/创作AI作品
+//    入口两端 UI 都存在，故不按包名限制（极速版也能用这些开关）。
+//  - 两个隐藏 hook 均在调用点实时读取设置键（canShowInNaviBar / buildVirtualView:），
+//    切换开关后下次视图重建即生效，无需跨文件 apply 函数。
+//  - 用 Logos %hook + %group，缺失类静默跳过（Logos 安全网），不使用裸 swizzle。
+//  - 注：头像加号(DYYYHideMineAvatarPlus) 本地已有等价实现，本文件不重复。
+
+#import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+
+#pragma mark - 设置键读取
+
+// 直接读 standardUserDefaults（与设置页 DYYYSettingsHelper setUserDefaults: 同一域），
+// 避免依赖本地 A8 的 DYYYPreferences（roothide 跨进程偏好，尚未移植）。
+static BOOL DYYYHideMessageTabStarMallEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideMessageTabStarMall"];
+}
+
+static BOOL DYYYHideMineAICreationEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"DYYYHideMineAICreation"];
+}
+
+#pragma mark - 隐藏辅助（视图级隐身：隐藏 + 透明 + 禁交互）
+
+static void DYYYHideChromeView(UIView *view) {
+    if (!view || ![view isKindOfClass:[UIView class]]) return;
+    view.hidden = YES;
+    view.alpha = 0.0;
+    view.userInteractionEnabled = NO;
+    view.accessibilityElementsHidden = YES;
+}
+
+%group DYYYHidePageHooksGroup
+
+// 星光商城：消息页导航栏资源位（标准版 + V2 组件）
+%hook AWEIMMessageTabNavBarResourceSlotComponent
+- (BOOL)canShowInNaviBar {
+    if (DYYYHideMessageTabStarMallEnabled()) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+%hook AWEIMMessageTabNavBarResourceSlotComponentV2
+- (BOOL)canShowInNaviBar {
+    if (DYYYHideMessageTabStarMallEnabled()) {
+        return NO;
+    }
+    return %orig;
+}
+%end
+
+// 我的页「创作 AI 作品」入口：返回 nil 阻止虚拟视图构建，并隐藏容器节点
+%hook AWEProfileHeaderGenericOperationComponent
+- (id)buildVirtualView:(id)arg {
+    if (DYYYHideMineAICreationEnabled()) {
+        return nil;
+    }
+    return %orig;
+}
+
+- (void)updateComponentData:(id)arg {
+    %orig;
+    if (DYYYHideMineAICreationEnabled()) {
+        // containerNode 为视图容器；KVC 取不到时安全跳过（buildVirtualView 已兜底返回 nil）
+        // 类为前向声明，需转 (id) 才能发 KVC 消息
+        id node = nil;
+        SEL containerSel = NSSelectorFromString(@"containerNode");
+        if ([self respondsToSelector:containerSel]) {
+            NSMethodSignature *sig = [self methodSignatureForSelector:containerSel];
+            if (sig && sig.numberOfArguments == 2 && sig.methodReturnType && sig.methodReturnType[0] == '@') {
+                node = ((id (*)(id, SEL))objc_msgSend)(self, containerSel);
+            }
+        }
+        if ([node isKindOfClass:[UIView class]]) {
+            DYYYHideChromeView(node);
+        }
+    }
+}
+%end
+
+%end // DYYYHidePageHooksGroup
+
+%ctor {
+    // 标准版与极速版均挂载：Logos %hook 对运行时不存的类会静默跳过，不崩。
+    // 星光商城/创作AI作品入口两端 UI 都存在，故不再按包名限制。
+    %init(DYYYHidePageHooksGroup);
+}

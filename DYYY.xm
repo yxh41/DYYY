@@ -9470,6 +9470,12 @@ static void findTargetViewInView(UIView *view) {
 
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         DYYYRemoveKeyboardObserver();
+        // 搜索键盘 AI / 语音入口隐藏（class-based runtime swizzling，类缺失静默跳过）
+        DYYYStartSearchKeyboardVoiceHooks();
+        // 评论区 AI 解析 / 门店评价 / 商品评价等扩展 Tab 隐藏（runtime swizzling）
+        DYYYStartHideCommentAIAnalysisHooks();
+        // 小程序激励视频奖励绕过（内部已派发到专用 serial queue，不在主线程装 hook）
+        DYYYStartMiniProgramRewardBypassInstaller();
         dyyyKeyboardWillShowToken = [center addObserverForName:UIKeyboardWillShowNotification
                                                         object:nil
                                                          queue:[NSOperationQueue mainQueue]
