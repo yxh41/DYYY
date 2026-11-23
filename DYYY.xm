@@ -6640,6 +6640,18 @@ static NSString *DYYYDetailLayoutDiag(UIWindow *win) {
             DYYYDiagCollectInteractionLayers(sampleCell, layers, 0);
             for (NSString *line in layers)
                 [o appendFormat:@"#   lay %@\n", line];
+
+            // v2.4-35 只读诊断：cell 自身相对窗口的绝对位置 + 视频层底边是否盖到屏幕底。
+            // “底下看不到”若是布局错位，cellBottom 会明显小于 screen 或 vBottom 出现大段缺口；
+            // 若 cell/video 都顶满但内容仍被挡，则是遮挡/层级问题，不再往错位方向改。
+            CGRect cellAbs = [sampleCell convertRect:sampleCell.bounds toView:win];
+            [o appendFormat:@"#   abs cell y=%.1f bottom=%.1f screenH=%.1f gapBelow=%.1f\n",
+                            cellAbs.origin.y, CGRectGetMaxY(cellAbs), screenSize.height,
+                            screenSize.height - CGRectGetMaxY(cellAbs)];
+            NSMutableArray *vids = [NSMutableArray array];
+            DYYYDiagCollectVideoLayers(sampleCell, win, vids);
+            for (NSString *line in vids)
+                [o appendFormat:@"#   vabs %@\n", line];
         }
 
         // 枚举所有行：哪一行高度不是整屏、偏移从第几行开始累积，一次导出即可定位。

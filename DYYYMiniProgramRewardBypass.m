@@ -46,6 +46,19 @@ static id dyyyMiniProgramRewardActiveObserver = nil;
 static atomic_bool dyyyMiniProgramRewardHooksInstalledAtomic = false;
 static atomic_bool dyyyMiniProgramRewardImageRefreshQueued = false;
 
+// v2.4-35：hook 安装必须离开主线程。真机崩溃日志（iPhone 13,3 / iOS 16.4.1）显示
+// main queue 上调 MSHookMessageEx -> method_setImplementation 等待 ObjC runtime 写锁，
+// 主线程一卡就被后台 watchdog（0x8BADF00D, failed to terminate gracefully after 5.0s）杀掉。
+// 所有安装/重试/通知/dyld 回调统一走这条 serial queue，主线程不再碰 runtime 写操作。
+static dispatch_queue_t DYYYMiniProgramInstallQueue(void) {
+    static dispatch_queue_t queue = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      queue = dispatch_queue_create("com.dyyy.miniprogram.install", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
 static BOOL DYYYMiniProgramRewardEnabled(void) {
     return DYYYGetBool(kDYYYMiniProgramRewardEnabledKey);
 }
@@ -397,6 +410,15 @@ static void DYYYMiniProgramViewDidAppear(id self, SEL _cmd, BOOL animated) {
 
 typedef BOOL (*DYYYMiniProgramMethodValidator)(Method method);
 
+static void DYYYMiniProgramPrefetchIMP(Class cls, SEL selector, IMP *slot, IMP replacement) {
+    Method method = cls && selector ? class_getInstanceMethod(cls, selector) : NULL;
+    IMP current = method ? method_getImplementation(method) : NULL;
+    // 跳过尚未就绪的方法，以及已经装过 replacement 的情况，避免把替换后的 IMP 当成原 IMP 存下来。
+    if (current && current != replacement) {
+        *slot = current;
+    }
+}
+
 static BOOL DYYYMiniProgramInstallHook(Class cls,
                                        SEL selector,
                                        IMP replacement,
@@ -456,12 +478,34 @@ static BOOL DYYYMiniProgramValidateControllerClass(Class cls) {
            DYYYMiniProgramMethodIsVoidWithoutArguments(closeMethod);
 }
 
+// 安装改到 serial queue 后，主线程可能在"逐个替换 IMP"的中途调用到已替换的方法。
+// 先把全部原 IMP 读进全局变量，保证任意 hook 一被触发就能拿到有效 original，
+// 消除跨线程下 original 还是 NULL 的窗口。validate 已保证方法存在且签名匹配。
+static void DYYYPrefetchMiniProgramOriginals(Class cls) {
+    if (!cls) return;
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"sendReward"),
+                               &dyyyOriginalSendReward, (IMP)DYYYMiniProgramSendReward);
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"sendFirstReward"),
+                               &dyyyOriginalSendFirstReward, (IMP)DYYYMiniProgramSendFirstReward);
+    DYYYMiniProgramPrefetchIMP(cls, @selector(viewDidAppear:),
+                               &dyyyOriginalViewDidAppear, (IMP)DYYYMiniProgramViewDidAppear);
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"disableHostSendReward"),
+                               &dyyyOriginalDisableHostSendReward, (IMP)DYYYMiniProgramDisableHostSendReward);
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"setSendReward:"),
+                               &dyyyOriginalSetSendReward, (IMP)DYYYMiniProgramSetSendReward);
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"setSendFirstReward:"),
+                               &dyyyOriginalSetSendFirstReward, (IMP)DYYYMiniProgramSetSendFirstReward);
+    DYYYMiniProgramPrefetchIMP(cls, NSSelectorFromString(@"setDisableHostSendReward:"),
+                               &dyyyOriginalSetDisableHostSendReward, (IMP)DYYYMiniProgramSetDisableHostSendReward);
+}
+
 static BOOL DYYYMiniProgramInstallControllerHooks(Class cls) {
     if (!DYYYMiniProgramValidateControllerClass(cls)) {
         NSLog(@"[DYYY][小程序跳广告] 核心方法不完整或签名不匹配，保持原流程：%@",
               NSStringFromClass(cls));
         return NO;
     }
+    DYYYPrefetchMiniProgramOriginals(cls);
 
     BOOL sendRewardInstalled =
         DYYYMiniProgramInstallHook(cls,
@@ -527,6 +571,7 @@ static NSArray<NSNumber *> *DYYYMiniProgramRewardRetryDelays(void) {
 }
 
 static void DYYYMiniProgramAttemptInstall(void);
+static void DYYYMiniProgramAttemptInstallOnQueue(void);
 
 static void DYYYMiniProgramScheduleRetryIfNeeded(void) {
     if (dyyyMiniProgramRewardHooksInstalled || dyyyMiniProgramRewardRetryScheduled) {
@@ -540,20 +585,16 @@ static void DYYYMiniProgramScheduleRetryIfNeeded(void) {
 
     NSTimeInterval delay = delays[dyyyMiniProgramRewardRetryIndex++].doubleValue;
     dyyyMiniProgramRewardRetryScheduled = YES;
+    // v2.4-35：重试不再投递到 main queue，避免主线程触碰 runtime 写锁。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+                   DYYYMiniProgramInstallQueue(), ^{
       dyyyMiniProgramRewardRetryScheduled = NO;
-      DYYYMiniProgramAttemptInstall();
+      DYYYMiniProgramAttemptInstallOnQueue();
     });
 }
 
-static void DYYYMiniProgramAttemptInstall(void) {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-          DYYYMiniProgramAttemptInstall();
-        });
-        return;
-    }
+// v2.4-35：真身只在专用 serial queue 上执行，主线程绝不跑 MSHookMessageEx。
+static void DYYYMiniProgramAttemptInstallOnQueue(void) {
     if (dyyyMiniProgramRewardHooksInstalled) {
         return;
     }
@@ -573,9 +614,17 @@ static void DYYYMiniProgramAttemptInstall(void) {
     }
 }
 
+// v2.4-35：所有外部调用点统一经这个 wrapper 改投 install queue。
+// 同队列内重复投递只是多排一个串行任务，不会并发，也不会死锁。
+static void DYYYMiniProgramAttemptInstall(void) {
+    dispatch_async(DYYYMiniProgramInstallQueue(), ^{
+      DYYYMiniProgramAttemptInstallOnQueue();
+    });
+}
+
 static void DYYYMiniProgramPerformDeferredImageRefresh(__unused void *context) {
     atomic_store_explicit(&dyyyMiniProgramRewardImageRefreshQueued, false, memory_order_release);
-    DYYYMiniProgramAttemptInstall();
+    DYYYMiniProgramAttemptInstallOnQueue();
 }
 
 static void DYYYMiniProgramImageAdded(__unused const struct mach_header *header,
@@ -588,7 +637,8 @@ static void DYYYMiniProgramImageAdded(__unused const struct mach_header *header,
     if (!atomic_exchange_explicit(&dyyyMiniProgramRewardImageRefreshQueued,
                                   true,
                                   memory_order_acq_rel)) {
-        dispatch_async_f(dispatch_get_main_queue(), NULL, DYYYMiniProgramPerformDeferredImageRefresh);
+        // v2.4-35：dyld image 回调改投 install queue，不再借 main queue 装 hook。
+        dispatch_async_f(DYYYMiniProgramInstallQueue(), NULL, DYYYMiniProgramPerformDeferredImageRefresh);
     }
 }
 
@@ -601,7 +651,7 @@ void DYYYStartMiniProgramRewardBypassInstaller(void) {
             [NSNotificationCenter.defaultCenter
                 addObserverForName:UIApplicationDidBecomeActiveNotification
                             object:nil
-                             queue:NSOperationQueue.mainQueue
+                             queue:nil
                         usingBlock:^(__unused NSNotification *notification) {
                           dyyyMiniProgramRewardRetryIndex = 0;
                           DYYYMiniProgramAttemptInstall();
