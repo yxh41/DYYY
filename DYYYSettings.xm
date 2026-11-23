@@ -1997,7 +1997,25 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"长按评论插眼",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_location_outlined_20"}
+            @"imageName" : @"ic_location_outlined_20"},
+          @{@"identifier" : @"DYYYLongPressPip",
+            @"title" : @"长按面板画中画",
+            @"subTitle" : @"长按视频弹出面板后，可将该视频以小窗形式悬浮播放",
+            @"detail" : @"",
+            @"cellType" : @6,
+            @"imageName" : @"ic_rectangleonrectangleup_outlined_20"},
+          @{@"identifier" : @"DYYYLongPressWorkData",
+            @"title" : @"长按查看作品数据",
+            @"subTitle" : @"在长按面板里增加「获取作品数据」，可查看并复制作者的各项数据",
+            @"detail" : @"",
+            @"cellType" : @6,
+            @"imageName" : @"ic_tag_outlined_20"},
+          @{@"identifier" : @"DYYYWorkDataAPIToken",
+            @"title" : @"作品数据 API Token",
+            @"subTitle" : @"可选。填入 tikhub token 后可额外获取播放量、下载量等隐藏数据",
+            @"detail" : @"",
+            @"cellType" : @20,
+            @"imageName" : @"ic_key_outlined_20"}
       ];
 
       for (NSDictionary *dict in longPressSettings) {
