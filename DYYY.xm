@@ -2550,10 +2550,12 @@ static CGFloat DYYYDetailFullCellHeight(CGFloat orig) {
 
 %hook AWEAwemeDetailTableViewController
 
-- (BOOL)hasIphoneAutoPlaySwitch {
-    return YES;
-}
-
+// 移植本地 v2.4-33 的修复：删掉 -hasIphoneAutoPlaySwitch 强开 YES。
+// 短剧复用 AWEAwemeDetailTableViewController，自有「看全集」自动下一集引擎；
+// 这里强开 iPhone 自动播放开关会让两套自动播放打架，跳下一集后卡住，
+// 需手动暂停再播放（A/B 实证：关掉「启用自动播放」即正常）。
+// 只删这一个方法，-fixedCellHeight 的详情页全屏行高修复保留。
+// feed / 个人主页的自动播放 hook 也保留（在下面其它类上）。
 - (CGFloat)fixedCellHeight {
     return DYYYDetailFullCellHeight(%orig);
 }
