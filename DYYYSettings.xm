@@ -1987,7 +1987,17 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"title" : @"长按定时关闭抖音",
             @"detail" : @"",
             @"cellType" : @6,
-            @"imageName" : @"ic_c_alarm_outlined"}
+            @"imageName" : @"ic_c_alarm_outlined"},
+          @{@"identifier" : @"DYYYLongPressWard",
+            @"title" : @"长按视频插眼",
+            @"detail" : @"",
+            @"cellType" : @6,
+            @"imageName" : @"ic_location_outlined_20"},
+          @{@"identifier" : @"DYYYCommentWard",
+            @"title" : @"长按评论插眼",
+            @"detail" : @"",
+            @"cellType" : @6,
+            @"imageName" : @"ic_location_outlined_20"}
       ];
 
       for (NSDictionary *dict in longPressSettings) {

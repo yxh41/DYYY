@@ -7,6 +7,279 @@
 #import "DYYYManager.h"
 #import "DYYYToast.h"
 #import "DYYYUtils.h"
+#import "DYYYWardManager.h"
+#import "DYYYWardPanelView.h"
+#import "DYYYWardListViewController.h"
+#import <objc/message.h>
+
+// ============================================================================
+// MARK: - 评论插眼（本地 fork v2.3-8 引入，移植到 3.0.2 基准）
+// 向评论长按菜单注入一个「插眼」Element，点击后弹出插眼面板（分类 + 备注），
+// 保存为 type=评论 的记录，可在「插眼列表」里按 cid 定位回原评论。
+// 取值统一走「selector 存在性 + 返回类型校验 + typed objc_msgSend」：
+// 零 KVC、零 performSelector —— 宿主容器对象类型不确定，valueForKey: 撞到
+// 结构体/裸指针/位域属性会直接 SIGSEGV，@try 抓不住。
+// ============================================================================
+
+static id DYYYWardReadObject(id obj, NSString *selName) {
+    if (!obj || selName.length == 0) return nil;
+    SEL sel = NSSelectorFromString(selName);
+    if (![obj respondsToSelector:sel]) return nil;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2) return nil;
+    const char *rt = sig.methodReturnType;
+    if (rt[0] != '@') {
+        switch (rt[0]) {
+            case 'd': return @(((double (*)(id, SEL))objc_msgSend)(obj, sel));
+            case 'f': return @(((float (*)(id, SEL))objc_msgSend)(obj, sel));
+            case 'q':
+            case 'Q':
+            case 'i':
+            case 'I':
+            case 'l':
+            case 'L': return @(((NSInteger (*)(id, SEL))objc_msgSend)(obj, sel));
+            case 'B':
+            case 'c': return @(((BOOL (*)(id, SEL))objc_msgSend)(obj, sel));
+            default: return nil;
+        }
+    }
+    return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+
+static NSString *DYYYCommentWardSafeStr(id obj, NSString *key) {
+    if (!obj || !key) return @"";
+    @try {
+        id v = DYYYWardReadObject(obj, key);
+        if (v && ![v isKindOfClass:[NSNull class]]) {
+            NSString *s = [NSString stringWithFormat:@"%@", v];
+            if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+        }
+    } @catch (NSException *e) {}
+    return @"";
+}
+
+static id DYYYCommentWardContext(id element) {
+    return DYYYWardReadObject(element, @"commentPageContext");
+}
+
+// 最近一次评论面板 context，供 Element 点击时兜底（注入时常常拿不到 element 自己的 context）
+static id gDYYYCommentPanelContext = nil;
+
+static id DYYYCommentFromContext(id ctx) {
+    if (!ctx) return nil;
+    id comment = DYYYWardReadObject(ctx, @"selectdComment");
+    if (!comment) {
+        id p = DYYYWardReadObject(ctx, @"params");
+        if (p) comment = DYYYWardReadObject(p, @"selectdComment");
+    }
+    return comment;
+}
+
+// 最近一次打开过的作品 ID（视频长按面板里记录），仅作评论插眼的兜底
+static NSString *gDYYYLastAwemeID = nil;
+
+// 按多个候选 key 取第一个非空字符串（不同版本字段名不一致）
+static NSString *DYYYCommentStrForKeys(id obj, NSArray *keys) {
+    if (!obj) return @"";
+    for (NSString *k in keys) {
+        NSString *s = DYYYCommentWardSafeStr(obj, k);
+        if (s.length > 0) return s;
+    }
+    return @"";
+}
+
+// 取评论所属作品 ID：评论模型字段 → context/params 的 extraParams → 最近播放作品
+static NSString *DYYYCommentAwemeID(id ctx, id comment) {
+    NSArray *keys = @[ @"awemeID", @"awemeId", @"aweme_id", @"groupID", @"groupId", @"itemID", @"itemId", @"item_id" ];
+    NSString *v = DYYYCommentStrForKeys(comment, keys);
+    if (v.length > 0) return v;
+    @try {
+        NSMutableArray *srcs = [NSMutableArray array];
+        if (ctx) [srcs addObject:ctx];
+        id p = DYYYWardReadObject(ctx, @"params");
+        if (p) [srcs addObject:p];
+        for (id src in srcs) {
+            id ep = DYYYWardReadObject(src, @"extraParams");
+            if (![ep isKindOfClass:[NSDictionary class]]) continue;
+            for (NSString *k in keys) {
+                id val = [(NSDictionary *)ep objectForKey:k];
+                if (!val || [val isKindOfClass:[NSNull class]]) continue;
+                NSString *s = [NSString stringWithFormat:@"%@", val];
+                if (s.length > 0 && ![s isEqualToString:@"(null)"]) return s;
+            }
+        }
+    } @catch (NSException *e) {}
+    return gDYYYLastAwemeID ?: @"";
+}
+
+// 把评论上下文整理成插眼面板认识的字典
+static NSDictionary *DYYYCommentWardData(id ctx) {
+    id comment = DYYYCommentFromContext(ctx);
+    NSString *content = @"";
+    NSString *nick = @"未知用户";
+    NSString *uid = @"";
+    NSString *secUid = @"";
+    NSString *avatar = @"";
+    NSString *ctStr = @"";
+    if (comment) {
+        // 评论内容：字段名各版本不一；取不到会让插眼记录的 desc 为空 → 后面的「内容兜底匹配」失效
+        content = DYYYCommentStrForKeys(comment, @[ @"content", @"text", @"commentContent",
+                                                    @"contentText", @"commentText", @"desc", @"description" ]);
+        // 用户字段：AWE 系评论模型里是 "user"，"author" 只是部分旧版
+        id author = nil;
+        for (NSString *ak in @[ @"user", @"author" ]) {
+            id v = DYYYWardReadObject(comment, ak);
+            if (v && ![v isKindOfClass:[NSNull class]]) {
+                author = v;
+                break;
+            }
+        }
+        if (author) {
+            NSString *n = DYYYCommentWardSafeStr(author, @"nickname");
+            if (n.length > 0) nick = n;
+            uid = DYYYCommentWardSafeStr(author, @"uid");
+            secUid = DYYYCommentWardSafeStr(author, @"secUid");
+            // 头像多 key 兜底；URL 列表 originURLList 为主，urlList 兜底
+            for (NSString *avk in @[ @"avatarThumb", @"avatarMedium", @"avatarLarge" ]) {
+                id av = DYYYWardReadObject(author, avk);
+                if (!av || [av isKindOfClass:[NSNull class]]) continue;
+                NSArray *l = DYYYWardReadObject(av, @"originURLList");
+                if (l.count == 0) l = DYYYWardReadObject(av, @"urlList");
+                if (l.count > 0) {
+                    avatar = l.firstObject ?: @"";
+                    break;
+                }
+            }
+        }
+        id ct = DYYYWardReadObject(comment, @"createTime");
+        double ts = 0;
+        if ([ct isKindOfClass:[NSNumber class]]) ts = [ct doubleValue];
+        if (ts > 0) {
+            NSDate *d = [NSDate dateWithTimeIntervalSince1970:ts];
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+            ctStr = [fmt stringFromDate:d] ?: @"";
+        }
+    }
+    NSString *awemeID = DYYYCommentAwemeID(ctx, comment);
+    NSString *commentID = DYYYCommentStrForKeys(comment, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
+    // 同时保存所有候选 id：定位时逐个比对，避免字段名不一致导致永远匹配不上
+    NSMutableArray *cidCandidates = [NSMutableArray array];
+    for (NSString *k in @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]) {
+        NSString *v = DYYYCommentStrForKeys(comment, @[ k ]);
+        if (v.length > 0 && ![cidCandidates containsObject:v]) [cidCandidates addObject:v];
+    }
+    NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : "";
+    // 二级回复的父评论 id + 同序父评论正文（Swift 新 cell 的 cid 可能是 Int64 标量，对象图搜不到，
+    // 而 cell 上的 UILabel 文本可靠，定位时优先按文本扫父 cell）
+    NSMutableArray *parentIDs = [NSMutableArray array];
+    NSMutableArray *parentTexts = [NSMutableArray array];
+    {
+        NSArray *parentKeys = @[ @"replyComment", @"parentComment", @"parentCommentModel", @"replyToComment",
+                                 @"originComment", @"parentModel", @"replyToCommentModel" ];
+        for (NSString *pk in parentKeys) {
+            id p = DYYYWardReadObject(comment, pk);
+            if (!p || [p isKindOfClass:[NSNull class]]) continue;
+            NSString *pid = DYYYCommentStrForKeys(p, @[ @"cid", @"commentID", @"commentId", @"comment_id", @"id" ]);
+            if (pid.length > 0 && ![parentIDs containsObject:pid]) {
+                [parentIDs addObject:pid];
+                NSString *ptxt = DYYYCommentStrForKeys(p, @[ @"content", @"text", @"commentContent",
+                                                            @"contentText", @"commentText", @"desc", @"description" ]);
+                [parentTexts addObject:(ptxt ?: @"")];
+            }
+        }
+        if (parentIDs.count == 0) {
+            NSString *pid = DYYYCommentStrForKeys(comment, @[ @"replyToCommentID", @"parentCommentID", @"parentID", @"rootCommentID" ]);
+            if (pid.length > 0) {
+                [parentIDs addObject:pid];
+                [parentTexts addObject:@""];
+            }
+        }
+    }
+
+    NSMutableDictionary *data = [NSMutableDictionary dictionary];
+    [data setObject:@"评论" forKey:@"type"];
+    [data setObject:uid forKey:@"uid"];
+    [data setObject:secUid forKey:@"secUid"];
+    [data setObject:nick forKey:@"nickname"];
+    [data setObject:avatar forKey:@"avatarURL"];
+    [data setObject:awemeID forKey:@"awemeID"];
+    [data setObject:commentID forKey:@"commentID"];
+    [data setObject:cidCandidates forKey:@"commentIDs"];
+    if (parentIDs.count > 0) {
+        [data setObject:parentIDs forKey:@"parentIDs"];
+        [data setObject:parentTexts forKey:@"parentTexts"]; // 与 parentIDs 同序
+    }
+    [data setObject:ctStr forKey:@"createTime"];
+    [data setObject:content forKey:@"desc"];
+    [data setObject:shareURL forKey:@"shareURL"];
+    return data;
+}
+
+// 尝试把面板 context 写进 Element（先找 setter 方法并校验签名，找不到就放弃，绝不硬 KVC）
+static void DYYYCommentSetPanelContext(id el, id ctx) {
+    if (!el || !ctx) return;
+    SEL setter = NSSelectorFromString(@"setCommentPageContext:");
+    if (![el respondsToSelector:setter]) return;
+    NSMethodSignature *sig = [el methodSignatureForSelector:setter];
+    if (!sig || sig.numberOfArguments != 3) return;
+    const char *t = [sig getArgumentTypeAtIndex:2];
+    if (!t || t[0] != '@') return;
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(el, setter, ctx);
+    } @catch (NSException *e) {}
+}
+
+static BOOL DYYYWardEl_shouldShow(id self, SEL _cmd) {
+    (void)self;
+    (void)_cmd;
+    return YES;
+}
+static id DYYYWardEl_content(id self, SEL _cmd) {
+    (void)self;
+    (void)_cmd;
+    return @"插眼";
+}
+static id DYYYWardEl_image(id self, SEL _cmd) {
+    (void)self;
+    (void)_cmd;
+    if (@available(iOS 13.0, *)) {
+        return [UIImage systemImageNamed:@"mappin.circle"];
+    }
+    return nil;
+}
+static void DYYYWardEl_tapped(id self, SEL _cmd) {
+    (void)_cmd;
+    id ctx = DYYYCommentWardContext(self);
+    if (!ctx) ctx = gDYYYCommentPanelContext;
+    NSDictionary *data = DYYYCommentWardData(ctx);
+    // 等宿主菜单收起后再弹插眼面板，避免被菜单的 dismiss 动画一起带走
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithWardData:data];
+      [panel show];
+    });
+}
+
+// 以「复制」Element 为基类现造一个「插眼」Element 类（宿主面板按 Element 数组渲染，认类不认配置）
+static Class DYYYWardCommentElementClass(void) {
+    static Class cls = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      Class base = NSClassFromString(@"AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelCopyElement");
+      if (!base) return;
+      Class c = objc_allocateClassPair(base, "DYYYWardCommentElement", 0);
+      if (!c) return;
+      class_addMethod(c, NSSelectorFromString(@"elementShouldShow"), (IMP)DYYYWardEl_shouldShow, "B@:");
+      class_addMethod(c, NSSelectorFromString(@"elementContent"), (IMP)DYYYWardEl_content, "@@:");
+      class_addMethod(c, NSSelectorFromString(@"elementImage"), (IMP)DYYYWardEl_image, "@@:");
+      class_addMethod(c, NSSelectorFromString(@"elementTapped"), (IMP)DYYYWardEl_tapped, "v@:");
+      objc_registerClassPair(c);
+      cls = c;
+    });
+    return cls;
+}
+
+
 
 %hook AWELongPressPanelViewGroupModel
 %property(nonatomic, assign) BOOL isDYYYCustomGroup;
@@ -113,10 +386,21 @@
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
+    // 插眼：本地 fork 的「视频插眼」开关（同时在面板里出「视频插眼」+「插眼列表」两个入口）
+    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
 
     // 检查是否有任何功能启用
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enableWard;
+
+    // 记录当前作品 ID，供「评论插眼」兜底推断评论所属作品
+    if (enableWard || DYYYGetBool(@"DYYYCommentWard")) {
+        id curID = DYYYWardReadObject(self.awemeModel, @"itemID");
+        if (curID) {
+            NSString *s = [NSString stringWithFormat:@"%@", curID];
+            if (s.length > 0 && ![s isEqualToString:@"(null)"]) gDYYYLastAwemeID = s;
+        }
+    }
 
     // 如果没有任何功能启用，仅使用官方按钮
     if (!hasAnyFeatureEnabled) {
@@ -690,6 +974,39 @@
         [viewModels addObject:timerCloseViewModel];
     }
 
+    // 插眼功能（本地 fork 移植）：视频插眼 + 插眼列表两个入口
+    if (enableWard) {
+        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardViewModel.awemeModel = self.awemeModel;
+        wardViewModel.actionType = 692;
+        wardViewModel.duxIconName = @"ic_location_outlined_20";
+        wardViewModel.describeString = @"视频插眼";
+        AWEAwemeModel *wardModel = self.awemeModel;
+        wardViewModel.action = ^{
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES
+                                  completion:^{
+                                    DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
+                                    [panel show];
+                                  }];
+        };
+        [viewModels addObject:wardViewModel];
+
+        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardListViewModel.awemeModel = self.awemeModel;
+        wardListViewModel.actionType = 693;
+        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
+        wardListViewModel.describeString = @"插眼列表";
+        wardListViewModel.action = ^{
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES
+                                  completion:^{
+                                    [DYYYWardListViewController present];
+                                  }];
+        };
+        [viewModels addObject:wardListViewModel];
+    }
+
     // 创建自定义组
     NSMutableArray *customGroups = [NSMutableArray array];
     NSInteger totalButtons = viewModels.count;
@@ -880,10 +1197,21 @@
     BOOL enableFilterKeyword = DYYYGetBool(@"DYYYLongPressFilterTitle");
     BOOL enableTimerClose = DYYYGetBool(@"DYYYLongPressTimerClose");
     BOOL enableCreateVideo = DYYYGetBool(@"DYYYLongPressCreateVideo");
+    // 插眼：本地 fork 的「视频插眼」开关（同时在面板里出「视频插眼」+「插眼列表」两个入口）
+    BOOL enableWard = DYYYGetBool(@"DYYYLongPressWard");
 
     // 检查是否有任何功能启用
     hasAnyFeatureEnabled = enableSaveVideo || enableSaveCover || enableSaveAudio || enableSaveCurrentImage || enableSaveAllImages || enableCopyText || enableCopyLink || enableApiDownload ||
-                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo;
+                           enableFilterUser || enableFilterKeyword || enableTimerClose || enableCreateVideo || enableWard;
+
+    // 记录当前作品 ID，供「评论插眼」兜底推断评论所属作品
+    if (enableWard || DYYYGetBool(@"DYYYCommentWard")) {
+        id curID = DYYYWardReadObject(self.awemeModel, @"itemID");
+        if (curID) {
+            NSString *s = [NSString stringWithFormat:@"%@", curID];
+            if (s.length > 0 && ![s isEqualToString:@"(null)"]) gDYYYLastAwemeID = s;
+        }
+    }
 
     if (!hasAnyFeatureEnabled) {
         return originalArray;
@@ -1460,6 +1788,39 @@
         [viewModels addObject:timerCloseViewModel];
     }
 
+    // 插眼功能（本地 fork 移植）：视频插眼 + 插眼列表两个入口
+    if (enableWard) {
+        AWELongPressPanelBaseViewModel *wardViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardViewModel.awemeModel = self.awemeModel;
+        wardViewModel.actionType = 694;
+        wardViewModel.duxIconName = @"ic_location_outlined_20";
+        wardViewModel.describeString = @"视频插眼";
+        AWEAwemeModel *wardModel = self.awemeModel;
+        wardViewModel.action = ^{
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES
+                                  completion:^{
+                                    DYYYWardPanelView *panel = [[DYYYWardPanelView alloc] initWithAwemeModel:wardModel];
+                                    [panel show];
+                                  }];
+        };
+        [viewModels addObject:wardViewModel];
+
+        AWELongPressPanelBaseViewModel *wardListViewModel = [[%c(AWELongPressPanelBaseViewModel) alloc] init];
+        wardListViewModel.awemeModel = self.awemeModel;
+        wardListViewModel.actionType = 695;
+        wardListViewModel.duxIconName = @"ic_collection_outlined_20";
+        wardListViewModel.describeString = @"插眼列表";
+        wardListViewModel.action = ^{
+          AWELongPressPanelManager *panelManager = [%c(AWELongPressPanelManager) shareInstance];
+          [panelManager dismissWithAnimation:YES
+                                  completion:^{
+                                    [DYYYWardListViewController present];
+                                  }];
+        };
+        [viewModels addObject:wardListViewModel];
+    }
+
     newGroupModel.groupArr = viewModels;
 
     // 返回自定义组+原始组的结果
@@ -1609,5 +1970,68 @@
     }
     if ((c = objc_getClass("AWECommentSearchSwiftImpl.CommentLongPressPanelSearchElement"))) {
         %init(DYYYHideLPSearchGroup, DYYYLPSearchElement = c);
+    }
+}
+
+%group DYYYCommentWardInjectGroup
+
+%hook DYYYCommentPanelSectionViewModel
+
+- (void)setModelsArray:(id)arg1 {
+    if (![arg1 isKindOfClass:[NSArray class]]) {
+        %orig(arg1);
+        return;
+    }
+    NSArray *finalArray = (NSArray *)arg1;
+
+    // 向评论长按菜单注入「插眼」项。
+    // setModelsArray: 在一次面板弹出中会被多次调用（宿主会把上次的数组再喂回来），
+    // 所以先清掉之前注入的项再补一个，保证菜单里始终只有一个「插眼」。
+    if (finalArray.count > 0 && DYYYGetBool(@"DYYYCommentWard")) {
+        Class elCls = DYYYWardCommentElementClass();
+        if (elCls) {
+            NSMutableArray *arr = [NSMutableArray arrayWithCapacity:finalArray.count + 1];
+            NSInteger removed = 0;
+            for (id item in finalArray) {
+                if ([NSStringFromClass([item class]) isEqualToString:@"DYYYWardCommentElement"]) {
+                    removed++;
+                    continue;
+                }
+                [arr addObject:item];
+            }
+            if (arr.count > 0) {
+                id ctx = DYYYCommentWardContext(arr.firstObject);
+                if (ctx) gDYYYCommentPanelContext = ctx;
+
+                // 宿主重复喂回来（removed>0）时必须补回；全新数组时才用时间窗防多 section 重复注入
+                static NSTimeInterval sLastInjectTime = 0;
+                NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+                BOOL recentlyInjected = (now - sLastInjectTime) < 1.0;
+                BOOL shouldInject = (removed > 0) || !recentlyInjected;
+
+                if (shouldInject) {
+                    id el = [[elCls alloc] init];
+                    if (el) {
+                        DYYYCommentSetPanelContext(el, ctx);
+                        [arr insertObject:el atIndex:0];
+                        sLastInjectTime = now;
+                    }
+                }
+            }
+            finalArray = [arr copy];
+        }
+    }
+
+    %orig(finalArray);
+}
+
+%end
+%end
+
+%ctor {
+    // 目标类在部分版本里已改名/移除：拿不到就整组不装，功能静默关闭（不影响其它 hook）
+    Class ownerClass = objc_getClass("AWECommentLongPressPanelSwiftImpl.CommentLongPressPanelNormalSectionViewModel");
+    if (ownerClass) {
+        %init(DYYYCommentWardInjectGroup, DYYYCommentPanelSectionViewModel = ownerClass);
     }
 }
