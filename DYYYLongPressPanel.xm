@@ -139,12 +139,16 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
             if (n.length > 0) nick = n;
             uid = DYYYCommentWardSafeStr(author, @"uid");
             secUid = DYYYCommentWardSafeStr(author, @"secUid");
-            // 头像多 key 兜底；URL 列表 originURLList 为主，urlList 兜底
+            // 头像多 key 兜底；URL 列表 originURLList 为主，urlList 兜底（类型必须校验，别对非数组调 .count）
             for (NSString *avk in @[ @"avatarThumb", @"avatarMedium", @"avatarLarge" ]) {
                 id av = DYYYWardReadObject(author, avk);
                 if (!av || [av isKindOfClass:[NSNull class]]) continue;
-                NSArray *l = DYYYWardReadObject(av, @"originURLList");
-                if (l.count == 0) l = DYYYWardReadObject(av, @"urlList");
+                id lo = DYYYWardReadObject(av, @"originURLList");
+                NSArray *l = [lo isKindOfClass:[NSArray class]] ? (NSArray *)lo : nil;
+                if (l.count == 0) {
+                    id lu = DYYYWardReadObject(av, @"urlList");
+                    l = [lu isKindOfClass:[NSArray class]] ? (NSArray *)lu : nil;
+                }
                 if (l.count > 0) {
                     avatar = l.firstObject ?: @"";
                     break;
@@ -169,7 +173,7 @@ static NSDictionary *DYYYCommentWardData(id ctx) {
         NSString *v = DYYYCommentStrForKeys(comment, @[ k ]);
         if (v.length > 0 && ![cidCandidates containsObject:v]) [cidCandidates addObject:v];
     }
-    NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : "";
+    NSString *shareURL = awemeID.length > 0 ? [NSString stringWithFormat:@"https://www.douyin.com/video/%@", awemeID] : @"";
     // 二级回复的父评论 id + 同序父评论正文（Swift 新 cell 的 cid 可能是 Int64 标量，对象图搜不到，
     // 而 cell 上的 UILabel 文本可靠，定位时优先按文本扫父 cell）
     NSMutableArray *parentIDs = [NSMutableArray array];
