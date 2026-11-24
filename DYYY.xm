@@ -5820,7 +5820,10 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
 %hook AFDPlayerAndInteractionService
 
 - (void)statisticsVideoViewedWithID:(NSString *)itemID scene:(NSString *)scene {
-    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+    BOOL blocked = DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload");
+    // b12 取证：hit 证明宿主真的走到这条上报链，blocked 证明开关真的拦住了
+    DYYYPrivNote(blocked ? @"view.blocked" : @"view.hit", @"2args");
+    if (blocked) {
         return;
     }
     %orig;
@@ -5833,13 +5836,24 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
                             isStory:(BOOL)isStory
                   isRequestDirectly:(BOOL)isRequestDirectly
                               scene:(NSString *)scene {
-    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+    BOOL blocked = DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload");
+    DYYYPrivNote(blocked ? @"view.blocked" : @"view.hit", @"7args");
+    if (blocked) {
         return;
     }
     %orig;
 }
 
 %end
+
+// b12：启动后异步枚举宿主上报方法清单，写进 dyyypriv 取证。
+// 只读 class_copyMethodList，不装 hook、不取 runtime 写锁；放后台队列避免影响启动。
+%ctor {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      DYYYDumpMethodsContaining(@"AFDPlayerAndInteractionService", @"Viewed");
+      DYYYDumpMethodsContaining(@"AFDPlayerAndInteractionService", @"statistics");
+    });
+}
 
 
 

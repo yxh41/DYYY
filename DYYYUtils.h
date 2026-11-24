@@ -340,6 +340,28 @@ void DYYYNotePlayletSkip(int slot);
  */
 NSString *DYYYPlayletSkipSummary(void);
 
+/**
+ * @brief 隐私类 hook 的运行时取证（b12）。
+ *        之前的 b10/b11 只有"字符串在二进制里"这一层证明，没有"宿主真的调用了我们 hook 的方法"
+ *        这一层——等于看起来装了。这里只记录、不改状态：同一 tag 只在第一次出现时打一条
+ *        NSLog，之后只累加计数，摇一摇导出时以 "# dyyypriv ..." 一行带出。
+ * @param tag    取证点名称，例如 "view.hit" / "visit.blocked"
+ * @param detail 补充信息（分支、参数个数等），可为 nil
+ */
+void DYYYPrivNote(NSString *_Nullable tag, NSString *_Nullable detail);
+
+/**
+ * @brief 导出隐私取证摘要；无记录时返回 "-"
+ */
+NSString *DYYYPrivSummary(void);
+
+/**
+ * @brief 枚举 className（含父类链、含类方法）里名字包含 mustContain 的所有 selector，
+ *        结果写进隐私取证摘要。用于确认"宿主到底有哪些上报方法"——避免像 b11 那样
+ *        硬编码两个重载、覆盖率全靠猜。mustContain 传 nil 表示列举全部（结果有上限）。
+ */
+void DYYYDumpMethodsContaining(NSString *_Nullable className, NSString *_Nullable mustContain);
+
 #ifdef __cplusplus
 }
 #endif

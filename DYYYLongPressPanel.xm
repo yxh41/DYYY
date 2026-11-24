@@ -3658,7 +3658,10 @@ static void DYYYStartUserSheetScan(void) {
 
     // 隐私开关：禁用访客记录上传（本地 fork 功能，b11 移植）。
     // 必须写在这个已有 hook 里 —— 同一方法不能在两处 %hook，否则双重 hook。
-    if (DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload")) {
+    BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
+    // b12 取证：hit 证明宿主真的走到这条链，blocked 证明开关真的拦住了
+    DYYYPrivNote(privBlocked ? @"visit.blocked" : @"visit.hit", @"component");
+    if (privBlocked) {
         return;
     }
 
@@ -3676,7 +3679,9 @@ static void DYYYStartUserSheetScan(void) {
 
 + (void)postProfileRecordWithParams:(id)params completionBlock:(id)completionBlock {
     // 隐私开关：访客记录的另一条上报链路（宿主类不存在时 Logos no-op，不影响其它功能）
-    if (DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload")) {
+    BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
+    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"recordHelper");
+    if (privBlocked) {
         return;
     }
     %orig;
@@ -3690,6 +3695,11 @@ static void DYYYStartUserSheetScan(void) {
     // 两个宿主类在部分版本里可能已改名/移除：Logos 对不存在的类 hook 是 no-op，
     // 不会 crash，也不影响同文件里评论插眼的独立 group。
     %init(DYYYHomeWardGroup);
+    // b12：异步枚举宿主上报方法清单，确认 b11 那两个重载有没有漏。只读、不装 hook。
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      DYYYDumpMethodsContaining(@"AWEProfileRecordHelper", nil);
+      DYYYDumpMethodsContaining(@"AWEProfileUserDetailComponent", @"report");
+    });
     // 主页菜单不是 VC 弹窗，靠 UI 扫描识别；延迟启动，避免拖慢冷启动
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DYYYStartUserSheetScan();

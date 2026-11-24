@@ -1187,11 +1187,105 @@ NSString *DYYYPlayletSkipSummary(void) {
     return s.length ? s : @"-";
 }
 
+// ---- 隐私类 hook 运行时取证（b12）----
+// 背景：b10（跳广告）、b11（访客/观看记录）交付时，验包只能证明「目标字符串在 dylib 里」，
+// 无法证明「宿主真的调用了我们 hook 的方法」。前者是"装了"，后者才是"生效了"。
+// 这里补上后者：每个 hook 入口记一条取证，同一个 tag 只打一次日志（视频流是高频回调，
+// 全打会把日志刷爆），后续只累加计数；摇一摇导出时以 "# dyyypriv ..." 一行带出。
+static NSMutableDictionary<NSString *, NSNumber *> *dyyyPrivCounts = nil;
+static NSMutableDictionary<NSString *, NSString *> *dyyyPrivLast = nil;
+
+void DYYYPrivNote(NSString *tag, NSString *detail) {
+    if (tag.length == 0)
+        return;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      dyyyPrivCounts = [NSMutableDictionary dictionary];
+      dyyyPrivLast = [NSMutableDictionary dictionary];
+    });
+    NSString *d = detail.length ? detail : @"-";
+    BOOL first = NO;
+    @synchronized(dyyyPrivCounts) {
+        NSNumber *prev = dyyyPrivCounts[tag];
+        first = (prev == nil);
+        dyyyPrivCounts[tag] = @(prev.integerValue + 1);
+        // 防止宿主在某些 tag 上带随机串导致字典无限膨胀
+        if (dyyyPrivLast.count > 96)
+            [dyyyPrivLast removeAllObjects];
+        dyyyPrivLast[tag] = d;
+    }
+    if (first) {
+        NSLog(@"[DYYY] # dyyypriv %@ %@", tag, d);
+    }
+}
+
+NSString *DYYYPrivSummary(void) {
+    if (!dyyyPrivCounts || dyyyPrivCounts.count == 0)
+        return @"-";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    @synchronized(dyyyPrivCounts) {
+        NSArray<NSString *> *keys = [[dyyyPrivCounts allKeys] sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *k in keys) {
+            [parts addObject:[NSString stringWithFormat:@"%@ x%ld (%@)", k,
+                                                        (long)[dyyyPrivCounts[k] integerValue],
+                                                        dyyyPrivLast[k] ?: @"-"]];
+        }
+    }
+    NSString *s = [parts componentsJoinedByString:@" ; "];
+    if (s.length > 1200)
+        s = [[s substringToIndex:1200] stringByAppendingString:@" ..."];
+    return s;
+}
+
+void DYYYDumpMethodsContaining(NSString *className, NSString *mustContain) {
+    if (className.length == 0)
+        return;
+    Class startCls = NSClassFromString(className);
+    if (!startCls) {
+        DYYYPrivNote([NSString stringWithFormat:@"cls.%@", className], @"missing");
+        return;
+    }
+    NSMutableArray<NSString *> *hits = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    // 沿父类链扫：宿主经常把实现放在基类，只扫本类会漏
+    for (Class c = startCls; c && c != [NSObject class]; c = class_getSuperclass(c)) {
+        for (int isMeta = 0; isMeta < 2; isMeta++) {
+            Class target = isMeta ? object_getClass((id)c) : c;
+            if (!target)
+                continue;
+            unsigned int n = 0;
+            Method *ms = class_copyMethodList(target, &n);
+            if (!ms)
+                continue;
+            for (unsigned int i = 0; i < n; i++) {
+                NSString *sel = NSStringFromSelector(method_getName(ms[i]));
+                if (!sel)
+                    continue;
+                if (mustContain.length && [sel rangeOfString:mustContain].location == NSNotFound)
+                    continue;
+                NSString *entry = isMeta ? [@"+" stringByAppendingString:sel] : sel;
+                if ([seen containsObject:entry])
+                    continue;
+                [seen addObject:entry];
+                if (hits.count < 60)
+                    [hits addObject:entry];
+            }
+            free(ms);
+        }
+    }
+    NSString *detail = hits.count ? [hits componentsJoinedByString:@","] : @"none";
+    if (seen.count > hits.count) {
+        detail = [detail stringByAppendingFormat:@",...+%lu", (unsigned long)(seen.count - hits.count)];
+    }
+    DYYYPrivNote([NSString stringWithFormat:@"methods.%@/%@", className, mustContain ?: @"*"], detail);
+}
+
 + (NSString *)describeViewTree:(UIView *)root {
     NSMutableString *out = [NSMutableString string];
     // 先把 DYYY 自己的播放介入时间线放最前面，方便卡住时直接看「最后一次介入」
     [out appendFormat:@"# dyyytrace %@\n", DYYYPlaybackTraceSummary()];
     [out appendFormat:@"# dyyyskip %@\n", DYYYPlayletSkipSummary()];
+    [out appendFormat:@"# dyyypriv %@\n", DYYYPrivSummary()];
     @try {
         UIViewController *top = [DYYYUtils topView];
         if (top) {
