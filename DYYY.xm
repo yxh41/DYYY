@@ -5506,7 +5506,6 @@ static void DYYYApplyAdChapterAutoSkip(id model) {
 - (NSArray *)chapterList {
     DYYYApplyAdChapterAutoSkip(self);
 	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
-	BOOL hideChapterList = DYYYGetBool(@"DYYYHideChapterProgress");
 	if (hideChapterList) {
 		return @[]; // 返回空数组
 	}
