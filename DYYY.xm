@@ -9621,20 +9621,54 @@ static void findTargetViewInView(UIView *view) {
 // 41.x：抖音「后台播放/听视频」会给信息流每条视频写 MPNowPlayingInfoCenter，
 // 导致看视频也进控制中心/灵动岛。只 no-op 两个信息流类的 now-playing 方法，
 // AWEMusicService（听音乐/听抖音）完全不动。
+//
+// b13：这项历史上是**硬编码常开**（本地 fork 时代更早就是默认拦截），现在给它加开关。
+// 🔴 开关是反向命名 —— 「允许信息流占用控制中心」默认关 = 继续拦截。
+// 不用 DYYYDisableFeedNowPlayingInfo 正向命名的原因：DYYYGetBool 对缺失键返回 NO，
+// 正向命名会让升级后的老用户一次性丢掉这个功能（行为静默翻转）。反向命名零迁移、零翻转。
+// hook 本身仍然无条件安装，只把判断搬到方法体内，避免"开关关掉就要重装 hook"的复杂度。
+static BOOL DYYYFeedNowPlayingAllowed(void) {
+    return DYYYGetBool(@"DYYYAllowFeedNowPlayingInfo");
+}
+
 %group DYYYFeedNowPlayingGroup
 
 %hook AWEFeedBackgroundPlayManager
-- (void)updateNowPlayingInfoPlayback { /* 默认拦截：信息流视频不写控制中心 */ return; }
-- (void)refreshNowPlayingInfo { /* 默认拦截：信息流视频不写控制中心 */ return; }
-- (void)refreshNowPlayingInfoIsForce:(BOOL)force { return; }
-- (void)setNowPlayingInfo:(id)info { return; }
+- (void)updateNowPlayingInfoPlayback {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)refreshNowPlayingInfo {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)refreshNowPlayingInfoIsForce:(BOOL)force {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)setNowPlayingInfo:(id)info {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
 %end
 
 %hook AWEAwemeBackgroundPlayModule
-- (void)refreshNowPlayingInfoIfNeeded { /* 默认拦截：信息流视频不写控制中心 */ return; }
-- (void)updateNowPlayingInfoAfterSetModel { /* 默认拦截：信息流视频不写控制中心 */ return; }
-- (void)updateNowPlayingInfoPlayback { /* 默认拦截：信息流视频不写控制中心 */ return; }
-- (void)updateNowPlayingInfoWhenResiginActive { /* 默认拦截：信息流视频不写控制中心 */ return; }
+- (void)refreshNowPlayingInfoIfNeeded {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)updateNowPlayingInfoAfterSetModel {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)updateNowPlayingInfoPlayback {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
+- (void)updateNowPlayingInfoWhenResiginActive {
+    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    return;
+}
 %end
 
 %end
@@ -9642,5 +9676,11 @@ static void findTargetViewInView(UIView *view) {
 %ctor {
     if (objc_getClass("AWEFeedBackgroundPlayManager") || objc_getClass("AWEAwemeBackgroundPlayModule")) {
         %init(DYYYFeedNowPlayingGroup);
+        // b13 取证：确认这两个类上到底有几个 now-playing 方法，别只靠肉眼估"四个够了"
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          DYYYDumpMethodsContaining(@"AWEFeedBackgroundPlayManager", @"NowPlaying");
+          DYYYDumpMethodsContaining(@"AWEAwemeBackgroundPlayModule", @"NowPlaying");
+          DYYYDumpMethodsContaining(@"AWEAwemeBackgroundPlayModule", @"nowPlaying");
+        });
     }
 }

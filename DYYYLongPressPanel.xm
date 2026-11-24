@@ -3670,17 +3670,49 @@ static void DYYYStartUserSheetScan(void) {
 
 %end
 
-// 上游 AwemeHeaders.h 未声明该类，补前向声明；类不存在时 hook 为 no-op
+// 上游 AwemeHeaders.h 未声明该类，补前向声明；类不存在时 hook 为 no-op。
+// 🔴 b12 真机取证（# dyyypriv methods.AWEProfileRecordHelper/*）确认宿主实际有 4 个类方法，
+// b11 只挡了 1 个 —— 这里补齐另外 3 个，避免换一条链路就漏。
 @interface AWEProfileRecordHelper : NSObject
++ (void)postProfileRecordWithParams:(id)params;
 + (void)postProfileRecordWithParams:(id)params completionBlock:(id)completionBlock;
++ (void)postProfileRecordWithKey:(id)key valueDic:(id)valueDic;
++ (void)postProfileRecordWithKey:(id)key valueDic:(id)valueDic completionBlock:(id)completionBlock;
 @end
 
 %hook AWEProfileRecordHelper
 
++ (void)postProfileRecordWithParams:(id)params {
+    BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
+    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"params");
+    if (privBlocked) {
+        return;
+    }
+    %orig;
+}
+
 + (void)postProfileRecordWithParams:(id)params completionBlock:(id)completionBlock {
     // 隐私开关：访客记录的另一条上报链路（宿主类不存在时 Logos no-op，不影响其它功能）
     BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
-    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"recordHelper");
+    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"params+cb");
+    if (privBlocked) {
+        return;
+    }
+    %orig;
+}
+
++ (void)postProfileRecordWithKey:(id)key valueDic:(id)valueDic {
+    BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
+    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"key/value");
+    if (privBlocked) {
+        return;
+    }
+    %orig;
+}
+
++ (void)postProfileRecordWithKey:(id)key valueDic:(id)valueDic completionBlock:(id)completionBlock {
+    BOOL privBlocked = DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload");
+    DYYYPrivNote(privBlocked ? @"helper.blocked" : @"helper.hit", @"key/value+cb");
     if (privBlocked) {
         return;
     }
