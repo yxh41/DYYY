@@ -9,6 +9,7 @@
 #import "DYYYUtils.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import <signal.h>
 
 void updateClearButtonVisibility(void);
