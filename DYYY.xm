@@ -9635,38 +9635,54 @@ static BOOL DYYYFeedNowPlayingAllowed(void) {
 
 %hook AWEFeedBackgroundPlayManager
 - (void)updateNowPlayingInfoPlayback {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.feed.updatePlayback", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)refreshNowPlayingInfo {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.feed.refresh", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)refreshNowPlayingInfoIsForce:(BOOL)force {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.feed.refreshForce", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)setNowPlayingInfo:(id)info {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.feed.setInfo", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 %end
 
 %hook AWEAwemeBackgroundPlayModule
 - (void)refreshNowPlayingInfoIfNeeded {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.module.refreshIfNeeded", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)updateNowPlayingInfoAfterSetModel {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.module.afterSetModel", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)updateNowPlayingInfoPlayback {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.module.updatePlayback", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 - (void)updateNowPlayingInfoWhenResiginActive {
-    if (DYYYFeedNowPlayingAllowed()) { %orig; return; }
+    BOOL allowed = DYYYFeedNowPlayingAllowed();
+    DYYYPrivNote(@"np.module.onActive", allowed ? @"orig" : @"block");
+    if (allowed) { %orig; return; }
     return;
 }
 %end
