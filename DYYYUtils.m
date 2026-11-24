@@ -1219,22 +1219,39 @@ void DYYYPrivNote(NSString *tag, NSString *detail) {
     }
 }
 
-NSString *DYYYPrivSummary(void) {
+// b13 教训：方法枚举的 tag 字符串很长，和命中计数共用一个 1200 字摘要时，
+// 排序后 methods.* 在前，把 view.hit / view.blocked 全挤掉了 —— 真机导出只看到枚举，
+// 反而判断不了开关有没有生效。拆成两个函数、两行输出，各自独立截断。
+static NSString *DYYYPrivSummaryFiltered(BOOL methodsOnly) {
     if (!dyyyPrivCounts || dyyyPrivCounts.count == 0)
         return @"-";
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     @synchronized(dyyyPrivCounts) {
         NSArray<NSString *> *keys = [[dyyyPrivCounts allKeys] sortedArrayUsingSelector:@selector(compare:)];
         for (NSString *k in keys) {
+            BOOL isEnum = [k hasPrefix:@"methods."] || [k hasPrefix:@"cls."];
+            if (isEnum != methodsOnly)
+                continue;
             [parts addObject:[NSString stringWithFormat:@"%@ x%ld (%@)", k,
                                                         (long)[dyyyPrivCounts[k] integerValue],
                                                         dyyyPrivLast[k] ?: @"-"]];
         }
     }
+    if (parts.count == 0)
+        return @"-";
     NSString *s = [parts componentsJoinedByString:@" ; "];
-    if (s.length > 1200)
-        s = [[s substringToIndex:1200] stringByAppendingString:@" ..."];
+    NSUInteger cap = methodsOnly ? 1800 : 1200;
+    if (s.length > cap)
+        s = [[s substringToIndex:cap] stringByAppendingString:@" ..."];
     return s;
+}
+
+NSString *DYYYPrivSummary(void) {
+    return DYYYPrivSummaryFiltered(NO);
+}
+
+NSString *DYYYPrivMethodSummary(void) {
+    return DYYYPrivSummaryFiltered(YES);
 }
 
 void DYYYDumpMethodsContaining(NSString *className, NSString *mustContain) {
@@ -1286,6 +1303,7 @@ void DYYYDumpMethodsContaining(NSString *className, NSString *mustContain) {
     [out appendFormat:@"# dyyytrace %@\n", DYYYPlaybackTraceSummary()];
     [out appendFormat:@"# dyyyskip %@\n", DYYYPlayletSkipSummary()];
     [out appendFormat:@"# dyyypriv %@\n", DYYYPrivSummary()];
+    [out appendFormat:@"# dyyymethods %@\n", DYYYPrivMethodSummary()];
     @try {
         UIViewController *top = [DYYYUtils topView];
         if (top) {

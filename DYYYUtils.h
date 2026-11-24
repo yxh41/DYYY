@@ -351,9 +351,16 @@ NSString *DYYYPlayletSkipSummary(void);
 void DYYYPrivNote(NSString *_Nullable tag, NSString *_Nullable detail);
 
 /**
- * @brief 导出隐私取证摘要；无记录时返回 "-"
+ * @brief 导出隐私取证摘要（只含命中/拦截计数，不含方法枚举）；无记录时返回 "-"
  */
 NSString *DYYYPrivSummary(void);
+
+/**
+ * @brief 导出方法枚举清单（methods.* / cls.*）单独一行。
+ *        b13 教训：枚举结果把 DYYYPrivSummary 的 1200 字额度吃光，命中计数全被截掉，
+ *        导致"开关到底生没生效"反而看不到。拆成两行后互不挤占。
+ */
+NSString *DYYYPrivMethodSummary(void);
 
 /**
  * @brief 枚举 className（含父类链、含类方法）里名字包含 mustContain 的所有 selector，
