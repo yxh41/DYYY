@@ -4010,6 +4010,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
         return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
+        return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) != class_getInstanceMethod([%c(AWEFeedRootViewController) class], @selector(prefersStatusBarHidden))) {
             return %orig;
@@ -4023,6 +4027,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 %hook IESLiveAudienceViewController
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
+        return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
         return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) !=
@@ -4039,6 +4047,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
         return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
+        return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) !=
             class_getInstanceMethod([%c(AWEAwemeDetailTableViewController) class], @selector(prefersStatusBarHidden))) {
@@ -4053,6 +4065,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 %hook AWEAwemeHotSpotTableViewController
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
+        return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
         return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) !=
@@ -4069,6 +4085,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
         return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
+        return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) !=
             class_getInstanceMethod([%c(AWEFullPageFeedContainerViewController) class], @selector(prefersStatusBarHidden))) {
@@ -4083,6 +4103,10 @@ static NSArray *DYYYIMMenuItemsByAddingDownloadAction(NSArray *menuItems, id cel
 %hook AFDPureModePageContainerViewController
 - (BOOL)prefersStatusBarHidden {
     if (DYYYGetBool(@"DYYYHideStatusbar")) {
+        return YES;
+    }
+    // 清屏隐藏状态栏（b15）：清屏按钮激活时一并隐藏，与 DYYYFloatClearButton.xm 的刷新函数互补
+    if (DYYYGetBool(@"DYYYHideStatusBarOnClear") && hideButton && hideButton.isElementsHidden) {
         return YES;
     } else {
         if (class_getInstanceMethod([self class], @selector(prefersStatusBarHidden)) !=

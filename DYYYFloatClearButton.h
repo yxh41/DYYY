@@ -37,6 +37,7 @@ void initTargetClassNames(void);
 @property(nonatomic, assign) CGFloat originalAlpha;
 @property(nonatomic, strong) NSTimer *checkTimer;
 @property(nonatomic, strong) NSTimer *fadeTimer;
+@property(nonatomic, strong) UIView *edgeIndicatorView;
 - (void)resetFadeTimer;
 - (void)hideUIElements;
 - (void)findAndHideViews:(NSArray *)classNames;
