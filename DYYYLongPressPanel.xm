@@ -3656,6 +3656,29 @@ static void DYYYStartUserSheetScan(void) {
         }
     } @catch (NSException *e) {}
 
+    // 隐私开关：禁用访客记录上传（本地 fork 功能，b11 移植）。
+    // 必须写在这个已有 hook 里 —— 同一方法不能在两处 %hook，否则双重 hook。
+    if (DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload")) {
+        return;
+    }
+
+    %orig;
+}
+
+%end
+
+// 上游 AwemeHeaders.h 未声明该类，补前向声明；类不存在时 hook 为 no-op
+@interface AWEProfileRecordHelper : NSObject
++ (void)postProfileRecordWithParams:(id)params completionBlock:(id)completionBlock;
+@end
+
+%hook AWEProfileRecordHelper
+
++ (void)postProfileRecordWithParams:(id)params completionBlock:(id)completionBlock {
+    // 隐私开关：访客记录的另一条上报链路（宿主类不存在时 Logos no-op，不影响其它功能）
+    if (DYYYGetBool(@"DYYYDisableProfileVisitRecordUpload")) {
+        return;
+    }
     %orig;
 }
 

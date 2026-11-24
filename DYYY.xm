@@ -5452,6 +5452,47 @@ static NSHashTable *processedParentViews = nil;
 }
 
 // ---------------------------------------------------------------------------
+// 禁用视频观看记录上传（本地 fork 功能，b11 移植）
+// 宿主 AFD 前缀是字节老模块名，41.2.0 里仍大量存在（上游 AwemeHeaders.h 有 14 个 AFD* 类）。
+// 类或方法不存在时 Logos no-op，功能静默不生效，不影响其它功能。
+// ---------------------------------------------------------------------------
+// 上游 AwemeHeaders.h 未声明该类，补前向声明；类不存在时 hook 为 no-op
+@interface AFDPlayerAndInteractionService : NSObject
+- (void)statisticsVideoViewedWithID:(NSString *)itemID scene:(NSString *)scene;
+- (void)statisticsVideoViewedWithID:(NSString *)itemID
+                           authorID:(NSString *)authorID
+                       followStatus:(long long)followStatus
+                     followerStatus:(long long)followerStatus
+                            isStory:(BOOL)isStory
+                  isRequestDirectly:(BOOL)isRequestDirectly
+                              scene:(NSString *)scene;
+@end
+
+%hook AFDPlayerAndInteractionService
+
+- (void)statisticsVideoViewedWithID:(NSString *)itemID scene:(NSString *)scene {
+    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+        return;
+    }
+    %orig;
+}
+
+- (void)statisticsVideoViewedWithID:(NSString *)itemID
+                           authorID:(NSString *)authorID
+                       followStatus:(long long)followStatus
+                     followerStatus:(long long)followerStatus
+                            isStory:(BOOL)isStory
+                  isRequestDirectly:(BOOL)isRequestDirectly
+                              scene:(NSString *)scene {
+    if (DYYYGetBool(@"DYYYDisableAwemeViewRecordUpload")) {
+        return;
+    }
+    %orig;
+}
+
+%end
+
+// ---------------------------------------------------------------------------
 // 自动跳过视频营销章节（本地 fork 功能，b10 移植）
 // 抖音原生字段 adChapterAutoSkipIndexArray 由服务端控制但从不下发（本地探针实测全 null），
 // 故把 adChapterIndexArray 复制进去，借原生「智能跳过营销章节」机制实现自动跳过。
