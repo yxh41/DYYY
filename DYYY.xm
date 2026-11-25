@@ -523,6 +523,20 @@ static BOOL DYYYTargetLooksPlaylet(id target) {
 
 %end
 
+// b16: HDRMT 宿主类属性前向声明（旧 fork AwemeHeaders.h，上游 3.0.2 未声明）
+@interface HDRMTUIImageView : UIImageView
+@property(nonatomic, assign) BOOL hdrEnabled;
+- (instancetype)initWithFrame:(CGRect)frame hdrEnabled:(BOOL)hdrEnabled;
+@end
+
+@interface HDRMTImageView : UIView
+@property(nonatomic, strong) CAMetalLayer *metalLayer;
+@end
+
+@interface HDRMTButton : UIButton
+@property(nonatomic, strong) HDRMTUIImageView *hdrmtImageView;
+@end
+
 // b16: %new 方法前向声明（供 hook 内部递归调用）
 @interface AWEAwemeModel (DYYBHDRNew)
 - (BOOL)dyyy_containsHDRMetadataInObject:(id)object depth:(NSUInteger)depth;
@@ -10829,9 +10843,9 @@ static BOOL DYYYFeedNowPlayingAllowed(void) {
     if (DYYYShouldDisableAllHDR()) {
         self.hdrEnabled = NO;
     }
-    DYYYApplySDRDynamicRangeToImageView(self);
+    DYYYApplySDRDynamicRangeToImageView((UIImageView *)self);
     %orig;
-    DYYYApplySDRDynamicRangeToImageView(self);
+    DYYYApplySDRDynamicRangeToImageView((UIImageView *)self);
 }
 
 %end
