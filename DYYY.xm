@@ -5686,6 +5686,273 @@ static NSHashTable *processedParentViews = nil;
 
 %end
 
+// ---------------------------------------------------------------------------
+// b18: 主页作品网格发布日期（零 KVC 重写自本地 fork）
+// 旧实现用 valueForKey: 递归扫对象图，撞到结构体/裸指针 ivar 会直接 SIGSEGV
+// （@try 抓不住）⇒ 全部改为 selector 存在性 + 方法签名校验 + typed objc_msgSend，
+// 并放弃全 ivar 盲扫：白名单属性 + 一层下钻（3.0.2 的 createTime/awemeModel 均存活）。
+// ---------------------------------------------------------------------------
+static char kDYYYPostDateLabelKey;
+static char kDYYYPostDateCacheKey;  // 缓存 @[modelToken, time]
+
+// 零 KVC 读字段：对象/标量安全包装；结构体、裸指针、未知类型一律 nil
+static id DYYYPostDateReadObject(id obj, NSString *selName) {
+    if (!obj || selName.length == 0) return nil;
+    SEL sel = NSSelectorFromString(selName);
+    if (![obj respondsToSelector:sel]) return nil;
+    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != 2) return nil;
+    const char *rt = sig.methodReturnType;
+    if (!rt || !rt[0]) return nil;
+    if (rt[0] == '@') return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+    switch (rt[0]) {
+        case 'd': return @(((double (*)(id, SEL))objc_msgSend)(obj, sel));
+        case 'f': return @(((float (*)(id, SEL))objc_msgSend)(obj, sel));
+        case 'q': case 'Q': case 'i': case 'I': case 'l': case 'L':
+            return @(((long long (*)(id, SEL))objc_msgSend)(obj, sel));
+        case 'B': case 'c': case 'C': case 's': case 'S':
+            return @(((int (*)(id, SEL))objc_msgSend)(obj, sel));
+        default: return nil;
+    }
+}
+
+static NSNumber *DYYYPostDateNormalize(id raw) {
+    double d = 0;
+    if ([raw isKindOfClass:[NSNumber class]]) d = [(NSNumber *)raw doubleValue];
+    else if ([raw isKindOfClass:[NSDate class]]) d = [(NSDate *)raw timeIntervalSince1970];
+    else if ([raw isKindOfClass:[NSString class]]) d = [(NSString *)raw doubleValue];
+    else return nil;
+    if (!(d > 0)) return nil;
+    while (d > 1.0e11) d /= 1000.0;  // 毫秒/微秒 -> 秒
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (d < 946684800.0) return nil;         // 早于 2000-01-01
+    if (d > now + 86400.0 * 3) return nil;   // 明显未来时间
+    return @(d);
+}
+
+static NSArray<NSString *> *DYYYPostDateModelKeys(void) {
+    static NSArray *keys;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[@"awemeModel", @"model", @"data", @"viewModel", @"item",
+                 @"itemModel", @"cellModel", @"workModel", @"aweme", @"cardModel"];
+    });
+    return keys;
+}
+
+static NSArray<NSString *> *DYYYPostDateTimeKeys(void) {
+    static NSArray *keys;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[@"createTime", @"publishTime", @"createTimeInterval",
+                 @"shootTime", @"postTime", @"createTimeMillis"];
+    });
+    return keys;
+}
+
+// cell -> AWEAwemeModel：白名单属性 + 一层下钻，不枚举 ivar、不盲扫对象图
+static id DYYYPostDateModel(id cell) {
+    if (!cell) return nil;
+    Class awemeCls = NSClassFromString(@"AWEAwemeModel");
+    NSArray *keys = DYYYPostDateModelKeys();
+    for (NSString *k in keys) {
+        id v = DYYYPostDateReadObject(cell, k);
+        if (!v || [v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]] ||
+            [v isKindOfClass:[NSValue class]] || [v isKindOfClass:[NSDate class]] ||
+            [v isKindOfClass:[NSNull class]]) continue;
+        if (awemeCls && [v isKindOfClass:awemeCls]) return v;
+        for (NSString *ik in keys) {
+            id inner = DYYYPostDateReadObject(v, ik);
+            if (inner && inner != v && awemeCls && [inner isKindOfClass:awemeCls]) return inner;
+        }
+    }
+    return nil;
+}
+
+static NSNumber *DYYYPostDateTime(id cell, id model) {
+    if (model) {
+        for (NSString *k in DYYYPostDateTimeKeys()) {
+            NSNumber *t = DYYYPostDateNormalize(DYYYPostDateReadObject(model, k));
+            if (t) return t;
+        }
+    }
+    // 部分宿主把时间直接挂 cell 上
+    for (NSString *k in DYYYPostDateTimeKeys()) {
+        NSNumber *t = DYYYPostDateNormalize(DYYYPostDateReadObject(cell, k));
+        if (t) return t;
+    }
+    return nil;
+}
+
+static NSDateFormatter *DYYYPostDateFormatter(void) {
+    static NSDateFormatter *fmt;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy.MM.dd HH:mm:ss";
+        fmt.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+    });
+    return fmt;
+}
+
+static UIView *DYYYPostDateHostView(UIView *cell) {
+    if ([cell respondsToSelector:@selector(contentView)]) {
+        UIView *cv = [(UICollectionViewCell *)cell contentView];
+        if ([cv isKindOfClass:[UIView class]]) return cv;
+    }
+    return cell;
+}
+
+static void DYYYUpdatePostDateLabelForCellCore(UICollectionViewCell *cell) {
+    if (!cell) return;
+    UILabel *label = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
+    if (!DYYYGetBool(@"DYYYShowPostDate")) {
+        if (label) label.hidden = YES;
+        return;
+    }
+    id model = DYYYPostDateModel(cell);
+    NSString *modelToken = model ? [NSString stringWithFormat:@"%p", (__bridge void *)model] : @"";
+    NSArray *cached = objc_getAssociatedObject(cell, &kDYYYPostDateCacheKey);
+    NSNumber *time = nil;
+    if ([cached isKindOfClass:[NSArray class]] && cached.count == 2 &&
+        [cached[0] isEqualToString:modelToken]) {
+        id t = cached[1];
+        time = [t isKindOfClass:[NSNumber class]] ? t : nil;
+    } else {
+        time = DYYYPostDateTime(cell, model);
+        objc_setAssociatedObject(cell, &kDYYYPostDateCacheKey,
+                                 @[modelToken, time ?: (id)[NSNull null]],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (model) DYYYPrivNote(@"postdate.model.hit", NSStringFromClass([model class]));
+        if (time) DYYYPrivNote(@"postdate.time.hit", [time stringValue]);
+    }
+    if (!(time && time.doubleValue > 0)) {
+        if (label) label.hidden = YES;
+        return;
+    }
+    UIView *host = DYYYPostDateHostView(cell);
+    if (!label) {
+        label = [[UILabel alloc] init];
+        label.font = [UIFont systemFontOfSize:9];
+        label.textColor = [UIColor whiteColor];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.numberOfLines = 1;
+        label.layer.cornerRadius = 3;
+        label.clipsToBounds = YES;
+        label.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+        objc_setAssociatedObject(cell, &kDYYYPostDateLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (label.superview != host) [host addSubview:label];
+    [host bringSubviewToFront:label];
+    CGFloat contentW = host.bounds.size.width;
+    if (contentW <= 0) { label.hidden = YES; return; }
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:time.doubleValue];
+    label.text = [DYYYPostDateFormatter() stringFromDate:date];
+    label.hidden = NO;
+    [label sizeToFit];
+    CGRect f = label.frame;
+    f.origin.x = contentW - f.size.width - 4;
+    f.origin.y = 4;
+    f.size.width += 6;
+    f.size.height += 2;
+    label.frame = f;
+    DYYYPrivNote(@"postdate.label.on", label.text);
+}
+
+// 动态挂钩：宿主跨版本改 cell 类名时 Logos 静态 hook 会静默失效 ⇒ 运行时补挂。
+// method_setImplementation 会取 runtime 写锁，必须放专用 serial queue（v2.4-35 watchdog 教训）。
+static dispatch_queue_t DYYYPostDateInstallQueue(void) {
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        q = dispatch_queue_create("com.dyyy.postdate.install", DISPATCH_QUEUE_SERIAL);
+    });
+    return q;
+}
+
+static BOOL DYYYPostDateClassImplementsSelector(Class cls, SEL sel) {
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(cls, &n);
+    BOOL found = NO;
+    if (ms) {
+        for (unsigned int i = 0; i < n; i++) {
+            if (method_getName(ms[i]) == sel) { found = YES; break; }
+        }
+        free(ms);
+    }
+    return found;
+}
+
+static void DYYYSwizzlePostDateLayout(Class cls) {
+    if (!cls) return;
+    SEL sel = @selector(layoutSubviews);
+    if (DYYYPostDateClassImplementsSelector(cls, sel)) {
+        Method m = class_getInstanceMethod(cls, sel);
+        if (!m) return;
+        __block IMP origImp = NULL;
+        IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
+            if (origImp) ((void (*)(id, SEL))origImp)(me, sel);
+            DYYYUpdatePostDateLabelForCellCore((UICollectionViewCell *)me);
+        });
+        origImp = method_setImplementation(m, newImp);
+    } else {
+        IMP superImp = class_getMethodImplementation(class_getSuperclass(cls), sel);
+        IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *me) {
+            if (superImp) ((void (*)(id, SEL))superImp)(me, sel);
+            DYYYUpdatePostDateLabelForCellCore((UICollectionViewCell *)me);
+        });
+        class_addMethod(cls, sel, newImp, "v16@0:8");
+    }
+}
+
+static void DYYYInstallDynamicPostDateHooks(void) {
+    static NSMutableSet *swizzled;
+    static NSUInteger scanCount = 0;
+    if (!swizzled) swizzled = [NSMutableSet set];
+    if (scanCount > 8) return;  // 限制扫描次数，避免长期开销
+    scanCount++;
+    NSSet *skip = [NSSet setWithArray:@[@"AWEProfileMixItemCollectionViewCell",
+                                        @"AWEUserWorkCollectionViewComponentCell"]];
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    if (!classes) return;
+    NSUInteger hooked = 0;
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        const char *cn = class_getName(cls);
+        if (!cn) continue;
+        NSString *name = @(cn);
+        if (![name hasPrefix:@"AWE"] || ![name hasSuffix:@"Cell"]) continue;
+        if ([skip containsObject:name] || [swizzled containsObject:name]) continue;
+        if (![cls isSubclassOfClass:[UIView class]]) continue;
+        BOOL looksProfileWork =
+            ([name containsString:@"Profile"] &&
+             ([name containsString:@"Item"] || [name containsString:@"Work"] ||
+              [name containsString:@"Post"] || [name containsString:@"Mix"])) ||
+            [name containsString:@"UserWork"] || [name containsString:@"AwemeGrid"];
+        if (!looksProfileWork) continue;
+        DYYYSwizzlePostDateLayout(cls);
+        [swizzled addObject:name];
+        hooked++;
+    }
+    free(classes);
+    if (hooked > 0) {
+        DYYYPrivNote(@"postdate.swizzle",
+                     [NSString stringWithFormat:@"+%lu total=%lu",
+                      (unsigned long)hooked, (unsigned long)swizzled.count]);
+    }
+}
+
+static volatile int32_t gPostDateInstallDispatched = 0;
+static void DYYYUpdatePostDateLabelForCell(UICollectionViewCell *cell) {
+    if (__sync_fetch_and_add(&gPostDateInstallDispatched, 1) < 32) {
+        dispatch_async(DYYYPostDateInstallQueue(), ^{
+            DYYYInstallDynamicPostDateHooks();
+        });
+    }
+    DYYYUpdatePostDateLabelForCellCore(cell);
+}
+
 // 隐藏自己无公开作品的视图
 %hook AWEProfileMixItemCollectionViewCell
 - (void)layoutSubviews {
@@ -5696,6 +5963,15 @@ static NSHashTable *processedParentViews = nil;
             return;
         }
     }
+    DYYYUpdatePostDateLabelForCell(self);
+}
+%end
+
+// b18: 3.0.2 存活的作品网格 cell（旧 fork 的 AWEUserWorkCollectionViewComponentCell）
+%hook AWEUserWorkCollectionViewComponentCell
+- (void)layoutSubviews {
+    %orig;
+    DYYYUpdatePostDateLabelForCell(self);
 }
 %end
 
@@ -11592,6 +11868,11 @@ static BOOL DYYYFeedNowPlayingAllowed(void) {
 %end
 
 %ctor {
+    if (DYYYGetBool(@"DYYYShowPostDate")) {
+        dispatch_async(DYYYPostDateInstallQueue(), ^{
+            DYYYInstallDynamicPostDateHooks();
+        });
+    }
     %init(DYYBHDRGroup);
     if (objc_getClass("AWEFeedBackgroundPlayManager") || objc_getClass("AWEAwemeBackgroundPlayModule")) {
         %init(DYYYFeedNowPlayingGroup);
