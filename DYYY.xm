@@ -10087,19 +10087,40 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
         // b22: 页高变了但 contentOffset 还是按旧页高算的 ⇒ 停稳后卡在两个 cell 之间（错位）。
         // 只在「高度确实变了 + 未在拖拽/减速」时吸附一次，避免打断用户滚动。
         CGFloat newHeight = frame.size.height;
-        if (newHeight > 1.0 && fabs(newHeight - oldHeight) > 0.5 &&
-            !tv.isTracking && !tv.isDecelerating) {
-            // 页高优先用「实际 cell 高度」：宿主可能缓存 cell 高度与表高不一致，
-            // 直接拿表高当页高会把 offset 吸附到错误位置。
-            CGFloat h = newHeight;
-            NSIndexPath *ip = [[tv indexPathsForVisibleRows] firstObject];
-            if (ip) {
-                CGFloat rowH = [tv rectForRowAtIndexPath:ip].size.height;
-                if (rowH > 1.0) h = rowH;
+        if (newHeight > 1.0 && !tv.isTracking && !tv.isDecelerating) {
+            // b23: 真机证实 heightForRow 已返回 844，但部分行的 rectForRow 缓存仍是 761
+            // ⇒ 行高混排：offset 按 844 走、行实际按 761/844 混排，一屏跨两行就是错位。
+            // beginUpdates/endUpdates 会让 UITableView 重新查询行高并刷新 rect 缓存，
+            // 但不重载 cell（不闪、不中断播放）。计数挂在 table 上，页高变化时重置。
+            static char kRectFixTriesKey;
+            if (fabs(newHeight - oldHeight) > 0.5) {
+                objc_setAssociatedObject(tv, &kRectFixTriesKey, nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
+            NSInteger tries = [objc_getAssociatedObject(tv, &kRectFixTriesKey) integerValue];
+            NSIndexPath *ip = [[tv indexPathsForVisibleRows] firstObject];
+            CGFloat rowH = ip ? [tv rectForRowAtIndexPath:ip].size.height : 0;
+            if (rowH > 1.0 && fabs(rowH - newHeight) > 1.0 && tries < 4) {
+                static BOOL dyyyRectRelayouting = NO;
+                if (!dyyyRectRelayouting) {
+                    dyyyRectRelayouting = YES;
+                    objc_setAssociatedObject(tv, &kRectFixTriesKey, @(tries + 1),
+                                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    [tv beginUpdates];
+                    [tv endUpdates];
+                    dyyyRectRelayouting = NO;
+                }
+                CGFloat fixedH = ip ? [tv rectForRowAtIndexPath:ip].size.height : 0;
+                DYYYPrivNote(@"fs.rect.fix",
+                             [NSString stringWithFormat:@"%.0f->%.0f h=%.0f try=%ld",
+                              rowH, fixedH, newHeight, (long)(tries + 1)]);
+                if (ip && fixedH > 1.0) rowH = fixedH;
+            }
+
+            // 页高：rect 已修好就用表高，否则用该行真实高度（避免一屏跨两行）
+            CGFloat h = (rowH > 1.0) ? rowH : newHeight;
             CGFloat y = tv.contentOffset.y;
-            CGFloat page = round(y / h);
-            CGFloat target = page * h;
+            CGFloat target = round(y / h) * h;
             if (fabs(target - y) > 1.0) {
                 [tv setContentOffset:CGPointMake(tv.contentOffset.x, target) animated:NO];
                 DYYYPrivNote(@"fs.align.fix",
