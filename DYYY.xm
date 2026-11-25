@@ -9139,6 +9139,30 @@ static Class tabBarButtonClass = nil;
 }
 %end
 
+// b22: 幂等 Y 位移。宿主 layoutSubviews 会被反复调用，直接「读当前 frame 再 += / -=」
+// 会在多次 layout 后累计错位（推荐页概率性错位的成因之一）。
+// 这里用 associated 记「上次我们写入的值」：当前值仍等于它 ⇒ 已应用，跳过；
+// 宿主改过 ⇒ 以新值为基准再偏移一次。
+static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat deltaY) {
+    if (!view || !keyPtr) return;
+    static char kStoreBase;  // 统一存 NSMutableDictionary<ptr, NSValue>
+    NSMutableDictionary *map = objc_getAssociatedObject(view, &kStoreBase);
+    if (!map) {
+        map = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(view, &kStoreBase, map, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSString *k = [NSString stringWithFormat:@"%p-%s", view, keyPtr];
+    CGRect cur = view.frame;
+    NSValue *lastVal = map[k];
+    if (lastVal && fabs([lastVal CGRectValue].origin.y - cur.origin.y) < 0.5) {
+        return;  // 当前就是上次写入值 ⇒ 宿主没改，已应用，别再加一次
+    }
+    CGRect f = cur;
+    f.origin.y += deltaY;
+    view.frame = f;
+    map[k] = [NSValue valueWithCGRect:f];
+}
+
 %hook AWEConcernCellLastView
 - (void)layoutSubviews {
     %orig;
@@ -10047,30 +10071,6 @@ static Class tabBarButtonClass = nil;
 }
 
 %end
-
-// b22: 幂等 Y 位移。宿主 layoutSubviews 会被反复调用，直接「读当前 frame 再 += / -=」
-// 会在多次 layout 后累计错位（推荐页概率性错位的成因之一）。
-// 这里用 associated 记「上次我们写入的值」：当前值仍等于它 ⇒ 已应用，跳过；
-// 宿主改过 ⇒ 以新值为基准再偏移一次。
-static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat deltaY) {
-    if (!view || !keyPtr) return;
-    static char kStoreBase;  // 统一存 NSMutableDictionary<ptr, NSValue>
-    NSMutableDictionary *map = objc_getAssociatedObject(view, &kStoreBase);
-    if (!map) {
-        map = [NSMutableDictionary dictionary];
-        objc_setAssociatedObject(view, &kStoreBase, map, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    NSString *k = [NSString stringWithFormat:@"%p-%s", view, keyPtr];
-    CGRect cur = view.frame;
-    NSValue *lastVal = map[k];
-    if (lastVal && fabs([lastVal CGRectValue].origin.y - cur.origin.y) < 0.5) {
-        return;  // 当前就是上次写入值 ⇒ 宿主没改，已应用，别再加一次
-    }
-    CGRect f = cur;
-    f.origin.y += deltaY;
-    view.frame = f;
-    map[k] = [NSValue valueWithCGRect:f];
-}
 
 %hook AWEFeedTableView
 - (void)layoutSubviews {
