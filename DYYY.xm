@@ -9145,9 +9145,7 @@ static Class tabBarButtonClass = nil;
 
     if (DYYYGetBool(@"DYYYEnableFullScreen") && gCurrentTabBarHeight > 0) {
         for (UIView *subview in self.subviews) {
-            CGRect frame = subview.frame;
-            frame.origin.y -= gCurrentTabBarHeight;
-            subview.frame = frame;
+            DYYYApplyYOffsetIdempotent(subview, "concern.last", -gCurrentTabBarHeight);
         }
     }
 }
@@ -10050,14 +10048,66 @@ static Class tabBarButtonClass = nil;
 
 %end
 
+// b22: 幂等 Y 位移。宿主 layoutSubviews 会被反复调用，直接「读当前 frame 再 += / -=」
+// 会在多次 layout 后累计错位（推荐页概率性错位的成因之一）。
+// 这里用 associated 记「上次我们写入的值」：当前值仍等于它 ⇒ 已应用，跳过；
+// 宿主改过 ⇒ 以新值为基准再偏移一次。
+static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat deltaY) {
+    if (!view || !keyPtr) return;
+    static char kStoreBase;  // 统一存 NSMutableDictionary<ptr, NSValue>
+    NSMutableDictionary *map = objc_getAssociatedObject(view, &kStoreBase);
+    if (!map) {
+        map = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(view, &kStoreBase, map, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSString *k = [NSString stringWithFormat:@"%p-%s", view, keyPtr];
+    CGRect cur = view.frame;
+    NSValue *lastVal = map[k];
+    if (lastVal && fabs([lastVal CGRectValue].origin.y - cur.origin.y) < 0.5) {
+        return;  // 当前就是上次写入值 ⇒ 宿主没改，已应用，别再加一次
+    }
+    CGRect f = cur;
+    f.origin.y += deltaY;
+    view.frame = f;
+    map[k] = [NSValue valueWithCGRect:f];
+}
+
 %hook AWEFeedTableView
 - (void)layoutSubviews {
     %orig;
 
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
-        CGRect frame = self.frame;
-        frame.size.height = self.superview.frame.size.height;
-        self.frame = frame;
+        // Logos 前向类拿不到 UITableView 的 isTracking/contentOffset，必须强转
+        UITableView *tv = (UITableView *)self;
+        CGRect frame = tv.frame;
+        CGFloat oldHeight = frame.size.height;
+        frame.size.height = tv.superview.frame.size.height;
+        tv.frame = frame;
+
+        // b22: 页高变了但 contentOffset 还是按旧页高算的 ⇒ 停稳后卡在两个 cell 之间（错位）。
+        // 只在「高度确实变了 + 未在拖拽/减速」时吸附一次，避免打断用户滚动。
+        CGFloat newHeight = frame.size.height;
+        if (newHeight > 1.0 && fabs(newHeight - oldHeight) > 0.5 &&
+            !tv.isTracking && !tv.isDecelerating) {
+            // 页高优先用「实际 cell 高度」：宿主可能缓存 cell 高度与表高不一致，
+            // 直接拿表高当页高会把 offset 吸附到错误位置。
+            CGFloat h = newHeight;
+            NSIndexPath *ip = [[tv indexPathsForVisibleRows] firstObject];
+            if (ip) {
+                CGFloat rowH = [tv rectForRowAtIndexPath:ip].size.height;
+                if (rowH > 1.0) h = rowH;
+            }
+            CGFloat y = tv.contentOffset.y;
+            CGFloat page = round(y / h);
+            CGFloat target = page * h;
+            if (fabs(target - y) > 1.0) {
+                [tv setContentOffset:CGPointMake(tv.contentOffset.x, target) animated:NO];
+                DYYYPrivNote(@"fs.align.fix",
+                             [NSString stringWithFormat:@"%.0f->%.0f h=%.0f", y, target, h]);
+            }
+            DYYYPrivNote(@"fs.table.h",
+                         [NSString stringWithFormat:@"%.0f->%.0f cellH=%.0f", oldHeight, newHeight, h]);
+        }
     } else if (gCurrentTabBarHeight > 0) {
         UIWindow *keyWindow = [DYYYUtils getActiveWindow];
         if (keyWindow && keyWindow.safeAreaInsets.bottom == 0) {
@@ -10722,10 +10772,8 @@ static Class TagViewClass = nil;
                 }
 
                 if (isWorkImage) {
-                    // 修复作者主页作品图片上移问题
-                    CGRect frame = subview.frame;
-                    frame.origin.y += gCurrentTabBarHeight;
-                    subview.frame = frame;
+                    // 修复作者主页作品图片上移问题（b22 幂等化，避免重复 layout 累计下移）
+                    DYYYApplyYOffsetIdempotent(subview, "story.work", gCurrentTabBarHeight);
                 }
             }
         }
