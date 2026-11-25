@@ -502,6 +502,12 @@ void showDYYYSettingsVC(UIViewController *rootVC, BOOL hasAgreed) {
             @"detail" : @"",
             @"cellType" : @37, 
             @"imageName" : @"ic_video_outlined_20"},
+          @{@"identifier" : @"DYYYShowLiveDuration",
+            @"title" : @"显示开播时长",
+            @"subTitle" : @"在直播间左上角显示主播已开播时间（可拖动，长按锁定位置）",
+            @"detail" : @"",
+            @"cellType" : @37,
+            @"imageName" : @"ic_clock_outlined_20"},
             
           @{@"identifier" : @"DYYYCommentExactTime",
             @"title" : @"评论具体时间",
