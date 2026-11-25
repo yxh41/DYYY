@@ -5781,8 +5781,105 @@ static NSNumber *DYYYPostDateReadTime(id obj) {
     return nil;
 }
 
-// cell -> 含作品时间的对象：白名单属性 + 两层下钻，不枚举全 ivar、不盲扫对象图。
-// 判定标准从「isKindOfClass:AWEAwemeModel」改为「该对象能读到合法 createTime」。
+// 受控对象图遍历（零 KVC）：找含合法 createTime 的对象。
+// 只读对象类型 ivar（encoding '@' → object_getIvar）+ 有 getter 的属性（typed objc_msgSend），
+// 不碰 valueForKey:，不读标量/结构体/裸指针/位域（这些撞上 @try 也抓不住）。
+// 深度 6 / budget 1800 / visited 防环三重限流；跳过反向引用后缀与 UI/CA/NS 系统类。
+static id DYYYPostDateFindTimeObjectInGraph(id root, int depth, NSMutableSet *visited, int *budget) {
+    if (!root || depth > 6 || !budget || *budget <= 0) return nil;
+    if ([root isKindOfClass:[NSNumber class]] || [root isKindOfClass:[NSString class]] ||
+        [root isKindOfClass:[NSDate class]] || [root isKindOfClass:[NSValue class]] ||
+        [root isKindOfClass:[NSNull class]] || [root isKindOfClass:[NSData class]] ||
+        [root isKindOfClass:[UIImage class]] || [root isKindOfClass:[UIColor class]] ||
+        [root isKindOfClass:[CALayer class]]) return nil;
+    NSValue *ptr = [NSValue valueWithPointer:(__bridge const void *)root];
+    if ([visited containsObject:ptr]) return nil;
+    [visited addObject:ptr];
+    (*budget)--;
+
+    // 命中：该对象自身带合法时间字段
+    if (DYYYPostDateReadTime(root)) return root;
+
+    Class cls = object_getClass(root);
+    while (cls && cls != [NSObject class]) {
+        NSString *cn = NSStringFromClass(cls);
+        if ([cn hasPrefix:@"UI"] || [cn hasPrefix:@"CA"] || [cn hasPrefix:@"NS"]) break;
+
+        // ivar：只读 '@' 对象类型
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        for (unsigned int i = 0; i < ic; i++) {
+            const char *enc = ivar_getTypeEncoding(ivars[i]);
+            if (!enc || enc[0] != '@') continue;
+            const char *rawName = ivar_getName(ivars[i]);
+            if (!rawName) continue;
+            NSString *name = @(rawName);
+            if ([name hasPrefix:@"_"]) name = [name substringFromIndex:1];
+            if ([name hasSuffix:@"elegate"] || [name hasSuffix:@"uperview"] ||
+                [name hasSuffix:@"esponder"] || [name hasSuffix:@"ontroller"] ||
+                [name hasSuffix:@"indow"] || [name hasSuffix:@"arget"]) continue;
+            id v = object_getIvar(root, ivars[i]);
+            if (!v || v == root) continue;
+            id found = DYYYPostDateFindTimeObjectInGraph(v, depth + 1, visited, budget);
+            if (found) { free(ivars); return found; }
+        }
+        free(ivars);
+
+        // property getter（@dynamic 或 ivar 不同名时兜底，同样零 KVC）
+        unsigned int pc = 0;
+        objc_property_t *props = class_copyPropertyList(cls, &pc);
+        for (unsigned int i = 0; i < pc; i++) {
+            const char *attrs = property_getAttributes(props[i]);
+            if (!attrs || attrs[0] != 'T' || attrs[1] != '@') continue;
+            NSString *name = @(property_getName(props[i]));
+            if ([name hasSuffix:@"elegate"] || [name hasSuffix:@"uperview"] ||
+                [name hasSuffix:@"esponder"] || [name hasSuffix:@"ontroller"] ||
+                [name hasSuffix:@"indow"] || [name hasSuffix:@"arget"]) continue;
+            id v = DYYYPostDateReadObject(root, name);
+            if (!v || v == root) continue;
+            id found = DYYYPostDateFindTimeObjectInGraph(v, depth + 1, visited, budget);
+            if (found) { free(props); return found; }
+        }
+        free(props);
+        cls = class_getSuperclass(cls);
+    }
+
+    // UIView 下钻 subviews：抖音常把 model 挂在 contentView 的子视图上
+    if ([root isKindOfClass:[UIView class]]) {
+        for (UIView *sub in [(UIView *)root subviews]) {
+            id found = DYYYPostDateFindTimeObjectInGraph(sub, depth + 1, visited, budget);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+// 一次性字段 dump：若对象图遍历仍失败，真机日志能直接看到 cell 上对象 ivar 的名字与类型
+static void DYYYPostDateDumpCellOnce(id cell) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:40];
+        Class cls = object_getClass(cell);
+        while (cls && cls != [NSObject class] && parts.count < 40) {
+            NSString *cn = NSStringFromClass(cls);
+            if ([cn hasPrefix:@"UI"] || [cn hasPrefix:@"CA"] || [cn hasPrefix:@"NS"]) break;
+            unsigned int ic = 0;
+            Ivar *ivars = class_copyIvarList(cls, &ic);
+            for (unsigned int i = 0; i < ic && parts.count < 40; i++) {
+                const char *enc = ivar_getTypeEncoding(ivars[i]);
+                if (!enc || enc[0] != '@') continue;
+                id v = object_getIvar(cell, ivars[i]);
+                NSString *vn = v ? NSStringFromClass([v class]) : @"nil";
+                [parts addObject:[NSString stringWithFormat:@"%s=%@", ivar_getName(ivars[i]), vn]];
+            }
+            free(ivars);
+            cls = class_getSuperclass(cls);
+        }
+        DYYYPrivNote(@"postdate.cell.ivars", [parts componentsJoinedByString:@","]);
+    });
+}
+
+// cell -> 含作品时间的对象：先固定白名单快路径，失败再受控对象图遍历兜底
 static id DYYYPostDateModel(id cell) {
     if (!cell) return nil;
     NSArray *keys = DYYYPostDateModelKeys();
@@ -5796,14 +5893,16 @@ static id DYYYPostDateModel(id cell) {
             id inner = DYYYPostDateReadObject(v, ik);
             if (!inner || inner == v) continue;
             if (DYYYPostDateReadTime(inner)) return inner;
-            // 第二层：cell.model.awemeModel.createTime 这种两级包装
             for (NSString *jk in keys) {
                 id deep = DYYYPostDateReadObject(inner, jk);
                 if (deep && deep != inner && DYYYPostDateReadTime(deep)) return deep;
             }
         }
     }
-    return nil;
+    // 固定候选全失败 ⇒ 一次性 dump + 受控对象图遍历
+    DYYYPostDateDumpCellOnce(cell);
+    int budget = 1800;
+    return DYYYPostDateFindTimeObjectInGraph(cell, 0, [NSMutableSet set], &budget);
 }
 
 static NSNumber *DYYYPostDateTime(id cell, id model) {
