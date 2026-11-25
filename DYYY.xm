@@ -5703,7 +5703,7 @@ static NSNumber *DYYYPostDateReadScalarIvar(id obj, Ivar iv) {
     if (!obj || !iv) return nil;
     const char *enc = ivar_getTypeEncoding(iv);
     if (!enc || !enc[0]) return nil;
-    const char *p = (const char *)obj + ivar_getOffset(iv);
+    const char *p = (const char *)(__bridge const void *)obj + ivar_getOffset(iv);
     switch (enc[0]) {
         case 'q': return @(*(const long long *)p);
         case 'Q': return @(*(const unsigned long long *)p);
