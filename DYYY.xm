@@ -5695,6 +5695,33 @@ static NSHashTable *processedParentViews = nil;
 static char kDYYYPostDateLabelKey;
 static char kDYYYPostDateCacheKey;  // 缓存 @[modelToken, time]
 
+// b21: 安全读取标量 ivar。宿主 model 的 createTime 可能只有 ivar 没有 getter，
+// 且 KVC 会把它自动装箱成 NSNumber —— 这正是旧 fork 有效的原因。
+// 只按 ivar 的 type encoding 读已知标量宽度；结构体/裸指针/位域/未知一律 nil，
+// 用 ivar_getOffset 直接读，不做任何指针解引用猜测。
+static NSNumber *DYYYPostDateReadScalarIvar(id obj, Ivar iv) {
+    if (!obj || !iv) return nil;
+    const char *enc = ivar_getTypeEncoding(iv);
+    if (!enc || !enc[0]) return nil;
+    const char *p = (const char *)obj + ivar_getOffset(iv);
+    switch (enc[0]) {
+        case 'q': return @(*(const long long *)p);
+        case 'Q': return @(*(const unsigned long long *)p);
+        case 'i': return @(*(const int *)p);
+        case 'I': return @(*(const unsigned int *)p);
+        case 'l': return @(*(const long *)p);
+        case 'L': return @(*(const unsigned long *)p);
+        case 'd': return @(*(const double *)p);
+        case 'f': return @(*(const float *)p);
+        case 'B': return @(*(const bool *)p);
+        case 'c': return @(*(const char *)p);
+        case 'C': return @(*(const unsigned char *)p);
+        case 's': return @(*(const short *)p);
+        case 'S': return @(*(const unsigned short *)p);
+        default: return nil;  // '@' 对象、'{' 结构体、'^' 指针、'b' 位域一律不碰
+    }
+}
+
 // 零 KVC 读字段：对象/标量安全包装；结构体、裸指针、未知类型一律 nil
 static id DYYYPostDateReadObject(id obj, NSString *selName) {
     if (!obj || selName.length == 0) return nil;
@@ -5730,7 +5757,7 @@ static id DYYYPostDateReadObject(id obj, NSString *selName) {
         if (iv) {
             const char *enc = ivar_getTypeEncoding(iv);
             if (enc && enc[0] == '@') return object_getIvar(obj, iv);
-            return nil;  // 同名 ivar 类型不安全 ⇒ 直接放弃
+            return DYYYPostDateReadScalarIvar(obj, iv);  // b21: 标量 ivar 安全装箱
         }
         cls = class_getSuperclass(cls);
     }
@@ -5810,7 +5837,7 @@ static id DYYYPostDateFindTimeObjectInGraph(id root, int depth, NSMutableSet *vi
         Ivar *ivars = class_copyIvarList(cls, &ic);
         for (unsigned int i = 0; i < ic; i++) {
             const char *enc = ivar_getTypeEncoding(ivars[i]);
-            if (!enc || enc[0] != '@') continue;
+            if (!enc) continue;
             const char *rawName = ivar_getName(ivars[i]);
             if (!rawName) continue;
             NSString *name = @(rawName);
@@ -5818,6 +5845,16 @@ static id DYYYPostDateFindTimeObjectInGraph(id root, int depth, NSMutableSet *vi
             if ([name hasSuffix:@"elegate"] || [name hasSuffix:@"uperview"] ||
                 [name hasSuffix:@"esponder"] || [name hasSuffix:@"ontroller"] ||
                 [name hasSuffix:@"indow"] || [name hasSuffix:@"arget"]) continue;
+            if (enc[0] != '@') {
+                // b21: 时间型标量 ivar（如 long long createTime）——旧 KVC 会自动装箱
+                NSString *low = [name lowercaseString];
+                if ([low containsString:@"time"] || [low containsString:@"date"] ||
+                    [low containsString:@"publish"] || [low containsString:@"create"]) {
+                    NSNumber *sv = DYYYPostDateReadScalarIvar(root, ivars[i]);
+                    if (DYYYPostDateNormalize(sv)) { free(ivars); return root; }
+                }
+                continue;
+            }
             id v = object_getIvar(root, ivars[i]);
             if (!v || v == root) continue;
             id found = DYYYPostDateFindTimeObjectInGraph(v, depth + 1, visited, budget);
@@ -5854,29 +5891,54 @@ static id DYYYPostDateFindTimeObjectInGraph(id root, int depth, NSMutableSet *vi
     return nil;
 }
 
-// 一次性字段 dump：若对象图遍历仍失败，真机日志能直接看到 cell 上对象 ivar 的名字与类型
-static void DYYYPostDateDumpCellOnce(id cell) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:40];
-        Class cls = object_getClass(cell);
-        while (cls && cls != [NSObject class] && parts.count < 40) {
-            NSString *cn = NSStringFromClass(cls);
-            if ([cn hasPrefix:@"UI"] || [cn hasPrefix:@"CA"] || [cn hasPrefix:@"NS"]) break;
-            unsigned int ic = 0;
-            Ivar *ivars = class_copyIvarList(cls, &ic);
-            for (unsigned int i = 0; i < ic && parts.count < 40; i++) {
-                const char *enc = ivar_getTypeEncoding(ivars[i]);
-                if (!enc || enc[0] != '@') continue;
+// b21 决定性取证：把 cell 的 ivar（含类型编码）与方法名直接拼进 miss detail。
+// 不再依赖独立 tag / dispatch_once —— 即使安装的不是本版也能从 detail 前缀 "b21:" 一眼看出。
+static NSString *DYYYPostDateInspectCell(id cell) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:40];
+    [parts addObject:@"b21:"];
+    Class cls = object_getClass(cell);
+    while (cls && cls != [NSObject class] && parts.count < 46) {
+        NSString *cn = NSStringFromClass(cls);
+        if ([cn hasPrefix:@"UI"] || [cn hasPrefix:@"CA"] || [cn hasPrefix:@"NS"]) break;
+        unsigned int ic = 0;
+        Ivar *ivars = class_copyIvarList(cls, &ic);
+        for (unsigned int i = 0; i < ic && parts.count < 46; i++) {
+            const char *enc = ivar_getTypeEncoding(ivars[i]);
+            const char *nm = ivar_getName(ivars[i]);
+            if (!enc || !nm) continue;
+            NSString *vn;
+            if (enc[0] == '@') {
                 id v = object_getIvar(cell, ivars[i]);
-                NSString *vn = v ? NSStringFromClass([v class]) : @"nil";
-                [parts addObject:[NSString stringWithFormat:@"%s=%@", ivar_getName(ivars[i]), vn]];
+                vn = v ? NSStringFromClass([v class]) : @"nil";
+            } else {
+                NSNumber *sv = DYYYPostDateReadScalarIvar(cell, ivars[i]);
+                vn = sv ? [NSString stringWithFormat:@"%c=%@", enc[0], sv] :
+                          [NSString stringWithFormat:@"%c=?", enc[0]];
             }
-            free(ivars);
-            cls = class_getSuperclass(cls);
+            [parts addObject:[NSString stringWithFormat:@"%s:%@", nm, vn]];
         }
-        DYYYPrivNote(@"postdate.cell.ivars", [parts componentsJoinedByString:@","]);
-    });
+        free(ivars);
+        unsigned int mc = 0;
+        Method *ms = class_copyMethodList(cls, &mc);
+        for (unsigned int i = 0; i < mc && parts.count < 60; i++) {
+            NSString *mn = NSStringFromSelector(method_getName(ms[i]));
+            NSString *low = [mn lowercaseString];
+            if ([low containsString:@"model"] || [low containsString:@"aweme"] ||
+                [low containsString:@"createtime"] || [low containsString:@"publish"]) {
+                [parts addObject:[NSString stringWithFormat:@"m%@", mn]];
+            }
+        }
+        free(ms);
+        cls = class_getSuperclass(cls);
+    }
+    NSString *s = [parts componentsJoinedByString:@","];
+    if (s.length > 900) s = [s substringToIndex:900];
+    return s;
+}
+
+static void DYYYPostDateDumpCellOnce(id cell) {
+    NSString *info = DYYYPostDateInspectCell(cell);
+    DYYYPrivNote(@"postdate.cell.ivars", info);
 }
 
 // cell -> 含作品时间的对象：先固定白名单快路径，失败再受控对象图遍历兜底
@@ -5955,7 +6017,13 @@ static void DYYYUpdatePostDateLabelForCellCore(UICollectionViewCell *cell) {
         if (model) {
             DYYYPrivNote(@"postdate.model.hit", NSStringFromClass([model class]));
         } else {
-            DYYYPrivNote(@"postdate.model.miss", NSStringFromClass([cell class]));
+            static BOOL postDateDetailDone = NO;
+            NSString *d = NSStringFromClass([cell class]);
+            if (!postDateDetailDone) {
+                postDateDetailDone = YES;
+                d = [d stringByAppendingFormat:@"|%@", DYYYPostDateInspectCell(cell)];
+            }
+            DYYYPrivNote(@"postdate.model.miss", d);
         }
         if (time) {
             DYYYPrivNote(@"postdate.time.hit", [time stringValue]);

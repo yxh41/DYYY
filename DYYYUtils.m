@@ -1240,7 +1240,7 @@ static NSString *DYYYPrivSummaryFiltered(BOOL methodsOnly) {
     if (parts.count == 0)
         return @"-";
     NSString *s = [parts componentsJoinedByString:@" ; "];
-    NSUInteger cap = methodsOnly ? 1800 : 1200;
+    NSUInteger cap = methodsOnly ? 1800 : 2400;
     if (s.length > cap)
         s = [[s substringToIndex:cap] stringByAppendingString:@" ..."];
     return s;
