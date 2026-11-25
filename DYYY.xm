@@ -10,6 +10,7 @@
 #import <UIKit/UIKit.h>
 #import <float.h>
 #import <math.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <substrate.h>
@@ -522,6 +523,12 @@ static BOOL DYYYTargetLooksPlaylet(id target) {
 
 %end
 
+// b16: %new 方法前向声明（供 hook 内部递归调用）
+@interface AWEAwemeModel (DYYBHDRNew)
+- (BOOL)dyyy_containsHDRMetadataInObject:(id)object depth:(NSUInteger)depth;
+- (BOOL)dyyy_shouldExcludeFromGlobalHDRFilter;
+@end
+
 // ===== b16 HDR 三态 helper（从旧 fork 精确抽取，DYYYPreferences 已替换为 3.0.2 原语）=====
 // 三态：关闭 / 全局屏蔽HDR效果 / 全局过滤HDR作品。
 // 兼容上游仍在使用的 DYYYFilterFeedHDR 开关：过滤模式 = 新三态「过滤」或老开关打开。
@@ -539,6 +546,7 @@ static BOOL DYYYShouldDisableAllHDR(void);
 static NSArray *DYYYFilteredSDRBitrateModels(NSArray *models);
 static NSArray *DYYYFilteredSDRRawBitrateData(NSArray *rawData);
 static void DYYYStripHDRHintsFromBitrateModels(NSArray *models);
+static BOOL DYYYRawBitrateDictionaryLooksHDR(NSDictionary *dictionary);
 
 // --- DYYYShouldDisableAllHDR (旧 fork 930-932) ---
 static BOOL DYYYShouldDisableAllHDR(void) {
@@ -10417,7 +10425,8 @@ static BOOL DYYYFeedNowPlayingAllowed(void) {
 
 %end
 
-// ===== HDR_B16_HOOKS_MERGED: 播放器/解码链路 =====
+%group DYYBHDRGroup
+
 // --- AVPlayer (旧 fork 3245-3288) ---
 %hook AVPlayer
 
@@ -10971,8 +10980,10 @@ static BOOL DYYYFeedNowPlayingAllowed(void) {
 
 %end
 
+%end
 
 %ctor {
+    %init(DYYBHDRGroup);
     if (objc_getClass("AWEFeedBackgroundPlayManager") || objc_getClass("AWEAwemeBackgroundPlayModule")) {
         %init(DYYYFeedNowPlayingGroup);
         // b13 取证：确认这两个类上到底有几个 now-playing 方法，别只靠肉眼估"四个够了"
