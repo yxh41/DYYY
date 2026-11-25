@@ -5699,21 +5699,42 @@ static char kDYYYPostDateCacheKey;  // 缓存 @[modelToken, time]
 static id DYYYPostDateReadObject(id obj, NSString *selName) {
     if (!obj || selName.length == 0) return nil;
     SEL sel = NSSelectorFromString(selName);
-    if (![obj respondsToSelector:sel]) return nil;
-    NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
-    if (!sig || sig.numberOfArguments != 2) return nil;
-    const char *rt = sig.methodReturnType;
-    if (!rt || !rt[0]) return nil;
-    if (rt[0] == '@') return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
-    switch (rt[0]) {
-        case 'd': return @(((double (*)(id, SEL))objc_msgSend)(obj, sel));
-        case 'f': return @(((float (*)(id, SEL))objc_msgSend)(obj, sel));
-        case 'q': case 'Q': case 'i': case 'I': case 'l': case 'L':
-            return @(((long long (*)(id, SEL))objc_msgSend)(obj, sel));
-        case 'B': case 'c': case 'C': case 's': case 'S':
-            return @(((int (*)(id, SEL))objc_msgSend)(obj, sel));
-        default: return nil;
+    if ([obj respondsToSelector:sel]) {
+        NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
+        if (sig && sig.numberOfArguments == 2) {
+            const char *rt = sig.methodReturnType;
+            if (rt && rt[0]) {
+                if (rt[0] == '@') return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+                switch (rt[0]) {
+                    case 'd': return @(((double (*)(id, SEL))objc_msgSend)(obj, sel));
+                    case 'f': return @(((float (*)(id, SEL))objc_msgSend)(obj, sel));
+                    case 'q': case 'Q': case 'i': case 'I': case 'l': case 'L':
+                        return @(((long long (*)(id, SEL))objc_msgSend)(obj, sel));
+                    case 'B': case 'c': case 'C': case 's': case 'S':
+                        return @(((int (*)(id, SEL))objc_msgSend)(obj, sel));
+                    default: break;  // 结构体/裸指针：不猜，走 ivar 回退或直接放弃
+                }
+            }
+        }
     }
+    // getter 不存在时回退 ivar（宿主 cell 大量 model 是纯 ivar，无 getter）。
+    // 只接受对象类型 '@'，沿继承链找，绝不读标量/结构体，避免把裸指针当对象。
+    const char *cname = [selName UTF8String];
+    if (!cname) return nil;
+    NSString *under = [@"_" stringByAppendingString:selName];
+    const char *cunder = [under UTF8String];
+    Class cls = object_getClass(obj);
+    while (cls && cls != [NSObject class]) {
+        Ivar iv = class_getInstanceVariable(cls, cname);
+        if (!iv) iv = class_getInstanceVariable(cls, cunder);
+        if (iv) {
+            const char *enc = ivar_getTypeEncoding(iv);
+            if (enc && enc[0] == '@') return object_getIvar(obj, iv);
+            return nil;  // 同名 ivar 类型不安全 ⇒ 直接放弃
+        }
+        cls = class_getSuperclass(cls);
+    }
+    return nil;
 }
 
 static NSNumber *DYYYPostDateNormalize(id raw) {
@@ -5750,38 +5771,46 @@ static NSArray<NSString *> *DYYYPostDateTimeKeys(void) {
     return keys;
 }
 
-// cell -> AWEAwemeModel：白名单属性 + 一层下钻，不枚举 ivar、不盲扫对象图
+// 从任意对象读合法时间戳；不依赖宿主类名（极速版 AWEAwemeModel 运行时类名可能漂移）
+static NSNumber *DYYYPostDateReadTime(id obj) {
+    if (!obj) return nil;
+    for (NSString *k in DYYYPostDateTimeKeys()) {
+        NSNumber *t = DYYYPostDateNormalize(DYYYPostDateReadObject(obj, k));
+        if (t) return t;
+    }
+    return nil;
+}
+
+// cell -> 含作品时间的对象：白名单属性 + 两层下钻，不枚举全 ivar、不盲扫对象图。
+// 判定标准从「isKindOfClass:AWEAwemeModel」改为「该对象能读到合法 createTime」。
 static id DYYYPostDateModel(id cell) {
     if (!cell) return nil;
-    Class awemeCls = NSClassFromString(@"AWEAwemeModel");
     NSArray *keys = DYYYPostDateModelKeys();
     for (NSString *k in keys) {
         id v = DYYYPostDateReadObject(cell, k);
         if (!v || [v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]] ||
             [v isKindOfClass:[NSValue class]] || [v isKindOfClass:[NSDate class]] ||
             [v isKindOfClass:[NSNull class]]) continue;
-        if (awemeCls && [v isKindOfClass:awemeCls]) return v;
+        if (DYYYPostDateReadTime(v)) return v;
         for (NSString *ik in keys) {
             id inner = DYYYPostDateReadObject(v, ik);
-            if (inner && inner != v && awemeCls && [inner isKindOfClass:awemeCls]) return inner;
+            if (!inner || inner == v) continue;
+            if (DYYYPostDateReadTime(inner)) return inner;
+            // 第二层：cell.model.awemeModel.createTime 这种两级包装
+            for (NSString *jk in keys) {
+                id deep = DYYYPostDateReadObject(inner, jk);
+                if (deep && deep != inner && DYYYPostDateReadTime(deep)) return deep;
+            }
         }
     }
     return nil;
 }
 
 static NSNumber *DYYYPostDateTime(id cell, id model) {
-    if (model) {
-        for (NSString *k in DYYYPostDateTimeKeys()) {
-            NSNumber *t = DYYYPostDateNormalize(DYYYPostDateReadObject(model, k));
-            if (t) return t;
-        }
-    }
+    NSNumber *t = DYYYPostDateReadTime(model);
+    if (t) return t;
     // 部分宿主把时间直接挂 cell 上
-    for (NSString *k in DYYYPostDateTimeKeys()) {
-        NSNumber *t = DYYYPostDateNormalize(DYYYPostDateReadObject(cell, k));
-        if (t) return t;
-    }
-    return nil;
+    return DYYYPostDateReadTime(cell);
 }
 
 static NSDateFormatter *DYYYPostDateFormatter(void) {
@@ -5805,6 +5834,7 @@ static UIView *DYYYPostDateHostView(UIView *cell) {
 
 static void DYYYUpdatePostDateLabelForCellCore(UICollectionViewCell *cell) {
     if (!cell) return;
+    DYYYPrivNote(@"postdate.core.call", NSStringFromClass([cell class]));
     UILabel *label = objc_getAssociatedObject(cell, &kDYYYPostDateLabelKey);
     if (!DYYYGetBool(@"DYYYShowPostDate")) {
         if (label) label.hidden = YES;
@@ -5823,8 +5853,16 @@ static void DYYYUpdatePostDateLabelForCellCore(UICollectionViewCell *cell) {
         objc_setAssociatedObject(cell, &kDYYYPostDateCacheKey,
                                  @[modelToken, time ?: (id)[NSNull null]],
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (model) DYYYPrivNote(@"postdate.model.hit", NSStringFromClass([model class]));
-        if (time) DYYYPrivNote(@"postdate.time.hit", [time stringValue]);
+        if (model) {
+            DYYYPrivNote(@"postdate.model.hit", NSStringFromClass([model class]));
+        } else {
+            DYYYPrivNote(@"postdate.model.miss", NSStringFromClass([cell class]));
+        }
+        if (time) {
+            DYYYPrivNote(@"postdate.time.hit", [time stringValue]);
+        } else {
+            DYYYPrivNote(@"postdate.time.miss", model ? NSStringFromClass([model class]) : @"no-model");
+        }
     }
     if (!(time && time.doubleValue > 0)) {
         if (label) label.hidden = YES;
@@ -5917,6 +5955,7 @@ static void DYYYInstallDynamicPostDateHooks(void) {
     Class *classes = objc_copyClassList(&count);
     if (!classes) return;
     NSUInteger hooked = 0;
+    NSMutableArray<NSString *> *hookedNames = [NSMutableArray arrayWithCapacity:8];
     for (unsigned int i = 0; i < count; i++) {
         Class cls = classes[i];
         const char *cn = class_getName(cls);
@@ -5934,12 +5973,14 @@ static void DYYYInstallDynamicPostDateHooks(void) {
         DYYYSwizzlePostDateLayout(cls);
         [swizzled addObject:name];
         hooked++;
+        if (hookedNames.count < 8) [hookedNames addObject:name];
     }
     free(classes);
     if (hooked > 0) {
         DYYYPrivNote(@"postdate.swizzle",
-                     [NSString stringWithFormat:@"+%lu total=%lu",
-                      (unsigned long)hooked, (unsigned long)swizzled.count]);
+                     [NSString stringWithFormat:@"+%lu total=%lu names=%@",
+                      (unsigned long)hooked, (unsigned long)swizzled.count,
+                      [hookedNames componentsJoinedByString:@","]]);
     }
 }
 
