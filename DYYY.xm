@@ -10082,52 +10082,19 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
         CGRect frame = tv.frame;
         CGFloat oldHeight = frame.size.height;
         frame.size.height = tv.superview.frame.size.height;
-        tv.frame = frame;
-
-        // b22: 页高变了但 contentOffset 还是按旧页高算的 ⇒ 停稳后卡在两个 cell 之间（错位）。
-        // 只在「高度确实变了 + 未在拖拽/减速」时吸附一次，避免打断用户滚动。
-        CGFloat newHeight = frame.size.height;
-        if (newHeight > 1.0 && !tv.isTracking && !tv.isDecelerating) {
-            // b23: 真机证实 heightForRow 已返回 844，但部分行的 rectForRow 缓存仍是 761
-            // ⇒ 行高混排：offset 按 844 走、行实际按 761/844 混排，一屏跨两行就是错位。
-            // beginUpdates/endUpdates 会让 UITableView 重新查询行高并刷新 rect 缓存，
-            // 但不重载 cell（不闪、不中断播放）。计数挂在 table 上，页高变化时重置。
-            static char kRectFixTriesKey;
-            if (fabs(newHeight - oldHeight) > 0.5) {
-                objc_setAssociatedObject(tv, &kRectFixTriesKey, nil,
-                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            NSInteger tries = [objc_getAssociatedObject(tv, &kRectFixTriesKey) integerValue];
-            NSIndexPath *ip = [[tv indexPathsForVisibleRows] firstObject];
-            CGFloat rowH = ip ? [tv rectForRowAtIndexPath:ip].size.height : 0;
-            if (rowH > 1.0 && fabs(rowH - newHeight) > 1.0 && tries < 4) {
-                static BOOL dyyyRectRelayouting = NO;
-                if (!dyyyRectRelayouting) {
-                    dyyyRectRelayouting = YES;
-                    objc_setAssociatedObject(tv, &kRectFixTriesKey, @(tries + 1),
-                                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    [tv beginUpdates];
-                    [tv endUpdates];
-                    dyyyRectRelayouting = NO;
-                }
-                CGFloat fixedH = ip ? [tv rectForRowAtIndexPath:ip].size.height : 0;
-                DYYYPrivNote(@"fs.rect.fix",
-                             [NSString stringWithFormat:@"%.0f->%.0f h=%.0f try=%ld",
-                              rowH, fixedH, newHeight, (long)(tries + 1)]);
-                if (ip && fixedH > 1.0) rowH = fixedH;
-            }
-
-            // 页高：rect 已修好就用表高，否则用该行真实高度（避免一屏跨两行）
-            CGFloat h = (rowH > 1.0) ? rowH : newHeight;
-            CGFloat y = tv.contentOffset.y;
-            CGFloat target = round(y / h) * h;
-            if (fabs(target - y) > 1.0) {
-                [tv setContentOffset:CGPointMake(tv.contentOffset.x, target) animated:NO];
-                DYYYPrivNote(@"fs.align.fix",
-                             [NSString stringWithFormat:@"%.0f->%.0f h=%.0f", y, target, h]);
+        if (fabs(frame.size.height - oldHeight) > 0.5) {
+            tv.frame = frame;
+            // b24: 表高变了但行 rect 缓存还停在旧页高（761）⇒ 行高混排、一屏跨两行。
+            // rowHeight 改成表高后，UITableView 下一帧按统一行高重算 rect，混排自然消失；
+            // 这是纯属性赋值，不触发更新事务。
+            // 🔴 严禁在 layoutSubviews 里调 beginUpdates/endUpdates 或 setContentOffset：
+            // 两者都会同步触发布局，与本方法形成递归（b23 实测 0x8BADF00D 看门狗闪退，CPU 55%）。
+            if (fabs(tv.rowHeight - frame.size.height) > 0.5) {
+                tv.rowHeight = frame.size.height;
             }
             DYYYPrivNote(@"fs.table.h",
-                         [NSString stringWithFormat:@"%.0f->%.0f cellH=%.0f", oldHeight, newHeight, h]);
+                         [NSString stringWithFormat:@"%.0f->%.0f rowH=%.0f",
+                          oldHeight, frame.size.height, tv.rowHeight]);
         }
     } else if (gCurrentTabBarHeight > 0) {
         UIWindow *keyWindow = [DYYYUtils getActiveWindow];
