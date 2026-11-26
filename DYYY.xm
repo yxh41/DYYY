@@ -10084,13 +10084,51 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
         frame.size.height = tv.superview.frame.size.height;
         if (fabs(frame.size.height - oldHeight) > 0.5) {
             tv.frame = frame;
-            // b24: 表高变了但行 rect 缓存还停在旧页高（761）⇒ 行高混排、一屏跨两行。
-            // rowHeight 改成表高后，UITableView 下一帧按统一行高重算 rect，混排自然消失；
-            // 这是纯属性赋值，不触发更新事务。
-            // 🔴 严禁在 layoutSubviews 里调 beginUpdates/endUpdates 或 setContentOffset：
-            // 两者都会同步触发布局，与本方法形成递归（b23 实测 0x8BADF00D 看门狗闪退，CPU 55%）。
             if (fabs(tv.rowHeight - frame.size.height) > 0.5) {
                 tv.rowHeight = frame.size.height;
+            }
+            // b25: frame/rowHeight 都改对了，但 UITableView 只对「之后新建」的行应用新行高，
+            // 已缓存的 rect 仍是旧页高（真机实测 row35 heightForRow=844 而 rect=761）⇒ 行高混排。
+            // 让 table 重新查询行高才能刷新 rect，但 beginUpdates/endUpdates 会同步重排，
+            // 直接在 layoutSubviews 里调会与本方法递归（b23 = 0x8BADF00D 看门狗闪退，CPU 55%）。
+            // ⇒ 异步到下一轮 runloop，彻底脱离 layout 栈，不递归。
+            static char kPendingKey;
+            if (!objc_getAssociatedObject(tv, &kPendingKey)) {
+                objc_setAssociatedObject(tv, &kPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                __weak UITableView *weakTV = tv;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  UITableView *t = weakTV;
+                  if (!t) return;
+                  objc_setAssociatedObject(t, &kPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                  if (!DYYYGetBool(@"DYYYEnableFullScreen")) return;
+
+                  NSIndexPath *ip = [t indexPathForRowAtPoint:CGPointMake(0, t.contentOffset.y + 1)];
+                  CGFloat before = ip ? [t rectForRowAtIndexPath:ip].size.height : 0;
+                  CGFloat pageH = t.bounds.size.height;
+
+                  CGFloat after = 0;
+                  @try {
+                      [t beginUpdates];
+                      [t endUpdates];
+                      after = ip ? [t rectForRowAtIndexPath:ip].size.height : 0;
+                  } @catch (NSException *e) {
+                      DYYYPrivNote(@"fs.rect.ex", e.reason ?: @"?");
+                  }
+                  ip = [t indexPathForRowAtPoint:CGPointMake(0, t.contentOffset.y + 1)];
+                  if (ip) {
+                      CGRect r = [t rectForRowAtIndexPath:ip];
+                      CGFloat y = t.contentOffset.y;
+                      if (fabs(r.origin.y - y) > 1.0) {
+                          [t setContentOffset:CGPointMake(t.contentOffset.x, r.origin.y) animated:NO];
+                          DYYYPrivNote(@"fs.align.fix",
+                                       [NSString stringWithFormat:@"%.0f->%.0f",
+                                        y, r.origin.y]);
+                      }
+                  }
+                  DYYYPrivNote(@"fs.rect.fix",
+                               [NSString stringWithFormat:@"%.0f->%.0f h=%.0f",
+                                before, after, pageH]);
+                });
             }
             DYYYPrivNote(@"fs.table.h",
                          [NSString stringWithFormat:@"%.0f->%.0f rowH=%.0f",
