@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - rebuild-on-302
     paths:
       - '*.h'
       - '*.m'
