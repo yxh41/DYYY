@@ -10102,6 +10102,11 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
                   objc_setAssociatedObject(t, &kPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                   if (!DYYYGetBool(@"DYYYEnableFullScreen")) return;
 
+                  // b26: 行号 = 视频身份，必须用「rect 重算之前」取到的 ip 回来查新 rect。
+                  // b25 在 beginUpdates/endUpdates 之后又按 offset.y+1 反查了一次 ip，
+                  // 等于拿新几何重新编号：真机 55553(=73x761) -> 54860(=65x844)，
+                  // 把正在看的第 73 个视频跳回第 65 个，表现为「从用户主页返回推荐页会退回上几个视频」。
+                  // rect 变高只改行的位置、不改行的先后顺序，所以 ip 本身就是稳定的视频身份。
                   NSIndexPath *ip = [t indexPathForRowAtPoint:CGPointMake(0, t.contentOffset.y + 1)];
                   CGFloat before = ip ? [t rectForRowAtIndexPath:ip].size.height : 0;
                   CGFloat pageH = t.bounds.size.height;
@@ -10114,15 +10119,21 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
                   } @catch (NSException *e) {
                       DYYYPrivNote(@"fs.rect.ex", e.reason ?: @"?");
                   }
-                  ip = [t indexPathForRowAtPoint:CGPointMake(0, t.contentOffset.y + 1)];
                   if (ip) {
-                      CGRect r = [t rectForRowAtIndexPath:ip];
+                      CGRect r = CGRectZero;
+                      BOOL haveRect = YES;
+                      @try {
+                          r = [t rectForRowAtIndexPath:ip];
+                      } @catch (NSException *e) {
+                          haveRect = NO;
+                          DYYYPrivNote(@"fs.align.ex", e.reason ?: @"?");
+                      }
                       CGFloat y = t.contentOffset.y;
-                      if (fabs(r.origin.y - y) > 1.0) {
+                      if (haveRect && fabs(r.origin.y - y) > 1.0) {
                           [t setContentOffset:CGPointMake(t.contentOffset.x, r.origin.y) animated:NO];
                           DYYYPrivNote(@"fs.align.fix",
-                                       [NSString stringWithFormat:@"%.0f->%.0f",
-                                        y, r.origin.y]);
+                                       [NSString stringWithFormat:@"%.0f->%.0f row=%ld",
+                                        y, r.origin.y, (long)ip.row]);
                       }
                   }
                   DYYYPrivNote(@"fs.rect.fix",
