@@ -9482,6 +9482,12 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
         return;
     }
 
+    // b27: 后台不参与全屏几何调整，直接走原实现（这是执行最频繁的一处拉伸点）
+    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
+        %orig(frame);
+        return;
+    }
+
     BOOL enableBlur = DYYYGetBool(@"DYYYEnableCommentBlur");
     BOOL enableFS = DYYYGetBool(@"DYYYEnableFullScreen");
 
@@ -9596,6 +9602,9 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
 
 - (void)viewDidLayoutSubviews {
     %orig;
+
+    // b27: 后台不参与全屏几何调整（崩溃报告主线程就停在本方法的 %orig 里）
+    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
 
     if (isFloatSpeedButtonEnabled) {
         BOOL hasRightStack = NO;
@@ -10075,6 +10084,9 @@ static void DYYYApplyYOffsetIdempotent(UIView *view, const char *keyPtr, CGFloat
 %hook AWEFeedTableView
 - (void)layoutSubviews {
     %orig;
+
+    // b27: 后台不参与全屏几何调整
+    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
 
     if (DYYYGetBool(@"DYYYEnableFullScreen")) {
         // Logos 前向类拿不到 UITableView 的 isTracking/contentOffset，必须强转

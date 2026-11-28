@@ -3573,32 +3573,70 @@ static void DYYYSyncHomeWardButton(void) {
     } @catch (NSException *e) {}
 }
 
+static dispatch_source_t gUserSheetScanTimer = NULL;
+static BOOL gUserSheetScanRunning = NO;
+
+// 单次扫描：只在「前台 + 功能开启」时才真正走视图树
+static void DYYYUserSheetScanTick(void) {
+    @try {
+        UIApplication *app = [UIApplication sharedApplication];
+        if (!app || app.applicationState != UIApplicationStateActive) return;
+        if (!DYYYGetBool(@"DYYYHomeWard")) return;
+        for (UIWindow *window in app.windows) {
+            if (window && window.alpha > 0.01 && !window.isHidden) {
+                @try { DYYYScanUserSheet(window); } @catch (NSException *e) {}
+            }
+        }
+        // 入口③：用户主页页面上的「🌺」按钮（与菜单注入互不依赖）
+        @try { DYYYSyncHomeWardButton(); } @catch (NSException *e) {}
+    } @catch (NSException *e) {}
+}
+
+// 前后台开关：避免后台每 1.2s 把所有 window 的深度视图遍历塞进主队列
+static void DYYYSetUserSheetScanActive(BOOL active) {
+    if (!gUserSheetScanTimer) return;
+    if (active == gUserSheetScanRunning) return;
+    if (active) {
+        dispatch_resume(gUserSheetScanTimer);
+    } else {
+        dispatch_suspend(gUserSheetScanTimer);
+    }
+    gUserSheetScanRunning = active;
+}
+
 static void DYYYStartUserSheetScan(void) {
     static BOOL started = NO;
     if (started) return;
     started = YES;
-    // 每 1.2s 扫一次所有 window；只在开启主页插眼时才真正遍历
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (YES) {
-            @try {
-                if (DYYYGetBool(@"DYYYHomeWard")) {
-                    NSArray *windows = [[UIApplication sharedApplication] windows];
-                    for (UIWindow *window in windows) {
-                        if (window && window.alpha > 0.01 && !window.isHidden) {
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                @try { DYYYScanUserSheet(window); } @catch (NSException *e) {}
-                            });
-                        }
-                    }
-                    // 入口③：用户主页页面上的「🌺」按钮（与菜单注入互不依赖）
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        @try { DYYYSyncHomeWardButton(); } @catch (NSException *e) {}
-                    });
-                }
-            } @catch (NSException *e) {}
-            [NSThread sleepForTimeInterval:1.2];
-        }
-    });
+    // b27：原来这里是 dispatch_async(global) + while (YES) { ...sleepForTimeInterval:1.2 }，
+    // 线程永不退出、后台也照跑、功能关掉也空转。真机崩溃报告（AwemeLite 2026-11-28 19:35）证实：
+    // 后台被要求退出时主线程不断被投喂视图遍历 + 布局拉锯 ⇒ 5s 内进不了终止流程 ⇒
+    // 0x8BADF00D process-exit 退出看门狗。改成主队列定时器 + 前后台 suspend/resume。
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    if (!timer) return;
+    uint64_t interval = (uint64_t)(1.2 * NSEC_PER_SEC);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)interval), interval, (uint64_t)(0.2 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(timer, ^{ DYYYUserSheetScanTick(); });
+    gUserSheetScanTimer = timer;
+    dispatch_resume(timer);
+    gUserSheetScanRunning = YES;
+
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserverForName:UIApplicationDidEnterBackgroundNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) { DYYYSetUserSheetScanActive(NO); }];
+    [nc addObserverForName:UIApplicationWillEnterForegroundNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+                  DYYYSetUserSheetScanActive(YES);
+                  DYYYUserSheetScanTick();
+                }];
+    [nc addObserverForName:UIApplicationWillTerminateNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) { DYYYSetUserSheetScanActive(NO); }];
 }
 
 // 缓存「当前主页用户」+ 访问时间：入口③ 与面板兜底都靠它判断是否正停在用户主页上。
